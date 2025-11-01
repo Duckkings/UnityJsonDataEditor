@@ -1,0 +1,343 @@
+/* 基础样式 */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  background-color: #f5f7fa;
+  color: #333;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* 夜间模式 */
+body.dark {
+  background-color: #1e1e1e;
+  color: #ddd;
+}
+body.dark .toolbar {
+  background-color: #2a2a2a;
+  border-bottom: 1px solid #444;
+}
+body.dark .panel {
+  background-color: #2a2a2a;
+  border-right: 1px solid #444;
+}
+body.dark .panel-header {
+  background-color: #333;
+  border-bottom: 1px solid #444;
+}
+body.dark .list li {
+  border-bottom: 1px solid #444;
+}
+body.dark .list li:hover {
+  background-color: #3a3a3a;
+}
+body.dark .list li.active {
+  background-color: #264d3a;
+}
+body.dark .param-item {
+  background-color: #2f2f2f;
+  border: 1px solid #444;
+}
+body.dark .param-item.reserved {
+  background-color: #3a3a3a;
+}
+body.dark .toolbar button {
+  background-color: #444;
+  color: #ddd;
+}
+body.dark .toolbar button.primary {
+  background-color: #388e3c;
+  color: #fff;
+}
+
+/* 定义行高缩放变量默认值 */
+:root {
+  --row-scale: 1;
+}
+
+/* 工具栏 */
+.toolbar {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  background-color: #fff;
+  border-bottom: 1px solid #e0e0e0;
+  gap: 12px;
+}
+
+.toolbar button {
+  padding: 6px 12px;
+  font-size: 14px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  background-color: #e0e0e0;
+  color: #333;
+}
+
+.toolbar button.primary {
+  background-color: #4caf50;
+  color: #fff;
+}
+
+.dir-label {
+  flex: 1;
+  color: #666;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 主容器和面板 */
+.container {
+  display: flex;
+  height: calc(100vh - 50px);
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #e0e0e0;
+  background-color: #fff;
+}
+
+.panel:last-child {
+  border-right: none;
+}
+
+/* 使用 flex 比例控制三栏宽度 */
+.templates {
+  flex: var(--template-flex, 1);
+  min-width: 180px;
+}
+
+.instances {
+  flex: var(--instance-flex, 1.5);
+  min-width: 220px;
+}
+
+.parameters {
+  flex: var(--param-flex, 2);
+  min-width: 260px;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  padding: 6px;
+  gap: 6px;
+  border-bottom: 1px solid #e0e0e0;
+  background-color: #fafafa;
+}
+
+.panel-header input[type="text"] {
+  flex: 1;
+  padding: 4px 6px;
+  font-size: 14px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+}
+
+.panel-header select {
+  padding: 4px 6px;
+  font-size: 14px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+}
+
+.panel-header button {
+  font-size: 13px;
+  padding: 4px 8px;
+}
+
+.actions {
+  display: flex;
+  gap: 4px;
+}
+
+.index-selectors {
+  display: flex;
+  gap: 4px;
+}
+
+/* 搜索栏样式 */
+.search-bar {
+  padding: 4px 6px;
+  border-bottom: 1px solid #e0e0e0;
+}
+.search-bar input {
+  width: 100%;
+  padding: 4px 6px;
+  font-size: 14px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+}
+body.dark .search-bar {
+  border-bottom: 1px solid #444;
+}
+body.dark .search-bar input {
+  background-color: #333;
+  border: 1px solid #555;
+  color: #ddd;
+}
+
+/* 调整参数栏比例滑块样式 */
+#paramWidth {
+  width: 100px;
+  margin-left: 8px;
+}
+
+/* 消息提示 */
+.message {
+  position: fixed;
+  top: 60px;
+  right: 20px;
+  background-color: #323232;
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 14px;
+  z-index: 100;
+  opacity: 0.9;
+}
+
+/* 列表样式 */
+.list {
+  list-style: none;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.list li {
+  display: flex;
+  align-items: center;
+  /* 使用行高缩放变量调整内边距，纵向空间 = 6px * 比例 */
+  padding: calc(6px * var(--row-scale)) 8px;
+  border-bottom: 1px solid #f0f0f0;
+  cursor: pointer;
+}
+
+.list li:hover {
+  background-color: #f5f5f5;
+}
+
+.list li.active {
+  background-color: #e8f5e9;
+}
+
+.list li.selecting {
+  background-color: #c8e6c9;
+}
+
+body.dark .list li.active {
+  background-color: #264d3a;
+}
+body.dark .list li.selecting {
+  background-color: #345c48;
+}
+
+.list li input[type="checkbox"] {
+  margin-right: 6px;
+}
+
+.list li span {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 拖拽选择参数时高亮背景 */
+.param-item.selecting {
+  background-color: #e0f2f1;
+}
+body.dark .param-item.selecting {
+  background-color: #35544a;
+}
+
+/* 参数区域 */
+.param-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.param-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  /* 使用行高缩放变量调整外边距和内边距 */
+  margin-bottom: calc(6px * var(--row-scale));
+  padding: calc(6px * var(--row-scale));
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background-color: #fafafa;
+}
+
+.param-item.reserved {
+  /* 继承行高缩放变量 */
+  margin-bottom: calc(6px * var(--row-scale));
+  padding: calc(6px * var(--row-scale));
+  background-color: #f0f0f0;
+}
+
+.param-item label {
+  width: 80px;
+  font-weight: 500;
+}
+
+.param-item input,
+.param-item select {
+  flex: 1;
+  margin-right: 4px;
+  padding: 4px 6px;
+  font-size: 14px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+}
+
+.param-item .delete-param {
+  margin-left: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  background-color: #f44336;
+  color: #fff;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.param-item .delete-param:hover {
+  background-color: #d32f2f;
+}
+
+.param-item.active {
+  border-color: #4caf50;
+}
+body.dark .param-item.active {
+  border-color: #66bb6a;
+}
+
+/* 滚动条美化 */
+.list::-webkit-scrollbar,
+.param-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.list::-webkit-scrollbar-thumb,
+.param-list::-webkit-scrollbar-thumb {
+  background-color: #c1c1c1;
+  border-radius: 3px;
+}
+
+.list::-webkit-scrollbar-track,
+.param-list::-webkit-scrollbar-track {
+  background-color: transparent;
+}
