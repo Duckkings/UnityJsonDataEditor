@@ -45,6 +45,7 @@
   const paramWidthSlider = $("paramWidth");
   const paramWidthLabel = $("paramWidthLabel");
   const messageBox = $("message");
+  const helpBtn = $("helpBtn");
 
   // 行高调整滑块
   const rowHeightSlider = $("rowHeight");
@@ -72,6 +73,77 @@
   $("deleteInstance").addEventListener("click", deleteInstance);
   $("newParam").addEventListener("click", newParam);
   indexTemplateSelect.addEventListener("change", updateIndexParamOptions);
+  // 操作指南
+  if (helpBtn) {
+    helpBtn.addEventListener("click", () => {
+      const tips = [
+        '选择与多选:',
+        '  - 单击：单选；再次单击唯一选中项可取消',
+        '  - Ctrl+点击：增/减选中（模板/实例/参数）',
+        '  - Shift+点击：基于锚点的区间多选；无锚点时选当前',
+        '  - Shift+拖拽：拖出范围多选',
+        '',
+        '索引与跳转:',
+        '  - 右栏索引参数显示“索引值”输入框，可输入/选择目标值',
+        '  - Alt+点击索引参数：跳转到目标模板/实例，并尝试选中被索引字段',
+        '',
+        '其它快捷键:',
+        '  - Ctrl+C / Ctrl+V：复制 / 粘贴（按当前栏作用）',
+        '  - Delete：删除当前选择',
+        '  - F1：返回上一个选中的参数（不会写入历史）'
+      ].join('\n');
+      alert(tips);
+    });
+  }
+
+  // 参数选择历史（仅记录参数层级的选择）
+  const paramHistory = [];
+  function pushParamHistory() {
+    if (currentTemplateIndex < 0 || currentInstanceIndex < 0 || editingParamIndex < 0) return;
+    const tpl = templates[currentTemplateIndex];
+    const param = tpl.parameters[editingParamIndex];
+    if (!param) return;
+    const snapshot = {
+      templateName: tpl.name,
+      paramName: param.name,
+      instanceId: templates[currentTemplateIndex].instances[currentInstanceIndex]?.id ?? currentInstanceIndex,
+    };
+    // 若与栈顶相同则不重复压栈
+    const top = paramHistory[paramHistory.length - 1];
+    if (!top || top.templateName !== snapshot.templateName || top.paramName !== snapshot.paramName || top.instanceId !== snapshot.instanceId) {
+      paramHistory.push(snapshot);
+    }
+  }
+  function navigateToParamSnapshot(snap) {
+    if (!snap) return false;
+    const tIdx = templates.findIndex(t => t.name === snap.templateName);
+    if (tIdx < 0) return false;
+    currentTemplateIndex = tIdx;
+    selectedTemplates.clear();
+    selectedTemplates.add(tIdx);
+    const instIdx = templates[tIdx].instances.findIndex(i => (i.id === snap.instanceId));
+    currentInstanceIndex = instIdx >= 0 ? instIdx : (templates[tIdx].instances.length > 0 ? 0 : -1);
+    selectedInstances.clear();
+    if (currentInstanceIndex >= 0) selectedInstances.add(currentInstanceIndex);
+    const pIdx = templates[tIdx].parameters.findIndex(p => p.name === snap.paramName);
+    selectedParams.clear();
+    if (pIdx >= 0) {
+      selectedParams.add(pIdx);
+      editingParamIndex = pIdx;
+    } else {
+      editingParamIndex = -1;
+    }
+    templateNameInput.value = templates[currentTemplateIndex].name;
+    instanceNameInput.value = currentInstanceIndex >= 0 ? templates[currentTemplateIndex].instances[currentInstanceIndex].name : '';
+    // 确保编辑区域与所选参数同步（或清空）
+    showSelectedParamDetails();
+    refreshTemplates();
+    refreshInstances();
+    refreshParams();
+    updateIndexTemplateOptions();
+    lastSelectedCategory = 'param';
+    return true;
+  }
 
   // 夜间模式切换
   toggleDarkBtn.addEventListener("click", () => {
@@ -110,23 +182,39 @@
   function setupDragSelection(listEl, type) {
     listEl.addEventListener('mousedown', (e) => {
       if (!e.shiftKey) return;
-      const itemEl = e.target.closest(type === 'param' ? '.param-item' : 'li');
-      if (itemEl) {
-        dragSelect.isDragging = true;
-        dragSelect.type = type;
-        dragSelect.indices.clear();
-        e.preventDefault();
-      }
+      const selector = type === 'param' ? '.param-item' : 'li';
+      const itemEl = e.target.closest(selector);
+      if (!itemEl) return;
+      const items = Array.from(listEl.querySelectorAll(selector));
+      const idx = items.indexOf(itemEl);
+      if (idx < 0) return;
+      dragSelect.isDragging = false; // 初始为非拖拽，仅当移动到其他项时才置为 true
+      dragSelect.type = type;
+      dragSelect.indices.clear();
+      dragSelect.startIndex = idx;
     });
     listEl.addEventListener('mouseover', (e) => {
-      if (!dragSelect.isDragging || dragSelect.type !== type) return;
-      const items = Array.from(listEl.querySelectorAll(type === 'param' ? '.param-item' : 'li'));
-      const itemEl = e.target.closest(type === 'param' ? '.param-item' : 'li');
-      if (itemEl) {
-        const idx = items.indexOf(itemEl);
-        if (idx >= 0 && !dragSelect.indices.has(idx)) {
-          dragSelect.indices.add(idx);
-          itemEl.classList.add('selecting');
+      if (dragSelect.type !== type) return;
+      // 仅在按住鼠标左键进行移动时才认为是拖拽
+      if ((e.buttons & 1) !== 1) return;
+      const selector = type === 'param' ? '.param-item' : 'li';
+      const items = Array.from(listEl.querySelectorAll(selector));
+      const itemEl = e.target.closest(selector);
+      if (!itemEl) return;
+      const idx = items.indexOf(itemEl);
+      if (idx < 0) return;
+      if (dragSelect.startIndex === undefined) dragSelect.startIndex = idx;
+      if (idx !== dragSelect.startIndex) {
+        dragSelect.isDragging = true;
+        dragSelect.indices.clear();
+        // 清除旧的 selecting 临时样式
+        listEl.querySelectorAll('.selecting').forEach((el) => el.classList.remove('selecting'));
+        const start = Math.min(dragSelect.startIndex, idx);
+        const end = Math.max(dragSelect.startIndex, idx);
+        for (let i = start; i <= end; i++) {
+          dragSelect.indices.add(i);
+          const el = items[i];
+          if (el) el.classList.add('selecting');
         }
       }
     });
@@ -140,10 +228,9 @@
     const type = dragSelect.type;
     const indices = Array.from(dragSelect.indices);
     if (type === 'template') {
-      indices.forEach((idx) => {
-        if (selectedTemplates.has(idx)) selectedTemplates.delete(idx);
-        else selectedTemplates.add(idx);
-      });
+      // 拖拽结束：将选择集设置为拖拽范围（不使用切换）
+      selectedTemplates.clear();
+      indices.forEach((idx) => selectedTemplates.add(idx));
       // 更新 currentTemplateIndex 为最后一个选中的
       if (indices.length > 0) {
         currentTemplateIndex = indices[indices.length - 1];
@@ -158,10 +245,8 @@
       refreshParams();
       lastSelectedCategory = 'template';
     } else if (type === 'instance') {
-      indices.forEach((idx) => {
-        if (selectedInstances.has(idx)) selectedInstances.delete(idx);
-        else selectedInstances.add(idx);
-      });
+      selectedInstances.clear();
+      indices.forEach((idx) => selectedInstances.add(idx));
       if (indices.length > 0) {
         currentInstanceIndex = indices[indices.length - 1];
         instanceNameInput.value = templates[currentTemplateIndex].instances[currentInstanceIndex]?.name || '';
@@ -171,10 +256,10 @@
       refreshParams();
       lastSelectedCategory = 'instance';
     } else if (type === 'param') {
-      indices.forEach((idx) => {
-        if (selectedParams.has(idx)) selectedParams.delete(idx);
-        else selectedParams.add(idx);
-      });
+      // 应用拖拽范围前记录历史
+      pushParamHistory();
+      selectedParams.clear();
+      indices.forEach((idx) => selectedParams.add(idx));
       if (indices.length > 0) {
         // last selected param index
         const idx = indices[indices.length - 1];
@@ -193,7 +278,9 @@
       templateListEl.querySelectorAll('.selecting').forEach((el) => el.classList.remove('selecting'));
     }
     dragSelect.isDragging = false;
+    dragSelect.type = null;
     dragSelect.indices.clear();
+    dragSelect.startIndex = undefined;
   });
 
   // 监听名称输入框，回车或者失焦时更新名称
@@ -256,12 +343,14 @@
   }
   setupClearOnBlank(templateListEl, 'template');
   setupClearOnBlank(instanceListEl, 'instance');
-  setupClearOnBlank(paramListEl, 'param');
+  // 移除右栏（参数）空白处取消选中
+  // setupClearOnBlank(paramListEl, 'param');
 
   // 监听整个面板的空白点击，支持取消选中
   setupClearOnBlank(templatePanelEl, 'template');
   setupClearOnBlank(instancePanelEl, 'instance');
-  setupClearOnBlank(paramPanelEl, 'param');
+  // 移除右栏（参数面板）空白处取消选中
+  // setupClearOnBlank(paramPanelEl, 'param');
 
   // 全局快捷键：复制、粘贴、删除
   document.addEventListener('keydown', (e) => {
@@ -279,6 +368,16 @@
     if (e.key === 'Delete') {
       e.preventDefault();
       handleDelete();
+    }
+    if (e.key === 'F1') {
+      e.preventDefault();
+      // 返回上一个参数（不入栈）
+      const prev = paramHistory.pop();
+      if (prev) {
+        navigateToParamSnapshot(prev);
+      } else {
+        showMessage('没有更多历史');
+      }
     }
   });
 
@@ -576,7 +675,11 @@
     const param = { name, type, index: indexObj };
     tpl.parameters.push(param);
     tpl.instances.forEach((inst) => {
-      inst.payload[name] = getDefaultValueForType(type);
+      if (indexObj) {
+        inst.payload[name] = { template: indexObj.template, by: indexObj.param, value: '' };
+      } else {
+        inst.payload[name] = getDefaultValueForType(type);
+      }
     });
     refreshParams();
     showMessage(`已创建新参数：${name}`);
@@ -600,6 +703,7 @@
     // 更新定义
     param.name = newName;
     param.type = newType;
+    const oldIndex = param.index;
     param.index = newIndexObj;
     // 对所有实例调整 payload
     tpl.instances.forEach((inst) => {
@@ -612,6 +716,26 @@
       if (oldType !== newType) {
         const val = inst.payload[newName];
         inst.payload[newName] = convertValueForType(val, newType);
+      }
+      // 如果索引配置变化，规范化/还原值
+      if (!oldIndex && newIndexObj) {
+        // 变为索引：把原值包进引用对象
+        const prev = inst.payload[newName];
+        inst.payload[newName] = { template: newIndexObj.template, by: newIndexObj.param, value: prev == null ? '' : String(prev) };
+      } else if (oldIndex && !newIndexObj) {
+        // 取消索引：取引用对象中的 value 作为当前类型的值
+        const ref = inst.payload[newName];
+        const raw = ref && typeof ref === 'object' ? ref.value : ref;
+        inst.payload[newName] = convertValueForType(raw, newType);
+      } else if (oldIndex && newIndexObj) {
+        // 索引存在但定义变化：同步 template/by 保留 value
+        const ref = inst.payload[newName];
+        if (!ref || typeof ref !== 'object') {
+          inst.payload[newName] = { template: newIndexObj.template, by: newIndexObj.param, value: ref == null ? '' : String(ref) };
+        } else {
+          ref.template = newIndexObj.template;
+          ref.by = newIndexObj.param;
+        }
       }
     });
   }
@@ -686,8 +810,26 @@
       if (selectedTemplates.has(idx)) li.classList.add('active');
       li.textContent = tpl.name;
       li.addEventListener('click', (e) => {
+        // Ctrl+点击：切换该项选中状态（不丢失已有选择）
+        if (e.ctrlKey) {
+          if (selectedTemplates.has(idx)) {
+            selectedTemplates.delete(idx);
+          } else {
+            selectedTemplates.add(idx);
+          }
+          const arr = Array.from(selectedTemplates).sort((a,b)=>a-b);
+          if (arr.length > 0) {
+            currentTemplateIndex = arr[arr.length - 1];
+            templateNameInput.value = templates[currentTemplateIndex].name;
+            anchorTemplate = currentTemplateIndex;
+          } else {
+            currentTemplateIndex = -1;
+            templateNameInput.value = '';
+            instanceNameInput.value = '';
+            anchorTemplate = null;
+          }
         // Shift+点击范围选择
-        if (e.shiftKey) {
+        } else if (e.shiftKey) {
           // 如果未设置锚点，则以当前选中模板或自身为锚点
           if (anchorTemplate === null) {
             anchorTemplate = currentTemplateIndex >= 0 ? currentTemplateIndex : idx;
@@ -703,6 +845,28 @@
           // 更新锚点为当前
           anchorTemplate = idx;
         } else {
+          // 单击已选中的唯一模板 => 取消选中
+          if (selectedTemplates.has(idx) && selectedTemplates.size === 1) {
+            selectedTemplates.clear();
+            currentTemplateIndex = -1;
+            currentInstanceIndex = -1;
+            templateNameInput.value = '';
+            instanceNameInput.value = '';
+            selectedInstances.clear();
+            selectedParams.clear();
+            editingParamIndex = -1;
+            // 清除锚点
+            anchorTemplate = null;
+            anchorInstance = null;
+            anchorParam = null;
+            refreshTemplates();
+            refreshInstances();
+            refreshParams();
+            updateIndexTemplateOptions();
+            lastSelectedCategory = 'template';
+            e.stopPropagation();
+            return;
+          }
           // 单选
           selectedTemplates.clear();
           selectedTemplates.add(idx);
@@ -712,7 +876,7 @@
           anchorTemplate = idx;
         }
         // 切换模板时，重置实例和参数选择
-        currentInstanceIndex = templates[currentTemplateIndex].instances.length > 0 ? 0 : -1;
+        currentInstanceIndex = currentTemplateIndex >= 0 && templates[currentTemplateIndex].instances.length > 0 ? 0 : -1;
         selectedInstances.clear();
         selectedParams.clear();
         editingParamIndex = -1;
@@ -759,7 +923,22 @@
       if (selectedInstances.has(idx)) li.classList.add('active');
       li.textContent = `${inst.id}: ${inst.name}`;
       li.addEventListener('click', (e) => {
-        if (e.shiftKey) {
+        if (e.ctrlKey) {
+          // Ctrl+点击：切换该实例选中状态
+          if (selectedInstances.has(idx)) {
+            selectedInstances.delete(idx);
+          } else {
+            selectedInstances.add(idx);
+          }
+          const arr = Array.from(selectedInstances).sort((a,b)=>a-b);
+          if (arr.length > 0) {
+            currentInstanceIndex = arr[arr.length - 1];
+          } else {
+            currentInstanceIndex = -1;
+          }
+          // 更新实例锚点
+          anchorInstance = currentInstanceIndex >= 0 ? currentInstanceIndex : null;
+        } else if (e.shiftKey) {
           // 如果未设置实例锚点，则以当前实例索引为锚点
           if (anchorInstance === null) {
             anchorInstance = currentInstanceIndex >= 0 ? currentInstanceIndex : idx;
@@ -774,13 +953,30 @@
           // 更新实例锚点
           anchorInstance = idx;
         } else {
+          // 单击已选中的唯一实例 => 取消选中
+          if (selectedInstances.has(idx) && selectedInstances.size === 1) {
+            selectedInstances.clear();
+            currentInstanceIndex = -1;
+            instanceNameInput.value = '';
+            // 清除参数选择与锚点
+            selectedParams.clear();
+            editingParamIndex = -1;
+            anchorParam = null;
+            refreshInstances();
+            refreshParams();
+            lastSelectedCategory = 'instance';
+            e.stopPropagation();
+            return;
+          }
           selectedInstances.clear();
           selectedInstances.add(idx);
           currentInstanceIndex = idx;
           // 更新实例锚点
           anchorInstance = idx;
         }
-        instanceNameInput.value = inst.name;
+        instanceNameInput.value = (currentTemplateIndex >= 0 && currentInstanceIndex >= 0)
+          ? templates[currentTemplateIndex].instances[currentInstanceIndex].name
+          : '';
         // 切换实例时清除参数选择
         selectedParams.clear();
         editingParamIndex = -1;
@@ -834,8 +1030,60 @@
       if (p.index) {
         const info = document.createElement('span');
         info.textContent = `索引：${p.index.template} → ${p.index.param}`;
-        info.style.flex = '1';
+        info.style.marginRight = '8px';
         item.appendChild(info);
+
+        // 为索引参数提供可编辑的 value 输入框（并规范化存储结构）
+        let refObj = inst.payload[p.name];
+        if (refObj == null) {
+          refObj = { template: p.index.template, by: p.index.param, value: '' };
+          inst.payload[p.name] = refObj;
+        } else if (typeof refObj !== 'object') {
+          refObj = { template: p.index.template, by: p.index.param, value: String(refObj) };
+          inst.payload[p.name] = refObj;
+        } else {
+          refObj.template = p.index.template;
+          refObj.by = p.index.param;
+          if (refObj.value == null) refObj.value = '';
+        }
+
+        // datalist 建议（来自目标模板对应字段的值）
+        const suggestId = `idx-suggest-${p.name}`;
+        const dataList = document.createElement('datalist');
+        dataList.id = suggestId;
+        const targetTpl = templates.find(t => t.name === p.index.template);
+        if (targetTpl) {
+          const seen = new Set();
+          targetTpl.instances.forEach(it => {
+            const v = it.payload ? it.payload[p.index.param] : undefined;
+            const sv = v == null ? '' : String(v);
+            if (sv && !seen.has(sv)) {
+              seen.add(sv);
+              const opt = document.createElement('option');
+              opt.value = sv;
+              dataList.appendChild(opt);
+            }
+          });
+        }
+        item.appendChild(dataList);
+
+        const inputElIdx = document.createElement('input');
+        inputElIdx.type = 'text';
+        inputElIdx.style.flex = '1';
+        inputElIdx.placeholder = '索引值';
+        inputElIdx.setAttribute('list', suggestId);
+        inputElIdx.value = refObj.value ?? '';
+        inputElIdx.addEventListener('change', () => {
+          let obj = inst.payload[p.name];
+          if (!obj || typeof obj !== 'object') {
+            obj = { template: p.index.template, by: p.index.param, value: '' };
+            inst.payload[p.name] = obj;
+          }
+          obj.template = p.index.template;
+          obj.by = p.index.param;
+          obj.value = inputElIdx.value;
+        });
+        item.appendChild(inputElIdx);
       } else {
         let inputEl;
         const value = inst.payload[p.name];
@@ -883,12 +1131,80 @@
         deleteParam(idx);
       });
       item.appendChild(del);
-      // 单击参数项选择/取消选择
+      // 单击参数项选择/取消选择，或执行 Alt 跳转
       item.addEventListener('click', (e) => {
         // 点击输入或删除按钮不触发选择逻辑
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
-        if (e.shiftKey) {
+        // Alt+点击：若为索引参数则跳转
+        if (e.altKey && p.index) {
+          // 将当前参数选择压栈
+          pushParamHistory();
+          const ref = inst.payload[p.name];
+          const targetTplName = ref && typeof ref === 'object' ? (ref.template || p.index.template) : p.index.template;
+          const byField = ref && typeof ref === 'object' ? (ref.by || p.index.param) : p.index.param;
+          const byValue = ref && typeof ref === 'object' ? (ref.value ?? '') : '';
+          const tIdx = templates.findIndex(t => t.name === targetTplName);
+          if (tIdx < 0) {
+            showMessage('未找到目标模板');
+            return;
+          }
+          currentTemplateIndex = tIdx;
+          selectedTemplates.clear();
+          selectedTemplates.add(tIdx);
+          const t = templates[tIdx];
+          let iIdx = -1;
+          for (let i = 0; i < t.instances.length; i++) {
+            const v = t.instances[i].payload ? t.instances[i].payload[byField] : undefined;
+            if ((v !== undefined && v !== null) && String(v) === String(byValue)) { iIdx = i; break; }
+          }
+        if (iIdx < 0) {
+          showMessage('未找到符合索引值的实例');
+          // 仍然跳到模板，清空实例与参数
+          currentInstanceIndex = -1;
+          selectedInstances.clear();
+          selectedParams.clear();
+          editingParamIndex = -1;
+        } else {
+          currentInstanceIndex = iIdx;
+          selectedInstances.clear();
+          selectedInstances.add(iIdx);
+          // 选中目标字段对应的参数（若存在）
+          const pIdx = t.parameters.findIndex(pp => pp.name === byField);
+          selectedParams.clear();
+          if (pIdx >= 0) {
+            selectedParams.add(pIdx);
+            editingParamIndex = pIdx;
+          } else {
+            editingParamIndex = -1;
+            showMessage('目标字段为系统字段或不存在，未选中参数');
+          }
+        }
+        templateNameInput.value = templates[currentTemplateIndex]?.name || '';
+        instanceNameInput.value = (currentTemplateIndex >= 0 && currentInstanceIndex >= 0) ? templates[currentTemplateIndex].instances[currentInstanceIndex].name : '';
+        // 同步编辑区域，避免残留上一次的参数信息
+        showSelectedParamDetails();
+        refreshTemplates();
+        refreshInstances();
+        refreshParams();
+        updateIndexTemplateOptions();
+        lastSelectedCategory = 'param';
+        e.stopPropagation();
+        return;
+      }
+        if (e.ctrlKey) {
+          // Ctrl+点击：切换该参数选中状态
+          pushParamHistory();
+          if (selectedParams.has(idx)) {
+            selectedParams.delete(idx);
+          } else {
+            selectedParams.add(idx);
+          }
+          const arr = Array.from(selectedParams).sort((a,b)=>a-b);
+          editingParamIndex = arr.length > 0 ? arr[arr.length - 1] : -1;
+          anchorParam = editingParamIndex >= 0 ? editingParamIndex : null;
+        } else if (e.shiftKey) {
           // 如果未设置锚点，则以当前正在编辑的参数或本次索引为锚点
+          pushParamHistory();
           if (anchorParam === null) {
             if (editingParamIndex >= 0) {
               anchorParam = editingParamIndex;
@@ -905,10 +1221,19 @@
           editingParamIndex = idx;
           anchorParam = idx;
         } else {
-          selectedParams.clear();
-          selectedParams.add(idx);
-          editingParamIndex = idx;
-          anchorParam = idx;
+          // 普通点击前，记录当前参数到历史
+          if (editingParamIndex !== idx) pushParamHistory();
+          // 单击已选中的唯一参数 => 取消选中
+          if (selectedParams.has(idx) && selectedParams.size === 1) {
+            selectedParams.clear();
+            editingParamIndex = -1;
+            anchorParam = null;
+          } else {
+            selectedParams.clear();
+            selectedParams.add(idx);
+            editingParamIndex = idx;
+            anchorParam = idx;
+          }
         }
         showSelectedParamDetails();
         refreshParams();
@@ -1263,9 +1588,27 @@
     lines.push("    public string template;");
     lines.push("    public int id;");
     lines.push("    public string name;");
+    // 如果存在索引参数，生成嵌套的引用类型，避免跨文件重名
+    const hasIndexParams = Array.isArray(tpl.parameters) && tpl.parameters.some(p => p && p.index);
+    if (hasIndexParams) {
+      lines.push("");
+      lines.push("    [Serializable]");
+      lines.push("    public class Ref");
+      lines.push("    {");
+      lines.push("        public string template;");
+      lines.push("        public string by;");
+      lines.push("        public string value;");
+      lines.push("    }");
+      lines.push("");
+    }
     tpl.parameters.forEach((p) => {
-      const csType = mapToCSharpType(p.type);
-      lines.push(`    public ${csType} ${p.name};`);
+      if (!p) return;
+      if (p.index) {
+        lines.push(`    public Ref ${p.name};`);
+      } else {
+        const csType = mapToCSharpType(p.type);
+        lines.push(`    public ${csType} ${p.name};`);
+      }
     });
     lines.push("}");
     return lines.join("\n");
@@ -1322,8 +1665,8 @@
         el.style.display = 'none';
       }
     }
-    // 如果只有一个匹配项，则自动选择
-    if (visibleCount === 1 && !isParamList) {
+    // 仅在存在搜索关键字时，且只有一个匹配项时自动选择
+    if (visibleCount === 1 && !isParamList && lower.length > 0) {
       if (listEl === templateListEl) {
         const li = listEl.children[lastVisibleIndex];
         li.click();
