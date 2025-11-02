@@ -6,6 +6,7 @@
   let directoryHandle = null;
   let csharpHandle = null;
   let dataEntityHandle = null;
+  let modelStructHandle = null;
   // 剪贴板，用于复制粘贴不同类型的条目
   // { type: 'template' | 'instance' | 'param', items: Array<any>, extra?: any }
   let copyBuffer = null;
@@ -31,6 +32,7 @@
   const paramTypeSelect = $("paramType");
   const indexTemplateSelect = $("indexTemplate");
   const indexParamSelect = $("indexParam");
+  const templateIndexFieldSelect = $("templateIndexField");
   const templateListEl = $("templateList");
   const instanceListEl = $("instanceList");
   const paramListEl = $("paramList");
@@ -73,6 +75,7 @@
   $("deleteInstance").addEventListener("click", deleteInstance);
   $("newParam").addEventListener("click", newParam);
   indexTemplateSelect.addEventListener("change", updateIndexParamOptions);
+  // 模板索引字段的选择移动到右栏“index”保留项上进行，不在头部下拉处理
   // 操作指南
   if (helpBtn) {
     helpBtn.addEventListener("click", () => {
@@ -392,6 +395,87 @@
     }, 2000);
   }
 
+  // 持久化：使用 IndexedDB 保存最近一次的工作目录句柄
+  const DB_NAME = 'json-editor';
+  const DB_STORE = 'handles';
+  function openDB() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(DB_STORE)) {
+          db.createObjectStore(DB_STORE, { keyPath: 'key' });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  async function saveLastDirectoryHandle(handle) {
+    try {
+      const db = await openDB();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(DB_STORE, 'readwrite');
+        tx.objectStore(DB_STORE).put({ key: 'workdir', handle });
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch (e) {
+      console.warn('保存目录句柄失败', e);
+    }
+  }
+  async function getLastDirectoryHandle() {
+    try {
+      const db = await openDB();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(DB_STORE, 'readonly');
+        const req = tx.objectStore(DB_STORE).get('workdir');
+        req.onsuccess = () => resolve(req.result ? req.result.handle : null);
+        req.onerror = () => reject(req.error);
+      });
+    } catch (e) {
+      return null;
+    }
+  }
+  async function verifyPermission(handle, readWrite = false) {
+    if (!handle) return false;
+    const opts = { mode: readWrite ? 'readwrite' : 'read' };
+    try {
+      if (handle.queryPermission) {
+        const p = await handle.queryPermission(opts);
+        if (p === 'granted') return true;
+        if (p === 'prompt' && handle.requestPermission) {
+          const r = await handle.requestPermission(opts);
+          return r === 'granted';
+        }
+        return false;
+      }
+    } catch {}
+    return true;
+  }
+  async function autoRestoreLastDirectory() {
+    try {
+      const handle = await getLastDirectoryHandle();
+      if (!handle) return;
+      // 申请持久化存储，提升恢复成功率
+      if (navigator.storage && navigator.storage.persist) {
+        try { await navigator.storage.persist(); } catch {}
+      }
+      const ok = await verifyPermission(handle, true);
+      if (!ok) return;
+      directoryHandle = handle;
+      currentDirLabel.textContent = directoryHandle.name;
+      await ensureSubFolders();
+      await ensureModelStruct();
+      await loadAllTemplates();
+      refreshTemplates();
+      updateIndexTemplateOptions();
+      showMessage('已自动恢复上次工作目录');
+    } catch (err) {
+      console.warn('自动恢复目录失败', err);
+    }
+  }
+
   /**
    * 选择工作目录
    */
@@ -400,6 +484,7 @@
       directoryHandle = await window.showDirectoryPicker();
       currentDirLabel.textContent = directoryHandle.name;
       await ensureSubFolders();
+      await ensureModelStruct();
       await loadAllTemplates();
       refreshTemplates();
       updateIndexTemplateOptions();
@@ -441,6 +526,73 @@
   }
 
   /**
+   * 确保 csharpDate/modelstruct 与 modelCsharpe.cs 存在
+   */
+  async function ensureModelStruct() {
+    if (!csharpHandle) return;
+    try {
+      modelStructHandle = await csharpHandle.getDirectoryHandle("modelstruct", { create: true });
+      // 检测或创建 modelCsharpe.cs
+      let exists = true;
+      try {
+        await modelStructHandle.getFileHandle("modelCsharpe.cs", { create: false });
+      } catch (_) {
+        exists = false;
+      }
+        // 始终写入固定模板内容
+        const content = [
+          'using System;',
+          'using System.Collections.Generic;',
+          '',
+          '[Serializable]',
+          'public class TableSchema',
+          '{',
+          '    public string name;',
+          '    public string indexField;',
+          '    public List<ParamDef> parameters;',
+          '    public List<Row> instances;',
+          '}',
+          '',
+          '[Serializable]',
+          'public class ParamDef',
+          '{',
+          '    public string name;',
+          '    public string type;',
+          '    public object index;',
+          '}',
+          '',
+          '[Serializable]',
+          'public class Row',
+          '{',
+          '    public int id;',
+          '    public string name;',
+          '    public Dictionary<string, object> payload; // 或Newtonsoft.Json.Linq.JObject payload;',
+          '}',
+          '',
+          '[Serializable]',
+          '[JsonConverter(typeof(DataRefConverter))] // 全局指定这个类型走自定义解析',
+          'public class DataRef',
+          '{',
+          '    public string template;  // 对应 JSON 里的 "template"',
+          '    public string by;        // 对应 JSON 里的 "by"',
+          '    public string value;     // 对应 JSON 里的 "value"',
+          '',
+          '    [JsonIgnore]',
+          '    public object instance;  // 解析完后指向目标实例',
+          '}',
+          ''
+        ].join('\n');
+        const file = await modelStructHandle.getFileHandle("modelCsharpe.cs", { create: true });
+        const writable = await file.createWritable();
+        await writable.write(content);
+        await writable.close();
+      
+    } catch (e) {
+      console.warn('ensureModelStruct failed', e);
+    }
+  }
+
+  /**
    * 从 dataEntity 读取所有模板文件
    */
   async function loadAllTemplates() {
@@ -458,6 +610,7 @@
               name: obj.name,
               parameters: obj.parameters,
               instances: obj.instances,
+              indexField: obj.indexField || 'id',
             });
           }
         } catch (err) {
@@ -485,12 +638,13 @@
     const instance = {
       id: 0,
       name: "默认",
-      payload: { template: name, id: 0, name: "默认" },
+      payload: { template: name, id: 0, name: "默认", index: '0' },
     };
     const template = {
       name,
       parameters: [],
       instances: [instance],
+      indexField: 'id',
     };
     templates.push(template);
     currentTemplateIndex = templates.length - 1;
@@ -543,6 +697,8 @@
     });
     inst.payload.template = tpl.name;
     inst.payload.id = nextId;
+    inst.payload.name = name;
+    inst.payload.index = String(getValueByFieldForInstance(tpl, inst, tpl.indexField || 'id'));
     inst.payload.name = name;
     tpl.instances.push(inst);
     currentInstanceIndex = tpl.instances.length - 1;
@@ -750,12 +906,15 @@
         return String(val);
       case 'int':
         return parseInt(val) || 0;
+      case 'long':
+        return parseInt(val) || 0;
       case 'float':
         return parseFloat(val) || 0;
       case 'bool':
         return Boolean(val);
       case 'list':
-        return Array.isArray(val) ? val : (val ? String(val).split(/\s*,\s*/) : []);
+        if (Array.isArray(val)) return val.map(v => (v == null ? '' : String(v)));
+        return val ? String(val).split(/\s*,\s*/) : [];
       case 'object':
         try {
           return typeof val === 'object' ? val : JSON.parse(val);
@@ -786,17 +945,25 @@
       case "string":
         return "";
       case "int":
+      case "long":
       case "float":
         return 0;
       case "bool":
         return false;
       case "list":
-        return [];
+        return [""];
       case "object":
         return {};
       default:
         return null;
     }
+  }
+
+  // 读取实例指定字段的值（支持保留字段和自定义字段）
+  function getValueByFieldForInstance(tpl, inst, fieldName) {
+    if (!inst || !inst.payload) return '';
+    if (fieldName === 'template' || fieldName === 'id' || fieldName === 'name') return inst.payload[fieldName];
+    return inst.payload[fieldName];
   }
 
   /**
@@ -806,6 +973,21 @@
     templateListEl.innerHTML = "";
     templates.forEach((tpl, idx) => {
       const li = document.createElement("li");
+      li.setAttribute('draggable','true');
+      li.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', String(idx)); });
+      li.addEventListener('dragover', (e) => { e.preventDefault(); });
+      li.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const from = parseInt(e.dataTransfer.getData('text/plain'));
+        const to = idx;
+        if (isNaN(from) || from === to) return;
+        const it = templates.splice(from,1)[0];
+        templates.splice(to,0,it);
+        if (currentTemplateIndex === from) currentTemplateIndex = to;
+        else if (from < currentTemplateIndex && to >= currentTemplateIndex) currentTemplateIndex--;
+        else if (from > currentTemplateIndex && to <= currentTemplateIndex) currentTemplateIndex++;
+        refreshTemplates();
+      });
       // 设置选中状态
       if (selectedTemplates.has(idx)) li.classList.add('active');
       li.textContent = tpl.name;
@@ -919,6 +1101,36 @@
     const tpl = templates[currentTemplateIndex];
     tpl.instances.forEach((inst, idx) => {
       const li = document.createElement("li");
+      li.setAttribute('draggable','true');
+      li.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', String(idx)); });
+      li.addEventListener('dragover', (e) => { e.preventDefault(); });
+      li.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const from = parseInt(e.dataTransfer.getData('text/plain'));
+        const to = idx;
+        if (isNaN(from) || from === to) return;
+        const it = tpl.instances.splice(from,1)[0];
+        tpl.instances.splice(to,0,it);
+        if (currentInstanceIndex === from) currentInstanceIndex = to;
+        else if (from < currentInstanceIndex && to >= currentInstanceIndex) currentInstanceIndex--;
+        else if (from > currentInstanceIndex && to <= currentInstanceIndex) currentInstanceIndex++;
+        refreshInstances();
+      });
+      li.setAttribute('draggable','true');
+      li.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', String(idx)); });
+      li.addEventListener('dragover', (e) => { e.preventDefault(); });
+      li.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const from = parseInt(e.dataTransfer.getData('text/plain'));
+        const to = idx;
+        if (isNaN(from) || from === to) return;
+        const it = tpl.instances.splice(from,1)[0];
+        tpl.instances.splice(to,0,it);
+        if (currentInstanceIndex === from) currentInstanceIndex = to;
+        else if (from < currentInstanceIndex && to >= currentInstanceIndex) currentInstanceIndex--;
+        else if (from > currentInstanceIndex && to <= currentInstanceIndex) currentInstanceIndex++;
+        refreshInstances();
+      });
       // 设置选中状态
       if (selectedInstances.has(idx)) li.classList.add('active');
       li.textContent = `${inst.id}: ${inst.name}`;
@@ -1006,17 +1218,50 @@
       { name: "template", type: "string" },
       { name: "id", type: "int" },
       { name: "name", type: "string" },
+      { name: "index", type: "string" },
     ];
     reserved.forEach((f) => {
       const item = document.createElement("div");
       item.classList.add("param-item", "reserved");
       const label = document.createElement("label");
       label.textContent = f.name;
-      const span = document.createElement("span");
-      span.textContent = inst.payload[f.name];
-      span.style.flex = "1";
       item.appendChild(label);
-      item.appendChild(span);
+      if (f.name === 'index') {
+        // 在 index 行放置“索引字段选择”下拉，选项来自该模板的所有可选字段
+        const select = document.createElement('select');
+        const candidates = ['id','name', ...tpl.parameters.map(p => p.name).filter(n => n !== 'index')];
+        candidates.forEach(n => {
+          const opt = document.createElement('option');
+          opt.value = n;
+          opt.textContent = n;
+          select.appendChild(opt);
+        });
+        select.value = tpl.indexField || 'id';
+        select.addEventListener('change', () => {
+          tpl.indexField = select.value || 'id';
+          // 同步整个模板的实例 index 值
+          tpl.instances.forEach(one => {
+            const vv = getValueByFieldForInstance(tpl, one, tpl.indexField);
+            if (!one.payload) one.payload = {};
+            one.payload.index = vv == null ? '' : String(vv);
+          });
+          refreshParams();
+        });
+        // 显示当前实例的 index 值（只读）
+        const valueSpan = document.createElement('span');
+        valueSpan.style.flex = '1';
+        const vNow = getValueByFieldForInstance(tpl, inst, tpl.indexField || 'id');
+        valueSpan.textContent = vNow == null ? '' : String(vNow);
+        if (!inst.payload) inst.payload = {};
+        inst.payload.index = valueSpan.textContent;
+        item.appendChild(select);
+        item.appendChild(valueSpan);
+      } else {
+        const span = document.createElement("span");
+        span.textContent = inst.payload[f.name];
+        span.style.flex = '1';
+        item.appendChild(span);
+      }
       paramListEl.appendChild(item);
     });
     // 自定义参数
@@ -1094,6 +1339,7 @@
             inputEl.value = value ?? '';
             break;
           case 'int':
+          case 'long':
           case 'float':
             inputEl = document.createElement('input');
             inputEl.type = 'number';
@@ -1105,9 +1351,58 @@
             inputEl.checked = !!value;
             break;
           case 'list':
-            inputEl = document.createElement('input');
-            inputEl.type = 'text';
-            inputEl.value = Array.isArray(value) ? value.join(', ') : '';
+            // 列表类型：渲染为多个子输入 + 操作按钮
+            let arr = Array.isArray(value) ? value.slice() : [];
+            if (arr.length === 0) arr = [""];
+            inst.payload[p.name] = arr;
+            const listWrap = document.createElement('div');
+            listWrap.style.display = 'flex';
+            listWrap.style.flexDirection = 'column';
+            listWrap.style.flex = '1';
+            const renderList = () => {
+              listWrap.innerHTML = '';
+              arr.forEach((val, i) => {
+                const row = document.createElement('div');
+                row.style.display = 'flex';
+                row.style.gap = '4px';
+                row.style.marginBottom = '4px';
+                const inp = document.createElement('input');
+                inp.type = 'text';
+                inp.value = val ?? '';
+                inp.style.flex = '1';
+                inp.addEventListener('change', () => {
+                  inst.payload[p.name][i] = inp.value;
+                });
+                row.appendChild(inp);
+                listWrap.appendChild(row);
+              });
+            };
+            renderList();
+            item.appendChild(listWrap);
+            const addBtn = document.createElement('button');
+            addBtn.textContent = '增加元素';
+            addBtn.style.marginLeft = '4px';
+            addBtn.addEventListener('click', (e2) => {
+              e2.stopPropagation();
+              inst.payload[p.name].push('');
+              arr = inst.payload[p.name];
+              renderList();
+            });
+            const removeBtn = document.createElement('button');
+            removeBtn.textContent = '删除元素';
+            removeBtn.style.marginLeft = '4px';
+            removeBtn.addEventListener('click', (e2) => {
+              e2.stopPropagation();
+              if (inst.payload[p.name].length > 1) {
+                inst.payload[p.name].pop();
+                arr = inst.payload[p.name];
+                renderList();
+              }
+            });
+            item.appendChild(addBtn);
+            item.appendChild(removeBtn);
+            // 跳过通用 inputEl 追加
+            inputEl = null;
             break;
           case 'object':
             inputEl = document.createElement('input');
@@ -1119,9 +1414,11 @@
             inputEl.type = 'text';
             inputEl.value = value ?? '';
         }
-        inputEl.style.flex = '1';
-        inputEl.addEventListener('change', () => updateParamValue(idx, inputEl));
-        item.appendChild(inputEl);
+        if (inputEl) {
+          inputEl.style.flex = '1';
+          inputEl.addEventListener('change', () => updateParamValue(idx, inputEl));
+          item.appendChild(inputEl);
+        }
       }
       const del = document.createElement('button');
       del.className = 'delete-param';
@@ -1261,6 +1558,9 @@
       case "int":
         inst.payload[param.name] = parseInt(inputEl.value) || 0;
         break;
+      case "long":
+        inst.payload[param.name] = parseInt(inputEl.value) || 0;
+        break;
       case "float":
         inst.payload[param.name] = parseFloat(inputEl.value) || 0;
         break;
@@ -1268,7 +1568,8 @@
         inst.payload[param.name] = inputEl.checked;
         break;
       case "list":
-        inst.payload[param.name] = inputEl.value ? inputEl.value.split(/\s*,\s*/) : [];
+        // 不使用通用处理（列表已在专用 UI 内处理），这里保底支持逗号分隔
+        inst.payload[param.name] = inputEl.value ? inputEl.value.split(/\s*,\s*/) : [""];
         break;
       case "object":
         try {
@@ -1551,7 +1852,7 @@
     }
     try {
       for (const tpl of templates) {
-        const json = JSON.stringify({ name: tpl.name, parameters: tpl.parameters, instances: tpl.instances }, null, 2);
+        const json = JSON.stringify({ name: tpl.name, indexField: tpl.indexField || 'id', parameters: tpl.parameters, instances: tpl.instances }, null, 2);
         const jsonFile = await dataEntityHandle.getFileHandle(`${tpl.name}.json`, { create: true });
         const jsonWritable = await jsonFile.createWritable();
         await jsonWritable.write(json);
@@ -1560,9 +1861,31 @@
         const csFile = await csharpHandle.getFileHandle(`${tpl.name}.cs`, { create: true });
         const csWritable = await csFile.createWritable();
         await csWritable.write(csContent);
-        await csWritable.close();
-      }
-      const manifest = templates.map((tpl) => ({ template: tpl.name, path: `dataEntity/${tpl.name}.json` }));
+      await csWritable.close();
+    }
+    // 如果有任意索引参数，生成/更新 DataRef.cs
+    if (templates.some(t => Array.isArray(t.parameters) && t.parameters.some(p => p && p.index))) {
+      const dataRefContent = [
+        'using System;',
+        'using System.Collections.Generic;',
+        '',
+        '[Serializable]',
+        'public class DataRef',
+        '{',
+        '    public string template;',
+        '    public string by;',
+        '    public string value;',
+        '    // 运行时可放置解析后的实例引用（可选）',
+        '    // public object instance;',
+        '}',
+        ''
+      ].join('\n');
+      const dataRefFile = await csharpHandle.getFileHandle('DataRef.cs', { create: true });
+      const dataRefWritable = await dataRefFile.createWritable();
+      await dataRefWritable.write(dataRefContent);
+      await dataRefWritable.close();
+    }
+    const manifest = templates.map((tpl) => ({ template: tpl.name, path: `dataEntity/${tpl.name}.json` }));
       const manifestHandle = await directoryHandle.getFileHandle("manifest.json", { create: true });
       const manifestWritable = await manifestHandle.createWritable();
       await manifestWritable.write(JSON.stringify(manifest, null, 2));
@@ -1588,23 +1911,21 @@
     lines.push("    public string template;");
     lines.push("    public int id;");
     lines.push("    public string name;");
-    // 如果存在索引参数，生成嵌套的引用类型，避免跨文件重名
-    const hasIndexParams = Array.isArray(tpl.parameters) && tpl.parameters.some(p => p && p.index);
-    if (hasIndexParams) {
-      lines.push("");
-      lines.push("    [Serializable]");
-      lines.push("    public class Ref");
-      lines.push("    {");
-      lines.push("        public string template;");
-      lines.push("        public string by;");
-      lines.push("        public string value;");
-      lines.push("    }");
-      lines.push("");
+    // 根据模板的索引字段生成 index 成员
+    const idxField = tpl.indexField || 'id';
+    let idxType = 'string';
+    if (idxField === 'id') idxType = 'long';
+    else if (idxField === 'name') idxType = 'string';
+    else {
+      const pp = tpl.parameters.find(p => p.name === idxField);
+      if (pp) idxType = mapToCSharpType(pp.type);
     }
+    lines.push(`    public ${idxType} index;`);
+    // 索引参数使用可复用的全局类型 DataRef（在保存时生成 DataRef.cs）
     tpl.parameters.forEach((p) => {
       if (!p) return;
       if (p.index) {
-        lines.push(`    public Ref ${p.name};`);
+        lines.push(`    public DataRef ${p.name};`);
       } else {
         const csType = mapToCSharpType(p.type);
         lines.push(`    public ${csType} ${p.name};`);
@@ -1623,6 +1944,8 @@
         return "string";
       case "int":
         return "int";
+      case "long":
+        return "long";
       case "float":
         return "float";
       case "bool":
@@ -1676,4 +1999,24 @@
       }
     }
   }
+  
+  // 默认使用暗色主题并自动恢复上次工作目录
+  window.addEventListener('DOMContentLoaded', async () => {
+    // 默认暗色
+    document.body.classList.add('dark');
+    // 重新绑定选择目录按钮，选择完成后保存句柄
+    const btn = document.getElementById('chooseDir');
+    if (btn) {
+      try { btn.removeEventListener('click', chooseDirectory); } catch {}
+      btn.addEventListener('click', async () => {
+        await chooseDirectory();
+        try {
+          if (navigator.storage && navigator.storage.persist) { try { await navigator.storage.persist(); } catch {} }
+          if (directoryHandle) { await saveLastDirectoryHandle(directoryHandle); }
+        } catch {}
+      });
+    }
+    // 自动恢复
+    await autoRestoreLastDirectory();
+  });
 })();

@@ -166,6 +166,10 @@ body.dark .toolbar button.primary {
   display: flex;
   gap: 4px;
 }
+ .index-selectors label {
+   font-size: 12px;
+   align-self: center;
+ }
 
 /* 搜索栏样式 */
 .search-bar {
@@ -340,4 +344,15 @@ body.dark .param-item.active {
 .list::-webkit-scrollbar-track,
 .param-list::-webkit-scrollbar-track {
   background-color: transparent;
+}
+
+/* 行高缩放时同步缩放字体，避免内容裁切 */
+.list li {
+  font-size: calc(14px * var(--row-scale));
+}
+.param-item label,
+.param-item input,
+.param-item select,
+.param-item span {
+  font-size: calc(14px * var(--row-scale));
 }

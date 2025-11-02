@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="style.css" />
     <script src="script.js" defer></script>
   </head>
-  <body>
+  <body class="dark">
     <div id="app">
       <!-- 文件工具栏 -->
       <header class="toolbar">
@@ -19,13 +19,13 @@
         <input id="paramWidth" type="range" min="1" max="3" step="0.1" value="1" title="调整参数栏比例" />
         <span id="paramWidthLabel" style="font-size:12px;">参数栏比例</span>
         <!-- 行高调整 -->
-        <input id="rowHeight" type="range" min="0.5" max="2" step="0.1" value="1" title="调整行高比例" />
+        <input id="rowHeight" type="range" min="0.1" max="2" step="0.1" value="1" title="调整行高比例" />
         <span id="rowHeightLabel" style="font-size:12px;">行高比例</span>
         <div id="message" class="message" style="display:none"></div>
       </header>
       <!-- 主内容区域：三列布局 -->
       <main class="container">
-        <!-- 模板列表栏 -->
+        <!-- 模板列表 -->
         <section class="panel templates">
           <div class="panel-header">
             <input id="templateName" type="text" placeholder="模板名" />
@@ -34,7 +34,7 @@
           <div class="search-bar"><input id="searchTemplates" type="text" placeholder="搜索模板" /></div>
           <ul id="templateList" class="list"></ul>
         </section>
-        <!-- 数据实例栏 -->
+        <!-- 数据实例 -->
         <section class="panel instances">
           <div class="panel-header">
             <input id="instanceName" type="text" placeholder="实例名" />
@@ -48,7 +48,7 @@
           <div class="search-bar"><input id="searchInstances" type="text" placeholder="搜索实例" /></div>
           <ul id="instanceList" class="list"></ul>
         </section>
-        <!-- 参数编辑栏 -->
+        <!-- 参数编辑 -->
         <section class="panel parameters">
           <div class="panel-header">
             <input id="paramName" type="text" placeholder="参数名" />
@@ -56,6 +56,7 @@
               <option value="string">字符串</option>
               <option value="int">整数</option>
               <option value="float">浮点数</option>
+              <option value="long">长整型</option>
               <option value="bool">布尔</option>
               <option value="list">列表</option>
               <option value="object">对象</option>
@@ -65,6 +66,10 @@
               <select id="indexTemplate"></select>
               <select id="indexParam"></select>
             </div>
+            <div class="index-selectors">
+              <label for="templateIndexField">模板索引字段</label>
+              <select id="templateIndexField"></select>
+            </div>
           </div>
           <div class="search-bar"><input id="searchParams" type="text" placeholder="搜索参数" /></div>
           <div id="paramList" class="param-list"></div>
@@ -72,4 +77,4 @@
       </main>
     </div>
   </body>
-</html>
+  </html>
