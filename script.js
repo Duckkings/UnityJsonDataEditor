@@ -30,6 +30,11 @@
   const instanceNameInput = $("instanceName");
   const paramNameInput = $("paramName");
   const paramTypeSelect = $("paramType");
+  const builtinParamTypeOptions = Array.from(paramTypeSelect.options).map((opt) => ({
+    value: opt.value,
+    label: opt.textContent,
+  }));
+  const builtinParamTypeSet = new Set(builtinParamTypeOptions.map((opt) => opt.value));
   const indexTemplateSelect = $("indexTemplate");
   const indexParamSelect = $("indexParam");
   const templateIndexFieldSelect = $("templateIndexField");
@@ -98,6 +103,8 @@
       alert(tips);
     });
   }
+
+  refreshParamTypeOptions();
 
   // 参数选择历史（仅记录参数层级的选择）
   const paramHistory = [];
@@ -606,12 +613,19 @@
           const text = await file.text();
           const obj = JSON.parse(text);
           if (obj && obj.name && Array.isArray(obj.parameters) && Array.isArray(obj.instances)) {
-            templates.push({
+            const template = {
               name: obj.name,
               parameters: obj.parameters,
               instances: obj.instances,
               indexField: obj.indexField || 'id',
-            });
+            };
+            if (isEnumTemplate(template) && Array.isArray(template.parameters)) {
+              template.parameters = template.parameters.map((param) => {
+                if (!param) return param;
+                return { ...param, type: 'string' };
+              });
+            }
+            templates.push(template);
           }
         } catch (err) {
           showMessage(`无法解析 ${entry.name}，已跳过`);
@@ -806,14 +820,17 @@
       showMessage("请输入参数名称");
       return;
     }
-    const type = paramTypeSelect.value;
+    const tpl = templates[currentTemplateIndex];
+    let type = paramTypeSelect.value;
+    if (isEnumTemplate(tpl)) {
+      type = 'string';
+    }
     const idxTpl = indexTemplateSelect.value;
     const idxParam = indexParamSelect.value;
     let indexObj = null;
     if (idxTpl && idxParam) {
       indexObj = { template: idxTpl, param: idxParam };
     }
-    const tpl = templates[currentTemplateIndex];
     // 如果正在编辑参数
     if (editingParamIndex >= 0) {
       updateParamAtIndex(editingParamIndex, name, type, indexObj);
@@ -853,6 +870,9 @@
     if (tpl.parameters.some((p, i) => p.name === newName && i !== index)) {
       alert("参数名称已存在");
       return;
+    }
+    if (isEnumTemplate(tpl)) {
+      newType = 'string';
     }
     const oldName = param.name;
     const oldType = param.type;
@@ -900,6 +920,12 @@
    * 根据新类型转换现有值，简单处理
    */
   function convertValueForType(val, type) {
+    if (isEnumType(type)) {
+      const enums = getEnumValues(type);
+      const str = val == null ? '' : String(val);
+      if (enums && enums.includes(str)) return str;
+      return (enums && enums.length > 0) ? enums[0] : '';
+    }
     if (val === undefined || val === null) return getDefaultValueForType(type);
     switch (type) {
       case 'string':
@@ -941,6 +967,10 @@
    * 根据类型获取默认值
    */
   function getDefaultValueForType(type) {
+    if (isEnumType(type)) {
+      const enums = getEnumValues(type);
+      return (enums && enums.length > 0) ? enums[0] : '';
+    }
     switch (type) {
       case "string":
         return "";
@@ -956,6 +986,155 @@
         return {};
       default:
         return null;
+    }
+  }
+
+  function isEnumTemplate(tpl) {
+    return tpl && tpl.name === 'enum';
+  }
+
+  function getEnumTemplate() {
+    return templates.find((tpl) => isEnumTemplate(tpl));
+  }
+
+  function getEnumDefinitions() {
+    const enumTpl = getEnumTemplate();
+    if (!enumTpl || !Array.isArray(enumTpl.instances)) return [];
+    const paramNames = Array.isArray(enumTpl.parameters)
+      ? enumTpl.parameters.map((p) => p && p.name).filter((name) => typeof name === 'string' && name.length > 0)
+      : [];
+    const definitions = [];
+    const usedTypeNames = new Set();
+    enumTpl.instances.forEach((inst, idx) => {
+      if (!inst) return;
+      const displayName = (inst.name && inst.name.trim()) ? inst.name.trim() : `Enum${inst.id ?? idx}`;
+      const fallbackName = `Enum${inst.id ?? idx}`;
+      const baseName = sanitizeCSharpTypeName(displayName || fallbackName, fallbackName);
+      let csharpName = baseName;
+      let suffix = 1;
+      while (usedTypeNames.has(csharpName)) {
+        csharpName = `${baseName}_${suffix++}`;
+      }
+      usedTypeNames.add(csharpName);
+      const payload = inst.payload || {};
+      const seen = new Set();
+      const values = [];
+      paramNames.forEach((paramName) => {
+        const raw = payload[paramName];
+        if (raw === undefined || raw === null) return;
+        const str = String(raw).trim();
+        if (!str || seen.has(str)) return;
+        seen.add(str);
+        values.push(str);
+      });
+      definitions.push({
+        name: displayName,
+        csharpName,
+        values,
+      });
+    });
+    return definitions;
+  }
+
+  function getEnumDefinition(type) {
+    if (!type) return null;
+    const defs = getEnumDefinitions();
+    return defs.find((def) => def.name === type) || null;
+  }
+
+  function isEnumType(type) {
+    return Boolean(getEnumDefinition(type));
+  }
+
+  function getEnumValues(type) {
+    const def = getEnumDefinition(type);
+    return def ? def.values.slice() : null;
+  }
+
+  function getEnumCSharpTypeName(type) {
+    const def = getEnumDefinition(type);
+    return def ? def.csharpName : type;
+  }
+
+  function sanitizeCSharpTypeName(name, fallback) {
+    const base = (name || '').split(/[^A-Za-z0-9]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join('');
+    let result = base || fallback || 'EnumType';
+    result = result.replace(/[^A-Za-z0-9_]/g, '_');
+    if (/^[0-9]/.test(result)) {
+      result = `_${result}`;
+    }
+    return result || 'EnumType';
+  }
+
+  function sanitizeCSharpMemberName(name, fallback) {
+    const base = (name || '').split(/[^A-Za-z0-9]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join('');
+    let result = base || fallback || 'Member';
+    result = result.replace(/[^A-Za-z0-9_]/g, '_');
+    if (/^[0-9]/.test(result)) {
+      result = `_${result}`;
+    }
+    return result || 'Member';
+  }
+
+  function refreshParamTypeOptions() {
+    if (!paramTypeSelect) return;
+    const previousValue = paramTypeSelect.value;
+    const enumDefs = getEnumDefinitions();
+    const missingTypes = new Set();
+    templates.forEach((tpl) => {
+      if (!tpl || !Array.isArray(tpl.parameters)) return;
+      tpl.parameters.forEach((p) => {
+        if (!p || !p.type) return;
+        if (builtinParamTypeSet.has(p.type)) return;
+        if (enumDefs.some((def) => def.name === p.type)) return;
+        missingTypes.add(p.type);
+      });
+    });
+    paramTypeSelect.innerHTML = '';
+    builtinParamTypeOptions.forEach((opt) => {
+      const optionEl = document.createElement('option');
+      optionEl.value = opt.value;
+      optionEl.textContent = opt.label;
+      paramTypeSelect.appendChild(optionEl);
+    });
+    if (enumDefs.length > 0) {
+      const group = document.createElement('optgroup');
+      group.label = '枚举类型';
+      enumDefs
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'))
+        .forEach((def) => {
+          const opt = document.createElement('option');
+          opt.value = def.name;
+          opt.textContent = def.name;
+          group.appendChild(opt);
+        });
+      paramTypeSelect.appendChild(group);
+    }
+    if (missingTypes.size > 0) {
+      const missingGroup = document.createElement('optgroup');
+      missingGroup.label = '缺失类型';
+      Array.from(missingTypes).sort().forEach((typeName) => {
+        const opt = document.createElement('option');
+        opt.value = typeName;
+        opt.textContent = `${typeName} (缺失)`;
+        missingGroup.appendChild(opt);
+      });
+      paramTypeSelect.appendChild(missingGroup);
+    }
+    if (previousValue && Array.from(paramTypeSelect.options).some((opt) => opt.value === previousValue)) {
+      paramTypeSelect.value = previousValue;
+    } else {
+      paramTypeSelect.value = 'string';
+    }
+  }
+
+  function updateParamTypeSelectEnabledState() {
+    const tpl = templates[currentTemplateIndex];
+    const shouldDisable = Boolean(tpl && isEnumTemplate(tpl));
+    paramTypeSelect.disabled = shouldDisable;
+    if (shouldDisable) {
+      paramTypeSelect.value = 'string';
     }
   }
 
@@ -1210,6 +1389,8 @@
    */
   function refreshParams() {
     paramListEl.innerHTML = "";
+    updateParamTypeSelectEnabledState();
+    refreshParamTypeOptions();
     if (currentTemplateIndex < 0 || currentInstanceIndex < 0) return;
     const tpl = templates[currentTemplateIndex];
     const inst = tpl.instances[currentInstanceIndex];
@@ -1331,26 +1512,55 @@
         item.appendChild(inputElIdx);
       } else {
         let inputEl;
-        const value = inst.payload[p.name];
-        switch (p.type) {
-          case 'string':
-            inputEl = document.createElement('input');
-            inputEl.type = 'text';
-            inputEl.value = value ?? '';
-            break;
-          case 'int':
-          case 'long':
-          case 'float':
-            inputEl = document.createElement('input');
-            inputEl.type = 'number';
-            inputEl.value = value ?? 0;
-            break;
-          case 'bool':
-            inputEl = document.createElement('input');
-            inputEl.type = 'checkbox';
-            inputEl.checked = !!value;
-            break;
-          case 'list':
+        let value = inst.payload[p.name];
+        if (isEnumType(p.type)) {
+          const def = getEnumDefinition(p.type);
+          const select = document.createElement('select');
+          select.style.flex = '1';
+          const enumValues = def ? def.values : [];
+          value = convertValueForType(value, p.type);
+          if (inst.payload[p.name] !== value) {
+            inst.payload[p.name] = value;
+          }
+          if (enumValues && enumValues.length > 0) {
+            enumValues.forEach((val) => {
+              const opt = document.createElement('option');
+              opt.value = val;
+              opt.textContent = val;
+              select.appendChild(opt);
+            });
+          }
+          if (value && (!enumValues || !enumValues.includes(value))) {
+            const opt = document.createElement('option');
+            opt.value = value;
+            opt.textContent = value;
+            select.appendChild(opt);
+          }
+          select.value = value ?? '';
+          if (!enumValues || enumValues.length === 0) {
+            select.disabled = true;
+          }
+          inputEl = select;
+        } else {
+          switch (p.type) {
+            case 'string':
+              inputEl = document.createElement('input');
+              inputEl.type = 'text';
+              inputEl.value = value ?? '';
+              break;
+            case 'int':
+            case 'long':
+            case 'float':
+              inputEl = document.createElement('input');
+              inputEl.type = 'number';
+              inputEl.value = value ?? 0;
+              break;
+            case 'bool':
+              inputEl = document.createElement('input');
+              inputEl.type = 'checkbox';
+              inputEl.checked = !!value;
+              break;
+            case 'list':
             // 列表类型：渲染为多个子输入 + 操作按钮
             let arr = Array.isArray(value) ? value.slice() : [];
             if (arr.length === 0) arr = [""];
@@ -1408,14 +1618,17 @@
             inputEl = document.createElement('input');
             inputEl.type = 'text';
             inputEl.value = value && typeof value === 'object' ? JSON.stringify(value) : '';
-            break;
-          default:
-            inputEl = document.createElement('input');
-            inputEl.type = 'text';
-            inputEl.value = value ?? '';
+              break;
+            default:
+              inputEl = document.createElement('input');
+              inputEl.type = 'text';
+              inputEl.value = value ?? '';
+          }
         }
         if (inputEl) {
-          inputEl.style.flex = '1';
+          if (inputEl.tagName !== 'SELECT') {
+            inputEl.style.flex = '1';
+          }
           inputEl.addEventListener('change', () => updateParamValue(idx, inputEl));
           item.appendChild(inputEl);
         }
@@ -1589,6 +1802,7 @@
   function showSelectedParamDetails() {
     if (currentTemplateIndex < 0) return;
     const tpl = templates[currentTemplateIndex];
+    updateParamTypeSelectEnabledState();
     if (selectedParams.size === 0) {
       // 没有选中，重置输入
       paramNameInput.value = '';
@@ -1606,6 +1820,9 @@
     editingParamIndex = idx;
     paramNameInput.value = p.name;
     paramTypeSelect.value = p.type;
+    if (isEnumTemplate(tpl)) {
+      paramTypeSelect.value = 'string';
+    }
     // 设置索引下拉
     updateIndexTemplateOptions();
     if (p.index) {
@@ -1857,35 +2074,39 @@
         const jsonWritable = await jsonFile.createWritable();
         await jsonWritable.write(json);
         await jsonWritable.close();
+        if (isEnumTemplate(tpl)) {
+          continue;
+        }
         const csContent = generateCSContent(tpl);
         const csFile = await csharpHandle.getFileHandle(`${tpl.name}.cs`, { create: true });
         const csWritable = await csFile.createWritable();
         await csWritable.write(csContent);
-      await csWritable.close();
-    }
-    // 如果有任意索引参数，生成/更新 DataRef.cs
-    if (templates.some(t => Array.isArray(t.parameters) && t.parameters.some(p => p && p.index))) {
-      const dataRefContent = [
-        'using System;',
-        'using System.Collections.Generic;',
-        '',
-        '[Serializable]',
-        'public class DataRef',
-        '{',
-        '    public string template;',
-        '    public string by;',
-        '    public string value;',
-        '    // 运行时可放置解析后的实例引用（可选）',
-        '    // public object instance;',
-        '}',
-        ''
-      ].join('\n');
-      const dataRefFile = await csharpHandle.getFileHandle('DataRef.cs', { create: true });
-      const dataRefWritable = await dataRefFile.createWritable();
-      await dataRefWritable.write(dataRefContent);
-      await dataRefWritable.close();
-    }
-    const manifest = templates.map((tpl) => ({ template: tpl.name, path: `dataEntity/${tpl.name}.json` }));
+        await csWritable.close();
+      }
+      await generateEnumCSFiles(getEnumTemplate());
+      // 如果有任意索引参数，生成/更新 DataRef.cs
+      if (templates.some(t => Array.isArray(t.parameters) && t.parameters.some(p => p && p.index))) {
+        const dataRefContent = [
+          'using System;',
+          'using System.Collections.Generic;',
+          '',
+          '[Serializable]',
+          'public class DataRef',
+          '{',
+          '    public string template;',
+          '    public string by;',
+          '    public string value;',
+          '    // 运行时可放置解析后的实例引用（可选）',
+          '    // public object instance;',
+          '}',
+          ''
+        ].join('\n');
+        const dataRefFile = await csharpHandle.getFileHandle('DataRef.cs', { create: true });
+        const dataRefWritable = await dataRefFile.createWritable();
+        await dataRefWritable.write(dataRefContent);
+        await dataRefWritable.close();
+      }
+      const manifest = templates.map((tpl) => ({ template: tpl.name, path: `dataEntity/${tpl.name}.json` }));
       const manifestHandle = await directoryHandle.getFileHandle("manifest.json", { create: true });
       const manifestWritable = await manifestHandle.createWritable();
       await manifestWritable.write(JSON.stringify(manifest, null, 2));
@@ -1894,6 +2115,69 @@
     } catch (err) {
       console.error(err);
       showMessage("保存失败，请检查权限");
+    }
+  }
+
+  /**
+   * 生成 C# 枚举内容
+   */
+  async function generateEnumCSFiles(enumTpl) {
+    if (!csharpHandle) return;
+    let enumDir = csharpHandle;
+    let useSubDir = true;
+    try {
+      enumDir = await csharpHandle.getDirectoryHandle('enums', { create: true });
+    } catch (err) {
+      console.warn('无法访问 enums 目录，枚举将生成到 csharpDate 根目录', err);
+      enumDir = csharpHandle;
+      useSubDir = false;
+    }
+    const definitions = enumTpl ? getEnumDefinitions() : [];
+    const generatedFiles = new Set();
+    for (const def of definitions) {
+      if (!def || !def.csharpName) continue;
+      const members = [];
+      const seenMembers = new Set();
+      def.values.forEach((raw, idx) => {
+        if (!raw) return;
+        const fallback = `Member${idx + 1}`;
+        const baseName = sanitizeCSharpMemberName(raw, fallback);
+        let memberName = baseName;
+        let suffix = 1;
+        while (seenMembers.has(memberName)) {
+          memberName = `${baseName}_${suffix++}`;
+        }
+        seenMembers.add(memberName);
+        members.push({ name: memberName, original: raw });
+      });
+      if (members.length === 0) continue;
+      const lines = [];
+      lines.push('using System;');
+      lines.push('');
+      lines.push('[Serializable]');
+      lines.push(`public enum ${def.csharpName}`);
+      lines.push('{');
+      members.forEach((member, index) => {
+        if (member.original && member.original !== member.name) {
+          lines.push(`    // ${member.original}`);
+        }
+        const suffix = index === members.length - 1 ? '' : ',';
+        lines.push(`    ${member.name}${suffix}`);
+      });
+      lines.push('}');
+      const fileName = `${def.csharpName}.cs`;
+      const fileHandle = await enumDir.getFileHandle(fileName, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(lines.join('\n') + '\n');
+      await writable.close();
+      generatedFiles.add(fileName);
+    }
+    if (useSubDir) {
+      for await (const entry of enumDir.values()) {
+        if (entry.kind === 'file' && !generatedFiles.has(entry.name)) {
+          await enumDir.removeEntry(entry.name);
+        }
+      }
     }
   }
 
@@ -1939,6 +2223,9 @@
    * 类型映射
    */
   function mapToCSharpType(type) {
+    if (isEnumType(type)) {
+      return getEnumCSharpTypeName(type);
+    }
     switch (type) {
       case "string":
         return "string";
