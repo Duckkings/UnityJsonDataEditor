@@ -42,6 +42,8 @@
   const instanceListEl = $("instanceList");
   const paramListEl = $("paramList");
   const currentDirLabel = $("currentDir");
+  const renameTemplateBtn = $("renameTemplate");
+  const renameInstanceBtn = $("renameInstance");
 
   // 面板元素，用于点击空白处取消选中
   const templatePanelEl = document.querySelector('.templates');
@@ -79,6 +81,22 @@
   $("pasteInstance").addEventListener("click", pasteInstance);
   $("deleteInstance").addEventListener("click", deleteInstance);
   $("newParam").addEventListener("click", newParam);
+  if (renameTemplateBtn) {
+    renameTemplateBtn.addEventListener('click', () => {
+      if (currentTemplateIndex < 0) { alert('请先选择一个模板'); return; }
+      const oldName = templates[currentTemplateIndex].name;
+      const v = prompt('重命名模板', oldName);
+      if (v != null) renameTemplate(String(v).trim());
+    });
+  }
+  if (renameInstanceBtn) {
+    renameInstanceBtn.addEventListener('click', () => {
+      if (currentTemplateIndex < 0 || currentInstanceIndex < 0) { alert('请先选择一个实例'); return; }
+      const oldName = templates[currentTemplateIndex].instances[currentInstanceIndex].name;
+      const v = prompt('重命名实例', oldName);
+      if (v != null) renameInstance(String(v).trim());
+    });
+  }
   indexTemplateSelect.addEventListener("change", updateIndexParamOptions);
   // 模板索引字段的选择移动到右栏“index”保留项上进行，不在头部下拉处理
   // 操作指南
@@ -294,12 +312,13 @@
   });
 
   // 监听名称输入框，回车或者失焦时更新名称
-  templateNameInput.addEventListener("blur", () => {
-    renameTemplate(templateNameInput.value.trim());
-  });
-  instanceNameInput.addEventListener("blur", () => {
-    renameInstance(instanceNameInput.value.trim());
-  });
+  // 取消通过输入框失焦重命名模板/实例，改用专用按钮触发
+  // templateNameInput.addEventListener("blur", () => {
+  //   renameTemplate(templateNameInput.value.trim());
+  // });
+  // instanceNameInput.addEventListener("blur", () => {
+  //   renameInstance(instanceNameInput.value.trim());
+  // });
 
   // 初始化
   window.addEventListener("DOMContentLoaded", () => {
@@ -351,14 +370,15 @@
       }
     });
   }
-  setupClearOnBlank(templateListEl, 'template');
-  setupClearOnBlank(instanceListEl, 'instance');
+  // 停用点击空白处取消选中（左/中栏）
+  // setupClearOnBlank(templateListEl, 'template');
+  // setupClearOnBlank(instanceListEl, 'instance');
   // 移除右栏（参数）空白处取消选中
   // setupClearOnBlank(paramListEl, 'param');
 
   // 监听整个面板的空白点击，支持取消选中
-  setupClearOnBlank(templatePanelEl, 'template');
-  setupClearOnBlank(instancePanelEl, 'instance');
+  // setupClearOnBlank(templatePanelEl, 'template');
+  // setupClearOnBlank(instancePanelEl, 'instance');
   // 移除右栏（参数面板）空白处取消选中
   // setupClearOnBlank(paramPanelEl, 'param');
 
@@ -624,6 +644,8 @@
                 if (!param) return param;
                 return { ...param, type: 'string' };
               });
+              // 确保参数名使用顺位，并同步实例
+              ensureEnumParamNaming(template);
             }
             templates.push(template);
           }
@@ -674,6 +696,37 @@
   function renameTemplate(newName) {
     if (currentTemplateIndex < 0) return;
     if (!newName) return;
+    // 上文已获取 tpl
+    // const tpl = templates[currentTemplateIndex];
+    // 禁止将其它模板改名为 enum
+    if (!isEnumTemplate(tpl) && newName === 'enum') {
+      alert('禁止将其它模板重命名为 enum');
+      templateNameInput.value = tpl.name;
+      return;
+    }
+    // enum 模板：忽略名称，使用参数顺位自动命名
+    if (isEnumTemplate(tpl)) {
+      const enumName = String(tpl.parameters.length);
+      const param = { name: enumName, type: 'string', index: indexObj };
+      tpl.parameters.push(param);
+      tpl.instances.forEach((inst) => {
+        if (indexObj) {
+          inst.payload[enumName] = { template: idxTpl, by: idxParam, value: '' };
+        } else {
+          inst.payload[enumName] = '';
+        }
+      });
+      ensureEnumParamNaming(tpl);
+      refreshParams();
+      showMessage(`已创建新参数`);
+      return;
+    }
+    // 禁止将 enum 模板改名为其它名称
+    if (isEnumTemplate(tpl) && newName !== 'enum') {
+      alert('enum 模板创建后不可重命名');
+      templateNameInput.value = tpl.name;
+      return;
+    }
     if (templates.some((t, idx) => t.name === newName && idx !== currentTemplateIndex)) {
       alert("模板名称已存在");
       templateNameInput.value = templates[currentTemplateIndex].name;
@@ -816,7 +869,7 @@
       return;
     }
     const name = paramNameInput.value.trim();
-    if (!name) {
+    if (!name && !isEnumTemplate(templates[currentTemplateIndex])) {
       showMessage("请输入参数名称");
       return;
     }
@@ -829,15 +882,36 @@
     const idxParam = indexParamSelect.value;
     let indexObj = null;
     if (idxTpl && idxParam) {
-      indexObj = { template: idxTpl, param: idxParam };
+      const targetTpl = templates.find(t=>t.name===idxTpl);
+      if (targetTpl && isEnumTemplate(targetTpl)) {
+        alert('索引目标不能是 enum 模板');
+        indexTemplateSelect.value = '';
+        updateIndexParamOptions();
+      } else {
+        indexObj = { template: idxTpl, param: idxParam };
+      }
     }
     // 如果正在编辑参数
     if (editingParamIndex >= 0) {
-      updateParamAtIndex(editingParamIndex, name, type, indexObj);
+      const currentTpl = templates[currentTemplateIndex];
+      const effectiveName = isEnumTemplate(currentTpl) ? String(editingParamIndex) : name;
+      updateParamAtIndex(editingParamIndex, effectiveName, type, indexObj);
       editingParamIndex = -1;
       selectedParams.clear();
       refreshParams();
-      showMessage(`已更新参数：${name}`);
+      showMessage(`已更新参数`);
+      return;
+    }
+    // enum 模板：根据当前实例已有的参数键计算插入序号，并强制按顺位命名
+    if (isEnumTemplate(tpl)) {
+      if (currentInstanceIndex < 0) { alert('请先选择一个实例'); return; }
+      const curInst = tpl.instances[currentInstanceIndex];
+      if (!curInst.payload) curInst.payload = {};
+      const keys = getEnumParamKeysForInstance(tpl, curInst).map(k=>parseInt(k,10));
+      let n = 0; while (keys.includes(n)) n++;
+      curInst.payload[String(n)] = '';
+      refreshParams();
+      showMessage(`已创建新参数`);
       return;
     }
     // 新建参数
@@ -867,12 +941,21 @@
     const param = tpl.parameters[index];
     if (!param) return;
     // 检查重名
-    if (tpl.parameters.some((p, i) => p.name === newName && i !== index)) {
+    if (!isEnumTemplate(tpl) && tpl.parameters.some((p, i) => p.name === newName && i !== index)) {
       alert("参数名称已存在");
       return;
     }
     if (isEnumTemplate(tpl)) {
       newType = 'string';
+      newName = String(index);
+    }
+    // 索引目标不允许 enum
+    if (newIndexObj && newIndexObj.template) {
+      const targetTpl = templates.find(t=>t.name===newIndexObj.template);
+      if (targetTpl && isEnumTemplate(targetTpl)) {
+        alert('索引目标不能是 enum 模板');
+        newIndexObj = null;
+      }
     }
     const oldName = param.name;
     const oldType = param.type;
@@ -993,6 +1076,19 @@
     return tpl && tpl.name === 'enum';
   }
 
+  // enum 新规则：参数与实例对应，因此该函数改为空实现（兼容旧调用）
+  function ensureEnumParamNaming(tpl) { return; }
+
+  function getEnumParamKeysForInstance(tpl, inst) {
+    if (!tpl || !inst || !inst.payload) return [];
+    const reserved = new Set(['template','id','name','index']);
+    return Object.keys(inst.payload)
+      .filter(k => !reserved.has(k) && /^\d+$/.test(k))
+      .map(k => parseInt(k, 10))
+      .sort((a,b)=>a-b)
+      .map(n => String(n));
+  }
+
   function getEnumTemplate() {
     return templates.find((tpl) => isEnumTemplate(tpl));
   }
@@ -1019,14 +1115,20 @@
       const payload = inst.payload || {};
       const seen = new Set();
       const values = [];
-      paramNames.forEach((paramName) => {
-        const raw = payload[paramName];
-        if (raw === undefined || raw === null) return;
-        const str = String(raw).trim();
-        if (!str || seen.has(str)) return;
-        seen.add(str);
-        values.push(str);
-      });
+      // 新规则：从该实例自身的数字键顺序提取枚举值
+      Object.keys(payload)
+        .filter(k => /^\d+$/.test(k))
+        .map(k => parseInt(k,10))
+        .sort((a,b)=>a-b)
+        .map(n=>String(n))
+        .forEach((k) => {
+          const raw = payload[k];
+          if (raw === undefined || raw === null) return;
+          const str = String(raw).trim();
+          if (!str || seen.has(str)) return;
+          seen.add(str);
+          values.push(str);
+        });
       definitions.push({
         name: displayName,
         csharpName,
@@ -1135,6 +1237,19 @@
     paramTypeSelect.disabled = shouldDisable;
     if (shouldDisable) {
       paramTypeSelect.value = 'string';
+    }
+  }
+
+  // enum 模板下禁用参数名输入框（参数名由顺位自动生成）
+  function updateParamNameInputEnabledState() {
+    if (!paramNameInput) return;
+    const tpl = templates[currentTemplateIndex];
+    const shouldDisable = Boolean(tpl && isEnumTemplate(tpl));
+    paramNameInput.disabled = shouldDisable;
+    if (shouldDisable) {
+      paramNameInput.placeholder = 'enum 自动命名（0,1,2,...)';
+    } else {
+      paramNameInput.placeholder = '';
     }
   }
 
@@ -1390,6 +1505,7 @@
   function refreshParams() {
     paramListEl.innerHTML = "";
     updateParamTypeSelectEnabledState();
+    updateParamNameInputEnabledState();
     refreshParamTypeOptions();
     if (currentTemplateIndex < 0 || currentInstanceIndex < 0) return;
     const tpl = templates[currentTemplateIndex];
@@ -1445,6 +1561,63 @@
       }
       paramListEl.appendChild(item);
     });
+    // enum：参数与实例对应，使用实例自身的数字键渲染并返回
+    if (isEnumTemplate(tpl)) {
+      const keys = getEnumParamKeysForInstance(tpl, inst);
+      keys.forEach((key, idx) => {
+        const item = document.createElement('div');
+        item.classList.add('param-item');
+        const label = document.createElement('label');
+        label.textContent = key;
+        item.appendChild(label);
+        if (selectedParams.has(idx)) item.classList.add('active');
+        const inputEl = document.createElement('input');
+        inputEl.type = 'text';
+        inputEl.style.flex = '1';
+        inputEl.value = inst.payload && inst.payload[key] != null ? String(inst.payload[key]) : '';
+        // 防止点击输入框触发父级选择逻辑，打断编辑
+        inputEl.addEventListener('mousedown', (e) => e.stopPropagation());
+        inputEl.addEventListener('click', (e) => e.stopPropagation());
+        inputEl.addEventListener('keydown', (e) => e.stopPropagation());
+        inputEl.addEventListener('change', () => {
+          if (!inst.payload) inst.payload = {};
+          inst.payload[key] = inputEl.value;
+        });
+        item.appendChild(inputEl);
+        const del = document.createElement('button');
+        del.className = 'delete-param';
+        del.textContent = '删除';
+        del.addEventListener('click', (e) => { e.stopPropagation(); deleteParam(idx); });
+        item.appendChild(del);
+        item.addEventListener('click', (e) => {
+          if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON')) return;
+          if (e.ctrlKey) {
+            if (selectedParams.has(idx)) selectedParams.delete(idx); else selectedParams.add(idx);
+            const arr = Array.from(selectedParams).sort((a,b)=>a-b);
+            editingParamIndex = arr.length > 0 ? arr[arr.length-1] : -1;
+          } else if (e.shiftKey) {
+            if (anchorParam === null) anchorParam = editingParamIndex >= 0 ? editingParamIndex : idx;
+            const start = Math.min(anchorParam, idx);
+            const end = Math.max(anchorParam, idx);
+            selectedParams.clear();
+            for (let i = start; i <= end; i++) selectedParams.add(i);
+            editingParamIndex = idx; anchorParam = idx;
+          } else {
+            if (selectedParams.has(idx) && selectedParams.size === 1) {
+              selectedParams.clear(); editingParamIndex = -1; anchorParam = null;
+            } else {
+              selectedParams.clear(); selectedParams.add(idx); editingParamIndex = idx; anchorParam = idx;
+            }
+          }
+          refreshParams();
+          lastSelectedCategory = 'param';
+        });
+        paramListEl.appendChild(item);
+      });
+      // 过滤（仅文本值可被过滤）
+      filterList(paramListEl, searchParamsInput.value, true);
+      return;
+    }
     // 自定义参数
     tpl.parameters.forEach((p, idx) => {
       const item = document.createElement("div");
@@ -1478,7 +1651,7 @@
         const dataList = document.createElement('datalist');
         dataList.id = suggestId;
         const targetTpl = templates.find(t => t.name === p.index.template);
-        if (targetTpl) {
+        if (targetTpl && !isEnumTemplate(targetTpl)) {
           const seen = new Set();
           targetTpl.instances.forEach(it => {
             const v = it.payload ? it.payload[p.index.param] : undefined;
@@ -1505,8 +1678,18 @@
             obj = { template: p.index.template, by: p.index.param, value: '' };
             inst.payload[p.name] = obj;
           }
-          obj.template = p.index.template;
-          obj.by = p.index.param;
+          // 若索引目标是 enum，阻止写入
+          const tt = templates.find(t => t.name === p.index.template);
+          if (tt && isEnumTemplate(tt)) {
+            showMessage('索引目标不能是 enum 模板');
+            indexTemplateSelect.value = '';
+            updateIndexParamOptions();
+            obj.template = '';
+            obj.by = '';
+          } else {
+            obj.template = p.index.template;
+            obj.by = p.index.param;
+          }
           obj.value = inputElIdx.value;
         });
         item.appendChild(inputElIdx);
@@ -1517,6 +1700,9 @@
           const def = getEnumDefinition(p.type);
           const select = document.createElement('select');
           select.style.flex = '1';
+          // 防止选择下拉时触发父级点击，导致取消选择或刷新
+          select.addEventListener('mousedown', (e) => e.stopPropagation());
+          select.addEventListener('click', (e) => e.stopPropagation());
           const enumValues = def ? def.values : [];
           value = convertValueForType(value, p.type);
           if (inst.payload[p.name] !== value) {
@@ -1642,9 +1828,9 @@
       });
       item.appendChild(del);
       // 单击参数项选择/取消选择，或执行 Alt 跳转
-      item.addEventListener('click', (e) => {
-        // 点击输入或删除按钮不触发选择逻辑
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
+        item.addEventListener('click', (e) => {
+          // 点击输入/选择/删除不触发选择逻辑
+          if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT') return;
         // Alt+点击：若为索引参数则跳转
         if (e.altKey && p.index) {
           // 将当前参数选择压栈
@@ -1653,6 +1839,11 @@
           const targetTplName = ref && typeof ref === 'object' ? (ref.template || p.index.template) : p.index.template;
           const byField = ref && typeof ref === 'object' ? (ref.by || p.index.param) : p.index.param;
           const byValue = ref && typeof ref === 'object' ? (ref.value ?? '') : '';
+          // 禁止跳转到 enum 模板
+          if (isEnumTemplate({ name: targetTplName })) {
+            showMessage('索引目标不能是 enum 模板');
+            return;
+          }
           const tIdx = templates.findIndex(t => t.name === targetTplName);
           if (tIdx < 0) {
             showMessage('未找到目标模板');
@@ -1851,7 +2042,22 @@
   function handlePaste() {
     if (!copyBuffer) return;
     if (copyBuffer.type === 'param') {
-      pasteParams();
+      const tpl = templates[currentTemplateIndex];
+      if (tpl && isEnumTemplate(tpl)) {
+        // enum 使用实例局部粘贴
+        if (currentTemplateIndex < 0 || currentInstanceIndex < 0) return;
+        const inst = templates[currentTemplateIndex].instances[currentInstanceIndex];
+        if (!inst.payload) inst.payload = {};
+        (copyBuffer.items || []).forEach((obj) => {
+          const exist = Object.keys(inst.payload).filter(k=>/^\d+$/.test(k)).map(k=>parseInt(k,10));
+          let n = 0; while (exist.includes(n)) n++;
+          inst.payload[String(n)] = obj && Object.prototype.hasOwnProperty.call(obj,'value') ? obj.value : '';
+        });
+        refreshParams();
+        showMessage(`已粘贴 ${copyBuffer.items.length} 个参数`);
+      } else {
+        pasteParams();
+      }
     } else if (copyBuffer.type === 'instance') {
       pasteInstance();
     } else if (copyBuffer.type === 'template') {
@@ -1955,13 +2161,21 @@
       alert('请选择要复制的参数');
       return;
     }
-    // 深拷贝参数定义，并保存每个参数在所有实例中的值
-    const items = indices.map((idx) => {
-      const param = JSON.parse(JSON.stringify(tpl.parameters[idx]));
-      const values = tpl.instances.map((inst) => inst.payload[param.name]);
-      return { param, values };
-    });
-    copyBuffer = { type: 'param', items };
+    if (isEnumTemplate(tpl)) {
+      if (currentInstanceIndex < 0) { alert('请先选择一个实例'); return; }
+      const inst = tpl.instances[currentInstanceIndex];
+      const keys = getEnumParamKeysForInstance(tpl, inst);
+      const items = indices.map((idx) => ({ value: inst.payload[keys[idx]] }));
+      copyBuffer = { type: 'param', items, enumMode: true };
+    } else {
+      // 深拷贝参数定义，并保存每个参数在所有实例中的值
+      const items = indices.map((idx) => {
+        const param = JSON.parse(JSON.stringify(tpl.parameters[idx]));
+        const values = tpl.instances.map((inst) => inst.payload[param.name]);
+        return { param, values };
+      });
+      copyBuffer = { type: 'param', items };
+    }
     showMessage(`已复制 ${items.length} 个参数`);
   }
 
@@ -1973,18 +2187,22 @@
     if (!copyBuffer || copyBuffer.type !== 'param' || !copyBuffer.items) return;
     const tpl = templates[currentTemplateIndex];
     copyBuffer.items.forEach((obj) => {
-      let newName = obj.param.name;
+      let newName = isEnumTemplate(tpl) ? String(tpl.parameters.length) : obj.param.name;
       while (tpl.parameters.some((p) => p.name === newName)) {
         newName = `${newName}_复制`;
       }
       const newParam = JSON.parse(JSON.stringify(obj.param));
       newParam.name = newName;
+      if (isEnumTemplate(tpl)) newParam.type = 'string';
       tpl.parameters.push(newParam);
       // 为每个实例复制值
       tpl.instances.forEach((inst, idx) => {
         inst.payload[newName] = obj.values[idx];
       });
     });
+    if (isEnumTemplate(tpl)) {
+      ensureEnumParamNaming(tpl);
+    }
     refreshParams();
     showMessage(`已粘贴 ${copyBuffer.items.length} 个参数`);
   }
@@ -2001,13 +2219,23 @@
       return;
     }
     indices.sort((a, b) => b - a);
-    indices.forEach((idx) => {
-      const param = tpl.parameters[idx];
-      tpl.parameters.splice(idx, 1);
-      tpl.instances.forEach((inst) => {
-        delete inst.payload[param.name];
+    if (isEnumTemplate(tpl)) {
+      if (currentInstanceIndex < 0) return;
+      const inst = tpl.instances[currentInstanceIndex];
+      const keys = Object.keys(inst.payload || {}).filter(k=>/^\d+$/.test(k)).map(k=>parseInt(k,10)).sort((a,b)=>a-b).map(n=>String(n));
+      indices.forEach((idx) => {
+        const key = keys[idx];
+        if (key !== undefined && inst.payload) delete inst.payload[key];
       });
-    });
+    } else {
+      indices.forEach((idx) => {
+        const param = tpl.parameters[idx];
+        tpl.parameters.splice(idx, 1);
+        tpl.instances.forEach((inst) => {
+          delete inst.payload[param.name];
+        });
+      });
+    }
     selectedParams.clear();
     editingParamIndex = -1;
     refreshParams();
@@ -2023,12 +2251,19 @@
     opt0.value = "";
     opt0.textContent = "无索引";
     indexTemplateSelect.appendChild(opt0);
+    // 不允许选择 enum 模板作为索引目标
     templates.forEach((tpl) => {
+      if (isEnumTemplate(tpl)) return;
       const opt = document.createElement("option");
       opt.value = tpl.name;
       opt.textContent = tpl.name;
       indexTemplateSelect.appendChild(opt);
     });
+    // 若当前选择为 enum，强制清空
+    const cur = indexTemplateSelect.value;
+    if (cur && isEnumTemplate(templates.find(t=>t.name===cur))) {
+      indexTemplateSelect.value = "";
+    }
     updateIndexParamOptions();
   }
 
@@ -2047,6 +2282,13 @@
     }
     const tpl = templates.find((t) => t.name === tplName);
     if (!tpl) return;
+    if (isEnumTemplate(tpl)) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "不允许指向 enum";
+      indexParamSelect.appendChild(opt);
+      return;
+    }
     const optDef = document.createElement("option");
     optDef.value = "";
     optDef.textContent = "选择参数";
