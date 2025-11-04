@@ -1,0 +1,15 @@
+2076	      const newParam = JSON.parse(JSON.stringify(obj.param));
+2077	      newParam.name = newName;
+2078	      if (isEnumTemplate(tpl)) newParam.type = 'string';
+2079	      tpl.parameters.push(newParam);
+2080	      // 为每个实例复制�?
+2081	      tpl.instances.forEach((inst, idx) => {
+2082	        inst.payload[newName] = obj.values[idx];
+2083	      });
+2084	    });
+2085	    if (isEnumTemplate(tpl)) {
+2086	      ensureEnumParamNaming(tpl);
+2087	    }
+2088	    refreshParams();
+2089	    showMessage(`已粘�?${copyBuffer.items.length} 个参数`);
+2090	  }
