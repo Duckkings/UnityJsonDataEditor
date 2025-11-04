@@ -166,10 +166,23 @@ body.dark .toolbar button.primary {
   display: flex;
   gap: 4px;
 }
- .index-selectors label {
-   font-size: 12px;
-   align-self: center;
- }
+
+.param-item .list-control {
+  margin-left: calc(4px * var(--row-scale));
+  padding: calc(4px * var(--row-scale)) calc(8px * var(--row-scale));
+  font-size: calc(13px * var(--row-scale));
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  background-color: #e0e0e0;
+  color: #333;
+  cursor: pointer;
+}
+
+body.dark .param-item .list-control {
+  border: 1px solid #555;
+  background-color: #444;
+  color: #ddd;
+}
 
 /* 搜索栏样式 */
 .search-bar {
