@@ -37,7 +37,6 @@
   const builtinParamTypeSet = new Set(builtinParamTypeOptions.map((opt) => opt.value));
   const indexTemplateSelect = $("indexTemplate");
   const indexParamSelect = $("indexParam");
-  const INDEXABLE_PARAM_TYPES = new Set(["int", "long", "float", "string"]);
   const templateListEl = $("templateList");
   const instanceListEl = $("instanceList");
   const paramListEl = $("paramList");
@@ -879,14 +878,8 @@
           alert('索引目标不能是 enum 模板');
           indexTemplateSelect.value = '';
           updateIndexParamOptions();
-        } else if (targetTpl) {
-          const targetParam = (targetTpl.parameters || []).find(p => p && p.name === idxParam);
-          if (!targetParam || !INDEXABLE_PARAM_TYPES.has(targetParam.type)) {
-            alert('索引字段类型必须是 int/long/float/string');
-            indexParamSelect.value = '';
-          } else {
-            indexObj = { template: idxTpl, param: idxParam };
-          }
+        } else {
+          indexObj = { template: idxTpl, param: idxParam };
         }
       }
     } else {
@@ -2347,16 +2340,6 @@
       opt.textContent = "不允许指向 enum";
       indexParamSelect.appendChild(opt);
       indexParamSelect.value = "";
-      return;
-    }
-    const indexableParams = (tpl.parameters || []).filter((p) => p && INDEXABLE_PARAM_TYPES.has(p.type));
-    if (indexableParams.length === 0) {
-      const opt = document.createElement("option");
-      opt.value = "";
-      opt.textContent = "无可用参数";
-      indexParamSelect.appendChild(opt);
-      indexParamSelect.value = "";
-      indexParamSelect.disabled = true;
       return;
     }
     const optDef = document.createElement("option");
