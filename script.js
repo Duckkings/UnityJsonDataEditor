@@ -37,7 +37,7 @@
   const builtinParamTypeSet = new Set(builtinParamTypeOptions.map((opt) => opt.value));
   const indexTemplateSelect = $("indexTemplate");
   const indexParamSelect = $("indexParam");
-  const templateIndexFieldSelect = $("templateIndexField");
+  const INDEXABLE_PARAM_TYPES = new Set(["int", "long", "float", "string"]);
   const templateListEl = $("templateList");
   const instanceListEl = $("instanceList");
   const paramListEl = $("paramList");
@@ -695,51 +695,42 @@
    */
   function renameTemplate(newName) {
     if (currentTemplateIndex < 0) return;
-    if (!newName) return;
-    // 上文已获取 tpl
-    // const tpl = templates[currentTemplateIndex];
-    // 禁止将其它模板改名为 enum
-    if (!isEnumTemplate(tpl) && newName === 'enum') {
+    const tpl = templates[currentTemplateIndex];
+    if (!tpl) return;
+    const targetName = (newName || "").trim();
+    if (!targetName) {
+      templateNameInput.value = tpl.name;
+      return;
+    }
+    if (!isEnumTemplate(tpl) && targetName === 'enum') {
       alert('禁止将其它模板重命名为 enum');
       templateNameInput.value = tpl.name;
       return;
     }
-    // enum 模板：忽略名称，使用参数顺位自动命名
-    if (isEnumTemplate(tpl)) {
-      const enumName = String(tpl.parameters.length);
-      const param = { name: enumName, type: 'string', index: indexObj };
-      tpl.parameters.push(param);
-      tpl.instances.forEach((inst) => {
-        if (indexObj) {
-          inst.payload[enumName] = { template: idxTpl, by: idxParam, value: '' };
-        } else {
-          inst.payload[enumName] = '';
-        }
-      });
-      ensureEnumParamNaming(tpl);
-      refreshParams();
-      showMessage(`已创建新参数`);
-      return;
-    }
-    // 禁止将 enum 模板改名为其它名称
-    if (isEnumTemplate(tpl) && newName !== 'enum') {
+    if (isEnumTemplate(tpl) && targetName !== 'enum') {
       alert('enum 模板创建后不可重命名');
       templateNameInput.value = tpl.name;
       return;
     }
-    if (templates.some((t, idx) => t.name === newName && idx !== currentTemplateIndex)) {
-      alert("模板名称已存在");
-      templateNameInput.value = templates[currentTemplateIndex].name;
+    if (templates.some((t, idx) => idx !== currentTemplateIndex && t.name === targetName)) {
+      alert('模板名称已存在');
+      templateNameInput.value = tpl.name;
       return;
     }
-    const tpl = templates[currentTemplateIndex];
-    tpl.name = newName;
-    // 更新实例中的模板字段
+    if (tpl.name === targetName) {
+      templateNameInput.value = tpl.name;
+      return;
+    }
+    tpl.name = targetName;
     tpl.instances.forEach((inst) => {
-      inst.payload.template = newName;
+      if (inst && inst.payload) {
+        inst.payload.template = targetName;
+      }
     });
+    templateNameInput.value = targetName;
     refreshTemplates();
     updateIndexTemplateOptions();
+    showMessage(`已重命名模板：${targetName}`);
   }
 
   /**
@@ -878,18 +869,29 @@
     if (isEnumTemplate(tpl)) {
       type = 'string';
     }
-    const idxTpl = indexTemplateSelect.value;
-    const idxParam = indexParamSelect.value;
     let indexObj = null;
-    if (idxTpl && idxParam) {
-      const targetTpl = templates.find(t=>t.name===idxTpl);
-      if (targetTpl && isEnumTemplate(targetTpl)) {
-        alert('索引目标不能是 enum 模板');
-        indexTemplateSelect.value = '';
-        updateIndexParamOptions();
-      } else {
-        indexObj = { template: idxTpl, param: idxParam };
+    if (!indexTemplateSelect.disabled) {
+      const idxTpl = indexTemplateSelect.value;
+      const idxParam = indexParamSelect.value;
+      if (idxTpl && idxParam) {
+        const targetTpl = templates.find(t=>t.name===idxTpl);
+        if (targetTpl && isEnumTemplate(targetTpl)) {
+          alert('索引目标不能是 enum 模板');
+          indexTemplateSelect.value = '';
+          updateIndexParamOptions();
+        } else if (targetTpl) {
+          const targetParam = (targetTpl.parameters || []).find(p => p && p.name === idxParam);
+          if (!targetParam || !INDEXABLE_PARAM_TYPES.has(targetParam.type)) {
+            alert('索引字段类型必须是 int/long/float/string');
+            indexParamSelect.value = '';
+          } else {
+            indexObj = { template: idxTpl, param: idxParam };
+          }
+        }
       }
+    } else {
+      indexTemplateSelect.value = '';
+      indexParamSelect.value = '';
     }
     // 如果正在编辑参数
     if (editingParamIndex >= 0) {
@@ -948,6 +950,7 @@
     if (isEnumTemplate(tpl)) {
       newType = 'string';
       newName = String(index);
+      newIndexObj = null;
     }
     // 索引目标不允许 enum
     if (newIndexObj && newIndexObj.template) {
@@ -955,6 +958,12 @@
       if (targetTpl && isEnumTemplate(targetTpl)) {
         alert('索引目标不能是 enum 模板');
         newIndexObj = null;
+      } else if (targetTpl) {
+        const targetParam = (targetTpl.parameters || []).find(p => p && p.name === newIndexObj.param);
+        if (!targetParam || !INDEXABLE_PARAM_TYPES.has(targetParam.type)) {
+          alert('索引字段类型必须是 int/long/float/string');
+          newIndexObj = null;
+        }
       }
     }
     const oldName = param.name;
@@ -1507,6 +1516,7 @@
     updateParamTypeSelectEnabledState();
     updateParamNameInputEnabledState();
     refreshParamTypeOptions();
+    updateIndexTemplateOptions();
     if (currentTemplateIndex < 0 || currentInstanceIndex < 0) return;
     const tpl = templates[currentTemplateIndex];
     const inst = tpl.instances[currentInstanceIndex];
@@ -1760,8 +1770,8 @@
               arr.forEach((val, i) => {
                 const row = document.createElement('div');
                 row.style.display = 'flex';
-                row.style.gap = '4px';
-                row.style.marginBottom = '4px';
+                row.style.gap = 'calc(4px * var(--row-scale))';
+                row.style.marginBottom = 'calc(4px * var(--row-scale))';
                 const inp = document.createElement('input');
                 inp.type = 'text';
                 inp.value = val ?? '';
@@ -1777,7 +1787,7 @@
             item.appendChild(listWrap);
             const addBtn = document.createElement('button');
             addBtn.textContent = '增加元素';
-            addBtn.style.marginLeft = '4px';
+            addBtn.classList.add('list-control-btn');
             addBtn.addEventListener('click', (e2) => {
               e2.stopPropagation();
               inst.payload[p.name].push('');
@@ -1786,7 +1796,7 @@
             });
             const removeBtn = document.createElement('button');
             removeBtn.textContent = '删除元素';
-            removeBtn.style.marginLeft = '4px';
+            removeBtn.classList.add('list-control-btn');
             removeBtn.addEventListener('click', (e2) => {
               e2.stopPropagation();
               if (inst.payload[p.name].length > 1) {
@@ -1994,12 +2004,17 @@
     if (currentTemplateIndex < 0) return;
     const tpl = templates[currentTemplateIndex];
     updateParamTypeSelectEnabledState();
+    updateIndexTemplateOptions();
     if (selectedParams.size === 0) {
       // 没有选中，重置输入
       paramNameInput.value = '';
       paramTypeSelect.value = 'string';
-      indexTemplateSelect.value = '';
-      updateIndexParamOptions();
+      if (!indexTemplateSelect.disabled) {
+        indexTemplateSelect.value = '';
+        updateIndexParamOptions();
+      } else {
+        indexParamSelect.value = '';
+      }
       editingParamIndex = -1;
       $('newParam').textContent = '新建参数';
       return;
@@ -2015,14 +2030,15 @@
       paramTypeSelect.value = 'string';
     }
     // 设置索引下拉
-    updateIndexTemplateOptions();
-    if (p.index) {
-      indexTemplateSelect.value = p.index.template;
-      updateIndexParamOptions();
-      indexParamSelect.value = p.index.param;
-    } else {
-      indexTemplateSelect.value = '';
-      updateIndexParamOptions();
+    if (!indexTemplateSelect.disabled) {
+      if (p.index) {
+        indexTemplateSelect.value = p.index.template;
+        updateIndexParamOptions();
+        indexParamSelect.value = p.index.param;
+      } else {
+        indexTemplateSelect.value = '';
+        updateIndexParamOptions();
+      }
     }
     $('newParam').textContent = '更新参数';
   }
@@ -2193,7 +2209,10 @@
       }
       const newParam = JSON.parse(JSON.stringify(obj.param));
       newParam.name = newName;
-      if (isEnumTemplate(tpl)) newParam.type = 'string';
+      if (isEnumTemplate(tpl)) {
+        newParam.type = 'string';
+        delete newParam.index;
+      }
       tpl.parameters.push(newParam);
       // 为每个实例复制值
       tpl.instances.forEach((inst, idx) => {
@@ -2246,24 +2265,51 @@
    * 更新索引模板列表
    */
   function updateIndexTemplateOptions() {
+    const currentTpl = currentTemplateIndex >= 0 ? templates[currentTemplateIndex] : null;
+    const previousValue = indexTemplateSelect.value;
     indexTemplateSelect.innerHTML = "";
-    const opt0 = document.createElement("option");
-    opt0.value = "";
-    opt0.textContent = "无索引";
+    if (currentTpl && isEnumTemplate(currentTpl)) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '枚举不支持索引';
+      indexTemplateSelect.appendChild(opt);
+      indexTemplateSelect.value = '';
+      indexTemplateSelect.disabled = true;
+      indexParamSelect.innerHTML = '';
+      const optParam = document.createElement('option');
+      optParam.value = '';
+      optParam.textContent = '枚举不支持索引';
+      indexParamSelect.appendChild(optParam);
+      indexParamSelect.value = '';
+      indexParamSelect.disabled = true;
+      return;
+    }
+
+    indexTemplateSelect.disabled = false;
+    indexParamSelect.disabled = false;
+
+    const opt0 = document.createElement('option');
+    opt0.value = '';
+    opt0.textContent = '无索引';
     indexTemplateSelect.appendChild(opt0);
     // 不允许选择 enum 模板作为索引目标
     templates.forEach((tpl) => {
       if (isEnumTemplate(tpl)) return;
-      const opt = document.createElement("option");
+      const opt = document.createElement('option');
       opt.value = tpl.name;
       opt.textContent = tpl.name;
       indexTemplateSelect.appendChild(opt);
     });
-    // 若当前选择为 enum，强制清空
-    const cur = indexTemplateSelect.value;
-    if (cur && isEnumTemplate(templates.find(t=>t.name===cur))) {
-      indexTemplateSelect.value = "";
+
+    if (previousValue) {
+      indexTemplateSelect.value = previousValue;
+      if (indexTemplateSelect.value !== previousValue) {
+        indexTemplateSelect.value = '';
+      }
+    } else {
+      indexTemplateSelect.value = '';
     }
+
     updateIndexParamOptions();
   }
 
@@ -2271,6 +2317,18 @@
    * 根据选中的索引模板更新参数列表
    */
   function updateIndexParamOptions() {
+    if (indexTemplateSelect.disabled) {
+      indexParamSelect.innerHTML = '';
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '枚举不支持索引';
+      indexParamSelect.appendChild(opt);
+      indexParamSelect.value = '';
+      indexParamSelect.disabled = true;
+      return;
+    }
+
+    indexParamSelect.disabled = false;
     const tplName = indexTemplateSelect.value;
     indexParamSelect.innerHTML = "";
     if (!tplName) {
@@ -2278,6 +2336,7 @@
       opt.value = "";
       opt.textContent = "无索引";
       indexParamSelect.appendChild(opt);
+      indexParamSelect.value = "";
       return;
     }
     const tpl = templates.find((t) => t.name === tplName);
@@ -2287,13 +2346,24 @@
       opt.value = "";
       opt.textContent = "不允许指向 enum";
       indexParamSelect.appendChild(opt);
+      indexParamSelect.value = "";
+      return;
+    }
+    const indexableParams = (tpl.parameters || []).filter((p) => p && INDEXABLE_PARAM_TYPES.has(p.type));
+    if (indexableParams.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "无可用参数";
+      indexParamSelect.appendChild(opt);
+      indexParamSelect.value = "";
+      indexParamSelect.disabled = true;
       return;
     }
     const optDef = document.createElement("option");
     optDef.value = "";
     optDef.textContent = "选择参数";
     indexParamSelect.appendChild(optDef);
-    tpl.parameters.forEach((p) => {
+    indexableParams.forEach((p) => {
       const opt = document.createElement("option");
       opt.value = p.name;
       opt.textContent = p.name;
