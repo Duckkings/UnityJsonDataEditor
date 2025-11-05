@@ -1,6 +1,8 @@
 (() => {
   // 数据结构：模板列表
   const templates = [];
+  let templateUidCounter = 0;
+  let lastSavedStructureSnapshot = new Map();
   let currentTemplateIndex = -1;
   let currentInstanceIndex = -1;
   let directoryHandle = null;
@@ -37,7 +39,7 @@
   const builtinParamTypeSet = new Set(builtinParamTypeOptions.map((opt) => opt.value));
   const indexTemplateSelect = $("indexTemplate");
   const indexParamSelect = $("indexParam");
-  const templateIndexFieldSelect = $("templateIndexField");
+  const INDEXABLE_PARAM_TYPES = new Set(["int", "long", "float", "string"]);
   const templateListEl = $("templateList");
   const instanceListEl = $("instanceList");
   const paramListEl = $("paramList");
@@ -55,6 +57,7 @@
   const paramWidthLabel = $("paramWidthLabel");
   const messageBox = $("message");
   const helpBtn = $("helpBtn");
+  const regenerateCsBtn = $("regenerateCs");
 
   // 行高调整滑块
   const rowHeightSlider = $("rowHeight");
@@ -81,6 +84,9 @@
   $("pasteInstance").addEventListener("click", pasteInstance);
   $("deleteInstance").addEventListener("click", deleteInstance);
   $("newParam").addEventListener("click", newParam);
+  if (regenerateCsBtn) {
+    regenerateCsBtn.addEventListener("click", regenerateCSharpStructures);
+  }
   if (renameTemplateBtn) {
     renameTemplateBtn.addEventListener('click', () => {
       if (currentTemplateIndex < 0) { alert('请先选择一个模板'); return; }
@@ -123,6 +129,86 @@
   }
 
   refreshParamTypeOptions();
+
+  document.addEventListener('keydown', (evt) => {
+    if ((evt.ctrlKey || evt.metaKey) && String(evt.key).toLowerCase() === 's') {
+      evt.preventDefault();
+      saveAll();
+    }
+  });
+
+  function ensureTemplateUid(tpl) {
+    if (!tpl) return;
+    if (!tpl.__uid) {
+      templateUidCounter += 1;
+      tpl.__uid = `tpl_${templateUidCounter}`;
+    }
+  }
+
+  function snapshotTemplateStructure(tpl) {
+    return {
+      name: tpl.name,
+      indexField: tpl.indexField || 'id',
+      parameters: (tpl.parameters || []).map((p) => {
+        if (!p) return null;
+        return {
+          name: p.name,
+          type: p.type,
+          index: p.index
+            ? {
+                template: p.index.template || '',
+                param: p.index.param || '',
+              }
+            : null,
+        };
+      }),
+      isEnum: Boolean(isEnumTemplate(tpl)),
+    };
+  }
+
+  function structuresEqual(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
+  function hasTemplateStructureChanged(tpl) {
+    ensureTemplateUid(tpl);
+    const prev = lastSavedStructureSnapshot.get(tpl.__uid);
+    if (!prev) return true;
+    const current = snapshotTemplateStructure(tpl);
+    return !structuresEqual(prev, current);
+  }
+
+  function captureCurrentStructureSnapshot() {
+    const map = new Map();
+    templates.forEach((tpl) => {
+      ensureTemplateUid(tpl);
+      map.set(tpl.__uid, snapshotTemplateStructure(tpl));
+    });
+    return map;
+  }
+
+  function normalizeContent(content) {
+    return (content || "").replace(/\r\n/g, "\n").trimEnd();
+  }
+
+  async function readTextFileIfExists(dirHandle, fileName) {
+    if (!dirHandle) return null;
+    try {
+      const fileHandle = await dirHandle.getFileHandle(fileName, { create: false });
+      const file = await fileHandle.getFile();
+      return await file.text();
+    } catch (err) {
+      return null;
+    }
+  }
+
+  async function writeTextFile(dirHandle, fileName, content) {
+    if (!dirHandle) return;
+    const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
+    const writable = await fileHandle.createWritable({ keepExistingData: false });
+    await writable.write(content);
+    await writable.close();
+  }
 
   // 参数选择历史（仅记录参数层级的选择）
   const paramHistory = [];
@@ -425,6 +511,7 @@
   // 持久化：使用 IndexedDB 保存最近一次的工作目录句柄
   const DB_NAME = 'json-editor';
   const DB_STORE = 'handles';
+  const ENUM_CACHE_PREFIX = 'enumCache:';
   function openDB() {
     return new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, 1);
@@ -437,6 +524,10 @@
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });
+  }
+  function getEnumCacheKey() {
+    if (!directoryHandle || !directoryHandle.name) return null;
+    return `${ENUM_CACHE_PREFIX}${directoryHandle.name}`;
   }
   async function saveLastDirectoryHandle(handle) {
     try {
@@ -462,6 +553,61 @@
       });
     } catch (e) {
       return null;
+    }
+  }
+  async function saveEnumTemplateCache(tpl) {
+    const key = getEnumCacheKey();
+    if (!key) return;
+    try {
+      const db = await openDB();
+      const payload = JSON.parse(JSON.stringify({
+        name: tpl.name,
+        parameters: tpl.parameters,
+        instances: tpl.instances,
+        indexField: tpl.indexField || 'id',
+      }));
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(DB_STORE, 'readwrite');
+        tx.objectStore(DB_STORE).put({ key, template: payload });
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch (e) {
+      console.warn('保存枚举模板缓存失败', e);
+    }
+  }
+  async function loadEnumTemplateCache() {
+    const key = getEnumCacheKey();
+    if (!key) return null;
+    try {
+      const db = await openDB();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(DB_STORE, 'readonly');
+        const req = tx.objectStore(DB_STORE).get(key);
+        req.onsuccess = () => {
+          const value = req.result && req.result.template;
+          resolve(value ? JSON.parse(JSON.stringify(value)) : null);
+        };
+        req.onerror = () => reject(req.error);
+      });
+    } catch (e) {
+      console.warn('读取枚举模板缓存失败', e);
+      return null;
+    }
+  }
+  async function clearEnumTemplateCache() {
+    const key = getEnumCacheKey();
+    if (!key) return;
+    try {
+      const db = await openDB();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(DB_STORE, 'readwrite');
+        tx.objectStore(DB_STORE).delete(key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch (e) {
+      console.warn('清除枚举模板缓存失败', e);
     }
   }
   async function verifyPermission(handle, readWrite = false) {
@@ -626,6 +772,9 @@
     templates.length = 0;
     currentTemplateIndex = -1;
     currentInstanceIndex = -1;
+    templateUidCounter = 0;
+    lastSavedStructureSnapshot = new Map();
+    let enumLoadedFromJson = false;
     for await (const entry of dataEntityHandle.values()) {
       if (entry.kind === "file" && entry.name.toLowerCase().endsWith(".json")) {
         try {
@@ -646,12 +795,24 @@
               });
               // 确保参数名使用顺位，并同步实例
               ensureEnumParamNaming(template);
+              enumLoadedFromJson = true;
             }
+            ensureTemplateUid(template);
             templates.push(template);
           }
         } catch (err) {
           showMessage(`无法解析 ${entry.name}，已跳过`);
         }
+      }
+    }
+    if (!enumLoadedFromJson) {
+      const cachedEnum = await loadEnumTemplateCache();
+      if (cachedEnum && isEnumTemplate(cachedEnum)) {
+        ensureEnumParamNaming(cachedEnum);
+        if (!Array.isArray(cachedEnum.parameters)) cachedEnum.parameters = [];
+        if (!Array.isArray(cachedEnum.instances)) cachedEnum.instances = [];
+        ensureTemplateUid(cachedEnum);
+        templates.push(cachedEnum);
       }
     }
     // 按名称排序
@@ -660,6 +821,7 @@
       currentTemplateIndex = 0;
       currentInstanceIndex = templates[0].instances.length > 0 ? 0 : -1;
     }
+    lastSavedStructureSnapshot = captureCurrentStructureSnapshot();
   }
 
   /**
@@ -682,6 +844,7 @@
       instances: [instance],
       indexField: 'id',
     };
+    ensureTemplateUid(template);
     templates.push(template);
     currentTemplateIndex = templates.length - 1;
     currentInstanceIndex = 0;
@@ -695,51 +858,42 @@
    */
   function renameTemplate(newName) {
     if (currentTemplateIndex < 0) return;
-    if (!newName) return;
-    // 上文已获取 tpl
-    // const tpl = templates[currentTemplateIndex];
-    // 禁止将其它模板改名为 enum
-    if (!isEnumTemplate(tpl) && newName === 'enum') {
+    const tpl = templates[currentTemplateIndex];
+    if (!tpl) return;
+    const targetName = (newName || "").trim();
+    if (!targetName) {
+      templateNameInput.value = tpl.name;
+      return;
+    }
+    if (!isEnumTemplate(tpl) && targetName === 'enum') {
       alert('禁止将其它模板重命名为 enum');
       templateNameInput.value = tpl.name;
       return;
     }
-    // enum 模板：忽略名称，使用参数顺位自动命名
-    if (isEnumTemplate(tpl)) {
-      const enumName = String(tpl.parameters.length);
-      const param = { name: enumName, type: 'string', index: indexObj };
-      tpl.parameters.push(param);
-      tpl.instances.forEach((inst) => {
-        if (indexObj) {
-          inst.payload[enumName] = { template: idxTpl, by: idxParam, value: '' };
-        } else {
-          inst.payload[enumName] = '';
-        }
-      });
-      ensureEnumParamNaming(tpl);
-      refreshParams();
-      showMessage(`已创建新参数`);
-      return;
-    }
-    // 禁止将 enum 模板改名为其它名称
-    if (isEnumTemplate(tpl) && newName !== 'enum') {
+    if (isEnumTemplate(tpl) && targetName !== 'enum') {
       alert('enum 模板创建后不可重命名');
       templateNameInput.value = tpl.name;
       return;
     }
-    if (templates.some((t, idx) => t.name === newName && idx !== currentTemplateIndex)) {
-      alert("模板名称已存在");
-      templateNameInput.value = templates[currentTemplateIndex].name;
+    if (templates.some((t, idx) => idx !== currentTemplateIndex && t.name === targetName)) {
+      alert('模板名称已存在');
+      templateNameInput.value = tpl.name;
       return;
     }
-    const tpl = templates[currentTemplateIndex];
-    tpl.name = newName;
-    // 更新实例中的模板字段
+    if (tpl.name === targetName) {
+      templateNameInput.value = tpl.name;
+      return;
+    }
+    tpl.name = targetName;
     tpl.instances.forEach((inst) => {
-      inst.payload.template = newName;
+      if (inst && inst.payload) {
+        inst.payload.template = targetName;
+      }
     });
+    templateNameInput.value = targetName;
     refreshTemplates();
     updateIndexTemplateOptions();
+    showMessage(`已重命名模板：${targetName}`);
   }
 
   /**
@@ -878,18 +1032,29 @@
     if (isEnumTemplate(tpl)) {
       type = 'string';
     }
-    const idxTpl = indexTemplateSelect.value;
-    const idxParam = indexParamSelect.value;
     let indexObj = null;
-    if (idxTpl && idxParam) {
-      const targetTpl = templates.find(t=>t.name===idxTpl);
-      if (targetTpl && isEnumTemplate(targetTpl)) {
-        alert('索引目标不能是 enum 模板');
-        indexTemplateSelect.value = '';
-        updateIndexParamOptions();
-      } else {
-        indexObj = { template: idxTpl, param: idxParam };
+    if (!indexTemplateSelect.disabled) {
+      const idxTpl = indexTemplateSelect.value;
+      const idxParam = indexParamSelect.value;
+      if (idxTpl && idxParam) {
+        const targetTpl = templates.find(t=>t.name===idxTpl);
+        if (targetTpl && isEnumTemplate(targetTpl)) {
+          alert('索引目标不能是 enum 模板');
+          indexTemplateSelect.value = '';
+          updateIndexParamOptions();
+        } else if (targetTpl) {
+          const targetParam = (targetTpl.parameters || []).find(p => p && p.name === idxParam);
+          if (!targetParam || !INDEXABLE_PARAM_TYPES.has(targetParam.type)) {
+            alert('索引字段类型必须是 int/long/float/string');
+            indexParamSelect.value = '';
+          } else {
+            indexObj = { template: idxTpl, param: idxParam };
+          }
+        }
       }
+    } else {
+      indexTemplateSelect.value = '';
+      indexParamSelect.value = '';
     }
     // 如果正在编辑参数
     if (editingParamIndex >= 0) {
@@ -948,6 +1113,7 @@
     if (isEnumTemplate(tpl)) {
       newType = 'string';
       newName = String(index);
+      newIndexObj = null;
     }
     // 索引目标不允许 enum
     if (newIndexObj && newIndexObj.template) {
@@ -955,6 +1121,12 @@
       if (targetTpl && isEnumTemplate(targetTpl)) {
         alert('索引目标不能是 enum 模板');
         newIndexObj = null;
+      } else if (targetTpl) {
+        const targetParam = (targetTpl.parameters || []).find(p => p && p.name === newIndexObj.param);
+        if (!targetParam || !INDEXABLE_PARAM_TYPES.has(targetParam.type)) {
+          alert('索引字段类型必须是 int/long/float/string');
+          newIndexObj = null;
+        }
       }
     }
     const oldName = param.name;
@@ -1507,6 +1679,7 @@
     updateParamTypeSelectEnabledState();
     updateParamNameInputEnabledState();
     refreshParamTypeOptions();
+    updateIndexTemplateOptions();
     if (currentTemplateIndex < 0 || currentInstanceIndex < 0) return;
     const tpl = templates[currentTemplateIndex];
     const inst = tpl.instances[currentInstanceIndex];
@@ -1760,8 +1933,8 @@
               arr.forEach((val, i) => {
                 const row = document.createElement('div');
                 row.style.display = 'flex';
-                row.style.gap = '4px';
-                row.style.marginBottom = '4px';
+                row.style.gap = 'calc(4px * var(--row-scale))';
+                row.style.marginBottom = 'calc(4px * var(--row-scale))';
                 const inp = document.createElement('input');
                 inp.type = 'text';
                 inp.value = val ?? '';
@@ -1777,7 +1950,7 @@
             item.appendChild(listWrap);
             const addBtn = document.createElement('button');
             addBtn.textContent = '增加元素';
-            addBtn.style.marginLeft = '4px';
+            addBtn.classList.add('list-control-btn');
             addBtn.addEventListener('click', (e2) => {
               e2.stopPropagation();
               inst.payload[p.name].push('');
@@ -1786,7 +1959,7 @@
             });
             const removeBtn = document.createElement('button');
             removeBtn.textContent = '删除元素';
-            removeBtn.style.marginLeft = '4px';
+            removeBtn.classList.add('list-control-btn');
             removeBtn.addEventListener('click', (e2) => {
               e2.stopPropagation();
               if (inst.payload[p.name].length > 1) {
@@ -1994,12 +2167,17 @@
     if (currentTemplateIndex < 0) return;
     const tpl = templates[currentTemplateIndex];
     updateParamTypeSelectEnabledState();
+    updateIndexTemplateOptions();
     if (selectedParams.size === 0) {
       // 没有选中，重置输入
       paramNameInput.value = '';
       paramTypeSelect.value = 'string';
-      indexTemplateSelect.value = '';
-      updateIndexParamOptions();
+      if (!indexTemplateSelect.disabled) {
+        indexTemplateSelect.value = '';
+        updateIndexParamOptions();
+      } else {
+        indexParamSelect.value = '';
+      }
       editingParamIndex = -1;
       $('newParam').textContent = '新建参数';
       return;
@@ -2015,14 +2193,15 @@
       paramTypeSelect.value = 'string';
     }
     // 设置索引下拉
-    updateIndexTemplateOptions();
-    if (p.index) {
-      indexTemplateSelect.value = p.index.template;
-      updateIndexParamOptions();
-      indexParamSelect.value = p.index.param;
-    } else {
-      indexTemplateSelect.value = '';
-      updateIndexParamOptions();
+    if (!indexTemplateSelect.disabled) {
+      if (p.index) {
+        indexTemplateSelect.value = p.index.template;
+        updateIndexParamOptions();
+        indexParamSelect.value = p.index.param;
+      } else {
+        indexTemplateSelect.value = '';
+        updateIndexParamOptions();
+      }
     }
     $('newParam').textContent = '更新参数';
   }
@@ -2086,6 +2265,9 @@
       return;
     }
     const items = indices.map((idx) => JSON.parse(JSON.stringify(templates[idx])));
+    items.forEach((tpl) => {
+      if (tpl && tpl.__uid) delete tpl.__uid;
+    });
     copyBuffer = { type: 'template', items };
     showMessage(`已复制 ${items.length} 个模板`);
   }
@@ -2103,6 +2285,7 @@
       }
       const newTpl = JSON.parse(JSON.stringify(srcTpl));
       newTpl.name = newName;
+      delete newTpl.__uid;
       // 更新实例中的 template 字段和 id
       newTpl.instances.forEach((inst, idx) => {
         inst.id = idx;
@@ -2111,6 +2294,7 @@
         inst.payload.id = idx;
         inst.payload.name = inst.name;
       });
+      ensureTemplateUid(newTpl);
       templates.push(newTpl);
     });
     refreshTemplates();
@@ -2193,7 +2377,10 @@
       }
       const newParam = JSON.parse(JSON.stringify(obj.param));
       newParam.name = newName;
-      if (isEnumTemplate(tpl)) newParam.type = 'string';
+      if (isEnumTemplate(tpl)) {
+        newParam.type = 'string';
+        delete newParam.index;
+      }
       tpl.parameters.push(newParam);
       // 为每个实例复制值
       tpl.instances.forEach((inst, idx) => {
@@ -2246,24 +2433,51 @@
    * 更新索引模板列表
    */
   function updateIndexTemplateOptions() {
+    const currentTpl = currentTemplateIndex >= 0 ? templates[currentTemplateIndex] : null;
+    const previousValue = indexTemplateSelect.value;
     indexTemplateSelect.innerHTML = "";
-    const opt0 = document.createElement("option");
-    opt0.value = "";
-    opt0.textContent = "无索引";
+    if (currentTpl && isEnumTemplate(currentTpl)) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '枚举不支持索引';
+      indexTemplateSelect.appendChild(opt);
+      indexTemplateSelect.value = '';
+      indexTemplateSelect.disabled = true;
+      indexParamSelect.innerHTML = '';
+      const optParam = document.createElement('option');
+      optParam.value = '';
+      optParam.textContent = '枚举不支持索引';
+      indexParamSelect.appendChild(optParam);
+      indexParamSelect.value = '';
+      indexParamSelect.disabled = true;
+      return;
+    }
+
+    indexTemplateSelect.disabled = false;
+    indexParamSelect.disabled = false;
+
+    const opt0 = document.createElement('option');
+    opt0.value = '';
+    opt0.textContent = '无索引';
     indexTemplateSelect.appendChild(opt0);
     // 不允许选择 enum 模板作为索引目标
     templates.forEach((tpl) => {
       if (isEnumTemplate(tpl)) return;
-      const opt = document.createElement("option");
+      const opt = document.createElement('option');
       opt.value = tpl.name;
       opt.textContent = tpl.name;
       indexTemplateSelect.appendChild(opt);
     });
-    // 若当前选择为 enum，强制清空
-    const cur = indexTemplateSelect.value;
-    if (cur && isEnumTemplate(templates.find(t=>t.name===cur))) {
-      indexTemplateSelect.value = "";
+
+    if (previousValue) {
+      indexTemplateSelect.value = previousValue;
+      if (indexTemplateSelect.value !== previousValue) {
+        indexTemplateSelect.value = '';
+      }
+    } else {
+      indexTemplateSelect.value = '';
     }
+
     updateIndexParamOptions();
   }
 
@@ -2271,6 +2485,18 @@
    * 根据选中的索引模板更新参数列表
    */
   function updateIndexParamOptions() {
+    if (indexTemplateSelect.disabled) {
+      indexParamSelect.innerHTML = '';
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '枚举不支持索引';
+      indexParamSelect.appendChild(opt);
+      indexParamSelect.value = '';
+      indexParamSelect.disabled = true;
+      return;
+    }
+
+    indexParamSelect.disabled = false;
     const tplName = indexTemplateSelect.value;
     indexParamSelect.innerHTML = "";
     if (!tplName) {
@@ -2278,6 +2504,7 @@
       opt.value = "";
       opt.textContent = "无索引";
       indexParamSelect.appendChild(opt);
+      indexParamSelect.value = "";
       return;
     }
     const tpl = templates.find((t) => t.name === tplName);
@@ -2287,13 +2514,24 @@
       opt.value = "";
       opt.textContent = "不允许指向 enum";
       indexParamSelect.appendChild(opt);
+      indexParamSelect.value = "";
+      return;
+    }
+    const indexableParams = (tpl.parameters || []).filter((p) => p && INDEXABLE_PARAM_TYPES.has(p.type));
+    if (indexableParams.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "无可用参数";
+      indexParamSelect.appendChild(opt);
+      indexParamSelect.value = "";
+      indexParamSelect.disabled = true;
       return;
     }
     const optDef = document.createElement("option");
     optDef.value = "";
     optDef.textContent = "选择参数";
     indexParamSelect.appendChild(optDef);
-    tpl.parameters.forEach((p) => {
+    indexableParams.forEach((p) => {
       const opt = document.createElement("option");
       opt.value = p.name;
       opt.textContent = p.name;
@@ -2301,32 +2539,158 @@
     });
   }
 
+  async function deleteDataEntityFileIfExists(fileName) {
+    if (!dataEntityHandle || typeof dataEntityHandle.removeEntry !== 'function') return;
+    try {
+      await dataEntityHandle.removeEntry(fileName);
+    } catch (err) {
+      if (err && err.name === 'NotFoundError') {
+        return;
+      }
+      console.warn(`删除 ${fileName} 失败`, err);
+    }
+  }
+
   /**
    * 保存所有模板到文件
    */
+  function askCSharpReplacement(templateName) {
+    const lines = [
+      `${templateName} 模板的结构发生变化，检测到 C# 脚本内容可能发生变化。`,
+      '请选择操作：',
+      '1. 替换原有 C# 脚本',
+      '2. 只保存 JSON 数据，不替换脚本',
+      '3. 取消保存',
+    ];
+    while (true) {
+      const input = prompt(lines.join('\n'), '1');
+      if (input === null) return 'cancel';
+      const trimmed = String(input).trim();
+      if (trimmed === '1') return 'replace';
+      if (trimmed === '2') return 'jsonOnly';
+      if (trimmed === '3') return 'cancel';
+    }
+  }
+
   async function saveAll() {
     if (!directoryHandle) {
       alert("请先选择工作目录");
       return;
     }
     try {
+      if (!csharpHandle || !dataEntityHandle) {
+        await ensureSubFolders();
+      }
+      const templateDecisions = new Map();
+      const csCache = new Map();
+      let enumTemplateSaved = false;
+      let shouldUpdateDataRef = false;
+
       for (const tpl of templates) {
-        const json = JSON.stringify({ name: tpl.name, indexField: tpl.indexField || 'id', parameters: tpl.parameters, instances: tpl.instances }, null, 2);
-        const jsonFile = await dataEntityHandle.getFileHandle(`${tpl.name}.json`, { create: true });
-        const jsonWritable = await jsonFile.createWritable();
-        await jsonWritable.write(json);
-        await jsonWritable.close();
+        ensureTemplateUid(tpl);
         if (isEnumTemplate(tpl)) {
           continue;
         }
+        const structureChanged = hasTemplateStructureChanged(tpl);
+        if (!structureChanged) {
+          templateDecisions.set(tpl.__uid, { decision: 'jsonOnly', structureChanged: false });
+          continue;
+        }
         const csContent = generateCSContent(tpl);
-        const csFile = await csharpHandle.getFileHandle(`${tpl.name}.cs`, { create: true });
-        const csWritable = await csFile.createWritable();
-        await csWritable.write(csContent);
-        await csWritable.close();
+        const existingCs = await readTextFileIfExists(csharpHandle, `${tpl.name}.cs`);
+        csCache.set(tpl.__uid, csContent);
+        if (existingCs != null && normalizeContent(existingCs) === normalizeContent(csContent)) {
+          templateDecisions.set(tpl.__uid, { decision: 'jsonOnly', structureChanged: true });
+          continue;
+        }
+        const answer = askCSharpReplacement(tpl.name);
+        if (answer === 'cancel') {
+          showMessage('已取消保存');
+          return;
+        }
+        if (answer === 'replace') {
+          shouldUpdateDataRef = true;
+          templateDecisions.set(tpl.__uid, { decision: 'replace', structureChanged: true });
+        } else {
+          templateDecisions.set(tpl.__uid, { decision: 'jsonOnly', structureChanged: true });
+        }
       }
+
+      for (const tpl of templates) {
+        ensureTemplateUid(tpl);
+        if (isEnumTemplate(tpl)) {
+          await saveEnumTemplateCache(tpl);
+          enumTemplateSaved = true;
+          await deleteDataEntityFileIfExists(`${tpl.name}.json`);
+          continue;
+        }
+        const json = JSON.stringify({ name: tpl.name, indexField: tpl.indexField || 'id', parameters: tpl.parameters, instances: tpl.instances }, null, 2);
+        await writeTextFile(dataEntityHandle, `${tpl.name}.json`, json);
+        const meta = templateDecisions.get(tpl.__uid);
+        if (meta && meta.decision === 'replace') {
+          const content = csCache.get(tpl.__uid) || generateCSContent(tpl);
+          await writeTextFile(csharpHandle, `${tpl.name}.cs`, content);
+        }
+      }
+
+      if (shouldUpdateDataRef) {
+        if (templates.some(t => Array.isArray(t.parameters) && t.parameters.some(p => p && p.index))) {
+          const dataRefContent = [
+            'using System;',
+            'using System.Collections.Generic;',
+            '',
+            '[Serializable]',
+            'public class DataRef',
+            '{',
+            '    public string template;',
+            '    public string by;',
+            '    public string value;',
+            '    // 运行时可放置解析后的实例引用（可选）',
+            '    // public object instance;',
+            '}',
+            ''
+          ].join('\n');
+          await writeTextFile(csharpHandle, 'DataRef.cs', dataRefContent);
+        }
+      }
+
       await generateEnumCSFiles(getEnumTemplate());
-      // 如果有任意索引参数，生成/更新 DataRef.cs
+
+      if (!enumTemplateSaved) {
+        await clearEnumTemplateCache();
+        await deleteDataEntityFileIfExists('enum.json');
+      }
+
+      const manifest = templates
+        .filter((tpl) => !isEnumTemplate(tpl))
+        .map((tpl) => ({ template: tpl.name, path: `dataEntity/${tpl.name}.json` }));
+      await writeTextFile(directoryHandle, 'manifest.json', JSON.stringify(manifest, null, 2));
+
+      lastSavedStructureSnapshot = captureCurrentStructureSnapshot();
+      showMessage("已保存所有更改");
+    } catch (err) {
+      console.error(err);
+      showMessage("保存失败，请检查权限");
+    }
+  }
+
+  async function regenerateCSharpStructures() {
+    if (!directoryHandle) {
+      alert('请先选择工作目录');
+      return;
+    }
+    try {
+      if (!csharpHandle || !dataEntityHandle) {
+        await ensureSubFolders();
+      }
+      let updatedAny = false;
+      for (const tpl of templates) {
+        ensureTemplateUid(tpl);
+        if (isEnumTemplate(tpl)) continue;
+        const content = generateCSContent(tpl);
+        await writeTextFile(csharpHandle, `${tpl.name}.cs`, content);
+        updatedAny = true;
+      }
       if (templates.some(t => Array.isArray(t.parameters) && t.parameters.some(p => p && p.index))) {
         const dataRefContent = [
           'using System;',
@@ -2343,20 +2707,22 @@
           '}',
           ''
         ].join('\n');
-        const dataRefFile = await csharpHandle.getFileHandle('DataRef.cs', { create: true });
-        const dataRefWritable = await dataRefFile.createWritable();
-        await dataRefWritable.write(dataRefContent);
-        await dataRefWritable.close();
+        await writeTextFile(csharpHandle, 'DataRef.cs', dataRefContent);
+        updatedAny = true;
       }
-      const manifest = templates.map((tpl) => ({ template: tpl.name, path: `dataEntity/${tpl.name}.json` }));
-      const manifestHandle = await directoryHandle.getFileHandle("manifest.json", { create: true });
-      const manifestWritable = await manifestHandle.createWritable();
-      await manifestWritable.write(JSON.stringify(manifest, null, 2));
-      await manifestWritable.close();
-      showMessage("已保存所有更改");
+      const enumTpl = getEnumTemplate();
+      await generateEnumCSFiles(enumTpl);
+      if (enumTpl) {
+        updatedAny = true;
+      }
+      if (updatedAny) {
+        showMessage('已重新生成 C# 数据结构脚本');
+      } else {
+        showMessage('没有可生成的 C# 数据结构脚本');
+      }
     } catch (err) {
       console.error(err);
-      showMessage("保存失败，请检查权限");
+      showMessage('重新生成 C# 脚本失败，请检查权限');
     }
   }
 
