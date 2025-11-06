@@ -17,6 +17,7 @@
         <button id="regenerateCs">重新生成C#数据结构脚本</button>
         <button id="toggleDark">夜间模式</button>
         <button id="helpBtn">操作指南</button>
+        <button id="viewLogs">查看日志</button>
         <input id="paramWidth" type="range" min="1" max="3" step="0.1" value="1" title="调整参数栏比例" />
         <span id="paramWidthLabel" style="font-size:12px;">参数栏比例</span>
         <!-- 行高调整 -->
@@ -74,6 +75,18 @@
           <div id="paramList" class="param-list"></div>
         </section>
       </main>
+    </div>
+    <div id="logOverlay" class="log-overlay" style="display:none">
+      <div class="log-dialog">
+        <div class="log-header">
+          <span>操作日志</span>
+          <div class="log-actions">
+            <button id="clearLogs">清空</button>
+            <button id="closeLog">关闭</button>
+          </div>
+        </div>
+        <div id="logList" class="log-content"></div>
+      </div>
     </div>
   </body>
   </html>

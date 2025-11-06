@@ -17,6 +17,9 @@
   const selectedTemplates = new Set();
   const selectedInstances = new Set();
   const selectedParams = new Set();
+  let exportSelectionMode = false;
+  const exportSelections = new Map();
+  let exportTemplateAnchorIndex = null;
   // Shift-点击范围选择锚点
   let anchorTemplate = null;
   let anchorInstance = null;
@@ -74,6 +77,860 @@
     indices: new Set(),
   };
 
+  function addLogEntry(level, message, extra) {
+    const entry = {
+      id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      level: level || 'info',
+      message: String(message ?? ''),
+      time: new Date(),
+      extra: extra || null,
+    };
+    operationLogs.push(entry);
+    if (operationLogs.length > 500) {
+      operationLogs.splice(0, operationLogs.length - 500);
+    }
+    if (logOverlay && logOverlay.style.display !== 'none') {
+      renderLogs();
+    }
+  }
+
+  function renderLogs() {
+    if (!logListEl) return;
+    logListEl.innerHTML = '';
+    operationLogs.forEach((entry) => {
+      const div = document.createElement('div');
+      div.className = `log-entry ${entry.level}`;
+      const timeSpan = document.createElement('span');
+      timeSpan.className = 'time';
+      timeSpan.textContent = formatLogTimestamp(entry.time);
+      div.appendChild(timeSpan);
+      const msgSpan = document.createElement('span');
+      msgSpan.textContent = entry.message;
+      div.appendChild(msgSpan);
+      if (entry.extra && entry.extra.detail) {
+        const detail = document.createElement('div');
+        detail.textContent = entry.extra.detail;
+        detail.style.marginTop = '4px';
+        detail.style.whiteSpace = 'pre-wrap';
+        div.appendChild(detail);
+      }
+      logListEl.appendChild(div);
+    });
+  }
+
+  function formatLogTimestamp(date) {
+    if (!(date instanceof Date)) return '';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
+
+  function openLogOverlay() {
+    if (!logOverlay) return;
+    renderLogs();
+    logOverlay.style.display = 'flex';
+  }
+
+  function closeLogOverlay() {
+    if (!logOverlay) return;
+    logOverlay.style.display = 'none';
+  }
+
+  function clearLogEntries() {
+    operationLogs.length = 0;
+    renderLogs();
+  }
+
+  const originalAlert = window.alert.bind(window);
+  window.alert = (message) => {
+    addLogEntry('warn', String(message ?? ''));
+    originalAlert(message);
+  };
+
+  function updateExportButtons() {
+    if (!exportCsvBtn || !confirmExportCsvBtn || !cancelExportCsvBtn) return;
+    if (exportSelectionMode) {
+      exportCsvBtn.style.display = 'none';
+      confirmExportCsvBtn.style.display = '';
+      cancelExportCsvBtn.style.display = '';
+    } else {
+      exportCsvBtn.style.display = '';
+      confirmExportCsvBtn.style.display = 'none';
+      cancelExportCsvBtn.style.display = 'none';
+    }
+  }
+
+  function beginExportSelection() {
+    if (!directoryHandle) {
+      alert('请先选择工作目录');
+      return;
+    }
+    exportSelectionMode = true;
+    exportTemplateAnchorIndex = null;
+    updateExportButtons();
+    showMessage('已进入导出选择模式，勾选需要导出的模板或实例');
+    refreshTemplates();
+    refreshInstances();
+  }
+
+  function exitExportSelectionMode(clearSelection) {
+    exportSelectionMode = false;
+    exportTemplateAnchorIndex = null;
+    if (clearSelection) {
+      exportSelections.clear();
+    }
+    updateExportButtons();
+    refreshTemplates();
+    refreshInstances();
+  }
+
+  function ensureTemplateUidForExport(tpl) {
+    ensureTemplateUid(tpl);
+    return tpl.__uid;
+  }
+
+  function getExportRecord(tpl, createIfMissing = false) {
+    const key = ensureTemplateUidForExport(tpl);
+    let record = exportSelections.get(key);
+    if (!record && createIfMissing) {
+      record = { allSelected: false, selectedInstances: new Set(), anchorIndex: null };
+      exportSelections.set(key, record);
+    }
+    if (record) {
+      // 清理无效实例 id
+      const validIds = new Set((tpl.instances || []).map((inst) => inst.id));
+      if (!record.allSelected && record.selectedInstances.size > 0) {
+        for (const id of Array.from(record.selectedInstances)) {
+          if (!validIds.has(id)) {
+            record.selectedInstances.delete(id);
+          }
+        }
+      }
+    }
+    return record || null;
+  }
+
+  function cleanupExportRecord(tpl) {
+    const key = tpl.__uid;
+    if (!key) return;
+    const record = exportSelections.get(key);
+    if (!record) return;
+    if (!record.allSelected && record.selectedInstances.size === 0) {
+      exportSelections.delete(key);
+    }
+  }
+
+  function getTemplateExportCounts(tpl) {
+    const total = (tpl.instances || []).length;
+    const record = getExportRecord(tpl);
+    if (!record) {
+      return { selected: 0, total };
+    }
+    if (record.allSelected) {
+      return { selected: total, total };
+    }
+    let selected = 0;
+    const ids = new Set(record.selectedInstances);
+    (tpl.instances || []).forEach((inst) => {
+      if (ids.has(inst.id)) selected += 1;
+    });
+    return { selected, total };
+  }
+
+  function getTemplateExportState(tpl) {
+    const { selected, total } = getTemplateExportCounts(tpl);
+    if (selected <= 0) return 'none';
+    if (selected >= total && total > 0) return 'all';
+    if (total === 0) {
+      const record = getExportRecord(tpl);
+      return record && record.allSelected ? 'all' : 'none';
+    }
+    return 'partial';
+  }
+
+  function applyTemplateExportAction(tpl, action) {
+    const record = getExportRecord(tpl, action === 'all');
+    if (!record) return;
+    if (action === 'clear') {
+      exportSelections.delete(tpl.__uid);
+      return;
+    }
+    record.allSelected = true;
+    record.selectedInstances.clear();
+    record.anchorIndex = null;
+  }
+
+  function handleTemplateExportCheckbox(templateIndex, prevState, event) {
+    const tpl = templates[templateIndex];
+    if (!tpl) return;
+    let action = 'all';
+    if (prevState === 'all') {
+      action = 'clear';
+    }
+    if (prevState === 'partial') {
+      action = 'all';
+    }
+    if (event && event.shiftKey && exportTemplateAnchorIndex !== null) {
+      const start = Math.min(exportTemplateAnchorIndex, templateIndex);
+      const end = Math.max(exportTemplateAnchorIndex, templateIndex);
+      for (let i = start; i <= end; i += 1) {
+        const targetTpl = templates[i];
+        if (!targetTpl) continue;
+        applyTemplateExportAction(targetTpl, action);
+      }
+    } else {
+      applyTemplateExportAction(tpl, action);
+    }
+    exportTemplateAnchorIndex = templateIndex;
+    refreshTemplates();
+    refreshInstances();
+  }
+
+  function isInstanceSelectedForExport(tpl, inst) {
+    const record = getExportRecord(tpl);
+    if (!record) return false;
+    if (record.allSelected) return true;
+    return record.selectedInstances.has(inst.id);
+  }
+
+  function applyInstanceExportSelection(tpl, inst, shouldSelect, record) {
+    if (!record) return;
+    if (shouldSelect) {
+      if (record.allSelected) return;
+      record.selectedInstances.add(inst.id);
+      const total = (tpl.instances || []).length;
+      if (record.selectedInstances.size >= total && total > 0) {
+        record.allSelected = true;
+        record.selectedInstances.clear();
+      }
+    } else {
+      if (record.allSelected) {
+        record.allSelected = false;
+        record.selectedInstances = new Set((tpl.instances || []).map((item) => item.id));
+      }
+      record.selectedInstances.delete(inst.id);
+    }
+    cleanupExportRecord(tpl);
+  }
+
+  function handleInstanceExportCheckbox(templateIndex, instanceIndex, wasSelected, event) {
+    const tpl = templates[templateIndex];
+    if (!tpl) return;
+    const record = getExportRecord(tpl, true);
+    if (!record) return;
+    const shouldSelect = !wasSelected;
+    if (event && event.shiftKey && record.anchorIndex !== null) {
+      const start = Math.min(record.anchorIndex, instanceIndex);
+      const end = Math.max(record.anchorIndex, instanceIndex);
+      for (let i = start; i <= end; i += 1) {
+        const inst = tpl.instances[i];
+        if (!inst) continue;
+        applyInstanceExportSelection(tpl, inst, shouldSelect, record);
+      }
+    } else {
+      const inst = tpl.instances[instanceIndex];
+      if (inst) {
+        applyInstanceExportSelection(tpl, inst, shouldSelect, record);
+      }
+    }
+    record.anchorIndex = instanceIndex;
+    refreshTemplates();
+    refreshInstances();
+  }
+
+  function collectTemplatesForExport() {
+    const selected = [];
+    templates.forEach((tpl) => {
+      const record = getExportRecord(tpl);
+      if (!record) return;
+      const allInstances = (tpl.instances || []);
+      const instances = record.allSelected
+        ? allInstances.slice()
+        : allInstances.filter((inst) => record.selectedInstances.has(inst.id));
+      if (record.allSelected || instances.length > 0 || (allInstances.length === 0 && record.allSelected)) {
+        selected.push({ tpl, instances });
+      }
+    });
+    return selected;
+  }
+
+  function sanitizeCsvFileName(name) {
+    return (name || 'template').replace(/[\\/:*?"<>|]/g, '_');
+  }
+
+  function encodeCsvValue(value) {
+    const str = value == null ? '' : String(value);
+    if (/[",\n]/.test(str)) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  }
+
+  function rowsToCsv(rows) {
+    return rows.map((row) => row.map(encodeCsvValue).join(',')).join('\n');
+  }
+
+  function serializeValueForCsv(param, value) {
+    if (param && param.index) {
+      if (value && typeof value === 'object') {
+        try {
+          return JSON.stringify({
+            template: value.template ?? param.index.template,
+            by: value.by ?? param.index.param,
+            value: value.value ?? '',
+          });
+        } catch (_) {
+          return '';
+        }
+      }
+      if (value == null || value === '') {
+        return '';
+      }
+      return JSON.stringify({ template: param.index.template, by: param.index.param, value: String(value) });
+    }
+    if (Array.isArray(value)) {
+      try {
+        return JSON.stringify(value);
+      } catch (_) {
+        return '';
+      }
+    }
+    if (value && typeof value === 'object') {
+      try {
+        return JSON.stringify(value);
+      } catch (_) {
+        return '';
+      }
+    }
+    if (typeof value === 'boolean') {
+      return value ? 'true' : 'false';
+    }
+    if (value == null) return '';
+    return String(value);
+  }
+
+  function resolveIndexFieldMeta(tpl) {
+    let field = tpl && tpl.indexField ? tpl.indexField : 'id';
+    if (field === 'id') {
+      return { field: 'id', type: 'int' };
+    }
+    if (field === 'name') {
+      return { field: 'name', type: 'string' };
+    }
+    const param = (tpl.parameters || []).find((p) => p && p.name === field);
+    if (param && INDEXABLE_PARAM_TYPES.has(param.type)) {
+      return { field, type: param.type };
+    }
+    return { field: 'id', type: 'int' };
+  }
+
+  function formatIndexCell(field, type, value) {
+    const safeField = field || 'id';
+    const safeType = type || (safeField === 'name' ? 'string' : 'int');
+    const safeValue = value == null ? '' : String(value);
+    return `${safeField}/${safeType}/${safeValue}`;
+  }
+
+  function parseIndexTypeCell(cell) {
+    const raw = String(cell ?? '').trim();
+    if (!raw) {
+      return { field: 'id', type: 'int' };
+    }
+    const parts = raw.split('/');
+    const field = (parts[0] || '').trim() || 'id';
+    const type = (parts[1] || '').trim() || (field === 'name' ? 'string' : 'int');
+    return { field, type };
+  }
+
+  function parseIndexDataCell(cell, fallbackField, fallbackType) {
+    const raw = String(cell ?? '').trim();
+    if (!raw) {
+      return { field: fallbackField, type: fallbackType, value: '' };
+    }
+    const parts = raw.split('/');
+    const field = (parts[0] || '').trim() || fallbackField;
+    const type = (parts[1] || '').trim() || fallbackType;
+    const value = parts.length >= 3 ? parts.slice(2).join('/') : '';
+    return { field, type, value };
+  }
+
+  function buildCsvRowsForTemplate(tpl, instances) {
+    const indexMeta = resolveIndexFieldMeta(tpl);
+    const headers = ['template', 'id', 'index', 'name'];
+    const types = [
+      'string',
+      'int',
+      `${indexMeta.field}/${indexMeta.type}`,
+      'string',
+    ];
+    (tpl.parameters || []).forEach((p) => {
+      if (!p) return;
+      headers.push(p.name);
+      if (p.index && p.index.template && p.index.param) {
+        types.push(`${p.type}/${p.index.template}/${p.index.param}`);
+      } else {
+        types.push(p.type);
+      }
+    });
+    const rows = [headers, types];
+    instances.forEach((inst) => {
+      const payload = inst && inst.payload ? inst.payload : {};
+      const row = [
+        tpl.name,
+        String(inst && inst.id != null ? inst.id : ''),
+        formatIndexCell(
+          indexMeta.field,
+          indexMeta.type,
+          computeExpectedIndexValue(tpl, inst, indexMeta.field)
+        ),
+        inst && inst.name != null ? inst.name : '',
+      ];
+      (tpl.parameters || []).forEach((p) => {
+        if (!p) return;
+        row.push(serializeValueForCsv(p, payload[p.name]));
+      });
+      rows.push(row);
+    });
+    return rows;
+  }
+
+  async function performExportCsv() {
+    if (!directoryHandle || !dataEntityHandle) {
+      alert('请先选择工作目录');
+      return;
+    }
+    const selected = collectTemplatesForExport();
+    if (selected.length === 0) {
+      showMessage('请至少选择一个模板或实例进行导出', 'warn');
+      return;
+    }
+    try {
+      const csvDir = await dataEntityHandle.getDirectoryHandle('csvoutput', { create: true });
+      for (const item of selected) {
+        const rows = buildCsvRowsForTemplate(item.tpl, item.instances);
+        const csvText = rowsToCsv(rows);
+        const fileName = `${sanitizeCsvFileName(item.tpl.name)}.csv`;
+        await writeTextFile(csvDir, fileName, csvText);
+      }
+      const names = selected.map((item) => item.tpl.name).join(', ');
+      showMessage(`已导出 ${selected.length} 个模板的 CSV`, 'info');
+      addLogEntry('info', `导出 CSV：${names}`);
+      exitExportSelectionMode(true);
+    } catch (err) {
+      console.error(err);
+      addLogEntry('error', `导出 CSV 失败：${err && err.message ? err.message : err}`, { detail: err && err.stack ? err.stack : '' });
+      showMessage('导出 CSV 失败，请检查日志', 'warn');
+    }
+  }
+
+  function parseCsvText(text) {
+    const rows = [];
+    let current = '';
+    let row = [];
+    let inQuotes = false;
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          if (text[i + 1] === '"') {
+            current += '"';
+            i += 1;
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          current += ch;
+        }
+      } else if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === ',') {
+        row.push(current);
+        current = '';
+      } else if (ch === '\r') {
+        // ignore
+      } else if (ch === '\n') {
+        row.push(current);
+        rows.push(row);
+        row = [];
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+    if (inQuotes) {
+      throw new Error('CSV 引号未闭合');
+    }
+    row.push(current);
+    if (row.length > 1 || (row.length === 1 && row[0].length > 0)) {
+      rows.push(row);
+    }
+    while (rows.length > 0 && rows[rows.length - 1].every((cell) => (cell || '').trim() === '')) {
+      rows.pop();
+    }
+    return rows;
+  }
+
+  function normalizeCsvRowLength(row, targetLength) {
+    const normalized = row.slice();
+    while (normalized.length < targetLength) {
+      normalized.push('');
+    }
+    if (normalized.length > targetLength) {
+      throw new Error('CSV 列数不一致');
+    }
+    return normalized;
+  }
+
+  function parseBoolCell(raw) {
+    const trimmed = String(raw ?? '').trim().toLowerCase();
+    if (!trimmed) return false;
+    if (['true', '1', 'yes', 'y', '是'].includes(trimmed)) return true;
+    if (['false', '0', 'no', 'n', '否'].includes(trimmed)) return false;
+    throw new Error(`无法解析布尔值：${raw}`);
+  }
+
+  function convertCsvValueByType(type, raw) {
+    const base = (type || '').toLowerCase();
+    if (base === 'int' || base === 'long') {
+      const trimmed = String(raw ?? '').trim();
+      if (!trimmed) return 0;
+      const num = Number(trimmed);
+      if (!Number.isFinite(num)) throw new Error(`无法解析数字：${raw}`);
+      return Math.trunc(num);
+    }
+    if (base === 'float') {
+      const trimmed = String(raw ?? '').trim();
+      if (!trimmed) return 0;
+      const num = Number(trimmed);
+      if (!Number.isFinite(num)) throw new Error(`无法解析浮点数：${raw}`);
+      return num;
+    }
+    if (base === 'bool') {
+      return parseBoolCell(raw);
+    }
+    if (base === 'list') {
+      const trimmed = String(raw ?? '').trim();
+      if (!trimmed) return [];
+      const parsed = JSON.parse(trimmed);
+      if (!Array.isArray(parsed)) throw new Error(`列表列必须是 JSON 数组：${raw}`);
+      return parsed;
+    }
+    if (base === 'object') {
+      const trimmed = String(raw ?? '').trim();
+      if (!trimmed) return {};
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        throw new Error(`对象列必须是 JSON 对象：${raw}`);
+      }
+      return parsed;
+    }
+    // 其它类型（包含字符串/枚举等）按字符串处理
+    return raw == null ? '' : String(raw);
+  }
+
+  function parseDataRefCell(raw, param) {
+    const trimmed = String(raw ?? '').trim();
+    if (!trimmed) {
+      return { template: param.index.template, by: param.index.param, value: '' };
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object') {
+        return {
+          template: parsed.template || param.index.template,
+          by: parsed.by || param.index.param,
+          value: parsed.value != null ? String(parsed.value) : '',
+        };
+      }
+    } catch (_) {
+      // fallback to plain string
+    }
+    return { template: param.index.template, by: param.index.param, value: trimmed };
+  }
+
+  function buildTemplateFromCsv(rows, fileName) {
+    if (!rows || rows.length < 2) {
+      throw new Error('CSV 至少需要包含两行数据');
+    }
+    const headers = rows[0].map((cell) => String(cell || '').trim());
+    const typesRow = normalizeCsvRowLength(rows[1], headers.length).map((cell) => String(cell || '').trim());
+    const reserved = new Set(['template', 'id', 'name', 'index']);
+    const dataRows = rows.slice(2).map((row) => normalizeCsvRowLength(row, headers.length));
+    const nonEmptyDataRows = dataRows.filter((row) => row.some((cell) => String(cell || '').trim().length > 0));
+
+    const templateIdx = headers.indexOf('template');
+    const idIdx = headers.indexOf('id');
+    const nameIdx = headers.indexOf('name');
+    const indexIdx = headers.indexOf('index');
+    if (templateIdx < 0 || idIdx < 0 || nameIdx < 0 || indexIdx < 0) {
+      throw new Error('CSV 必须包含 template、id、name、index 四列');
+    }
+
+    const columnIndexMap = new Map();
+    headers.forEach((name, idx) => {
+      if (!name) {
+        throw new Error(`第 ${idx + 1} 列缺少列名`);
+      }
+      if (columnIndexMap.has(name)) {
+        throw new Error(`重复的列名：${name}`);
+      }
+      columnIndexMap.set(name, idx);
+    });
+
+    let templateName = '';
+    nonEmptyDataRows.forEach((row) => {
+      const raw = row[templateIdx];
+      const value = String(raw ?? '').trim();
+      if (!value) return;
+      if (!templateName) {
+        templateName = value;
+      } else if (templateName !== value) {
+        throw new Error('template 列存在不一致的名称');
+      }
+    });
+    if (!templateName) {
+      if (nonEmptyDataRows.length === 0) {
+        templateName = (fileName || '').replace(/\.csv$/i, '').trim() || '导入模板';
+      } else {
+        throw new Error('template 列不能为空');
+      }
+    }
+
+    const csvIndexMeta = parseIndexTypeCell(typesRow[indexIdx]);
+    const csvIndexField = csvIndexMeta.field || 'id';
+    const csvIndexType = csvIndexMeta.type || 'int';
+
+    const parameterDefs = [];
+    headers.forEach((name, idx) => {
+      if (reserved.has(name)) return;
+      const info = (typesRow[idx] || '').split('/').map((part) => part.trim());
+      const baseType = info[0];
+      if (!baseType) {
+        throw new Error(`${name} 缺少类型定义`);
+      }
+      const param = { name, type: baseType };
+      if (info.length >= 3 && info[1] && info[2]) {
+        param.index = { template: info[1], param: info[2] };
+      }
+      parameterDefs.push(param);
+    });
+
+    const idsFromCsv = [];
+    let indexFieldMismatch = false;
+    const instances = nonEmptyDataRows.map((row) => {
+      const record = {};
+      const payload = {};
+      const idRaw = row[idIdx];
+      const idTrimmed = String(idRaw ?? '').trim();
+      const parsedId = idTrimmed ? Number(idTrimmed) : 0;
+      if (idTrimmed && !Number.isFinite(parsedId)) {
+        throw new Error(`无法解析 id：${idRaw}`);
+      }
+      idsFromCsv.push(parsedId);
+      const nameValue = row[nameIdx] != null ? String(row[nameIdx]) : '';
+      payload.template = templateName;
+      payload.name = nameValue;
+      const indexCell = parseIndexDataCell(row[indexIdx], csvIndexField, csvIndexType);
+      payload.index = indexCell.value != null ? String(indexCell.value) : '';
+      if (indexCell.field && indexCell.field !== csvIndexField) {
+        indexFieldMismatch = true;
+      }
+      parameterDefs.forEach((param) => {
+        const colIdx = columnIndexMap.get(param.name);
+        const raw = row[colIdx];
+        if (param.index) {
+          payload[param.name] = parseDataRefCell(raw, param);
+        } else {
+          payload[param.name] = convertCsvValueByType(param.type, raw);
+        }
+      });
+      record.id = parsedId;
+      record.name = nameValue;
+      record.payload = payload;
+      return record;
+    });
+
+    let idsIncremental = true;
+    if (idsFromCsv.length > 0) {
+      if (Number.isNaN(idsFromCsv[0])) idsIncremental = false;
+      for (let i = 1; i < idsFromCsv.length; i += 1) {
+        if (!Number.isFinite(idsFromCsv[i]) || idsFromCsv[i] !== idsFromCsv[i - 1] + 1) {
+          idsIncremental = false;
+          break;
+        }
+      }
+    }
+
+    const idStart = idsIncremental && idsFromCsv.length > 0 ? idsFromCsv[0] : 0;
+    instances.forEach((inst, idx) => {
+      const newId = idsIncremental ? (idStart + idx) : idx;
+      inst.id = newId;
+      inst.payload.id = newId;
+      inst.payload.template = templateName;
+      inst.payload.name = inst.name;
+    });
+
+    return {
+      name: templateName,
+      parameters: parameterDefs,
+      instances,
+      indexField: indexFieldMismatch ? 'id' : (csvIndexField || 'id'),
+    };
+  }
+
+  function computeExpectedIndexValue(tpl, inst, fieldName) {
+    if (!inst || !inst.payload) return '';
+    if (fieldName === 'id') {
+      return String(inst.id ?? '');
+    }
+    if (fieldName === 'name') {
+      return inst.name != null ? String(inst.name) : '';
+    }
+    const value = inst.payload[fieldName];
+    return value == null ? '' : String(value);
+  }
+
+  function enforceImportedIndexField(tpl, fileName) {
+    let idxField = tpl.indexField || 'id';
+    let needReset = false;
+    const params = Array.isArray(tpl.parameters) ? tpl.parameters : [];
+    if (idxField !== 'id' && idxField !== 'name') {
+      const targetParam = params.find((p) => p && p.name === idxField);
+      if (!targetParam || !INDEXABLE_PARAM_TYPES.has(targetParam.type)) {
+        needReset = true;
+      }
+    }
+    const instList = Array.isArray(tpl.instances) ? tpl.instances : [];
+    if (!needReset) {
+      for (const inst of instList) {
+        const actual = inst.payload && inst.payload.index != null ? String(inst.payload.index) : '';
+        const expected = computeExpectedIndexValue(tpl, inst, idxField);
+        if (actual !== expected) {
+          needReset = true;
+          break;
+        }
+      }
+    }
+    if (needReset) {
+      idxField = 'id';
+      tpl.indexField = 'id';
+      instList.forEach((inst) => {
+        const newIndex = computeExpectedIndexValue(tpl, inst, 'id');
+        if (!inst.payload) inst.payload = {};
+        inst.payload.index = newIndex;
+      });
+      showMessage(`${tpl.name}模版的index清空`, 'warn');
+    } else {
+      instList.forEach((inst) => {
+        const expected = computeExpectedIndexValue(tpl, inst, idxField);
+        if (!inst.payload) inst.payload = {};
+        inst.payload.index = expected;
+      });
+    }
+  }
+
+  function applyImportedTemplate(tpl, fileName) {
+    enforceImportedIndexField(tpl, fileName);
+    const existingIdx = templates.findIndex((item) => item.name === tpl.name);
+    if (existingIdx >= 0) {
+      const existing = templates[existingIdx];
+      const existingIndexField = existing && existing.indexField ? existing.indexField : 'id';
+      const newIndexField = tpl.indexField || 'id';
+      if (newIndexField !== 'id' && existingIndexField !== newIndexField) {
+        tpl.indexField = 'id';
+        (tpl.instances || []).forEach((inst) => {
+          const expected = computeExpectedIndexValue(tpl, inst, 'id');
+          if (!inst.payload) inst.payload = {};
+          inst.payload.index = expected;
+        });
+        showMessage(`${tpl.name}模版的index清空`, 'warn');
+      }
+      tpl.__uid = existing.__uid;
+      templates[existingIdx] = tpl;
+      if (currentTemplateIndex === existingIdx) {
+        currentInstanceIndex = tpl.instances.length > 0 ? 0 : -1;
+      }
+      return existingIdx;
+    }
+    ensureTemplateUid(tpl);
+    templates.push(tpl);
+    return templates.length - 1;
+  }
+
+  async function importFromCsv() {
+    let fileHandles;
+    try {
+      fileHandles = await window.showOpenFilePicker({
+        multiple: true,
+        types: [
+          {
+            description: 'CSV 文件',
+            accept: { 'text/csv': ['.csv'] },
+          },
+        ],
+      });
+    } catch (err) {
+      if (err && err.name === 'AbortError') return;
+      console.error(err);
+      addLogEntry('error', `打开文件失败：${err && err.message ? err.message : err}`);
+      showMessage('打开 CSV 文件失败', 'warn');
+      return;
+    }
+    if (!fileHandles || fileHandles.length === 0) return;
+    if (exportSelectionMode) {
+      exitExportSelectionMode(true);
+    }
+    let successCount = 0;
+    let lastImportedName = null;
+    exportSelections.clear();
+    for (const handle of fileHandles) {
+      try {
+        const file = await handle.getFile();
+        const text = await file.text();
+        const rows = parseCsvText(text);
+        const tpl = buildTemplateFromCsv(rows, handle.name);
+        applyImportedTemplate(tpl, handle.name);
+        successCount += 1;
+        lastImportedName = tpl.name;
+        addLogEntry('info', `导入 CSV：${tpl.name}`);
+      } catch (err) {
+        console.error(err);
+        addLogEntry('error', `导入 CSV 失败（${handle.name}）：${err && err.message ? err.message : err}`, {
+          detail: err && err.stack ? err.stack : '',
+        });
+      }
+    }
+    if (successCount > 0) {
+      templates.sort((a, b) => a.name.localeCompare(b.name));
+      if (lastImportedName) {
+        const idx = templates.findIndex((tpl) => tpl.name === lastImportedName);
+        currentTemplateIndex = idx;
+        currentInstanceIndex = idx >= 0 && templates[idx].instances.length > 0 ? 0 : -1;
+      }
+      selectedTemplates.clear();
+      selectedInstances.clear();
+      selectedParams.clear();
+      if (currentTemplateIndex >= 0) {
+        selectedTemplates.add(currentTemplateIndex);
+        if (currentInstanceIndex >= 0) {
+          selectedInstances.add(currentInstanceIndex);
+        }
+      }
+      anchorTemplate = null;
+      anchorInstance = null;
+      anchorParam = null;
+      refreshTemplates();
+      refreshInstances();
+      refreshParams();
+      updateIndexTemplateOptions();
+      showMessage(`成功导入 ${successCount} 个 CSV`, 'info');
+    } else {
+      showMessage('CSV 导入失败，请查看日志', 'warn');
+    }
+  }
+
+
+  const operationLogs = [];
+
   // 事件绑定
   $("chooseDir").addEventListener("click", chooseDirectory);
   $("saveBtn").addEventListener("click", saveAll);
@@ -127,6 +984,7 @@
     });
   }
 
+  updateExportButtons();
   refreshParamTypeOptions();
 
   document.addEventListener('keydown', (evt) => {
@@ -499,9 +1357,11 @@
   /**
    * 显示消息提示
    */
-  function showMessage(msg) {
+  function showMessage(msg, level = 'info') {
+    if (!messageBox) return;
     messageBox.textContent = msg;
     messageBox.style.display = 'block';
+    addLogEntry(level, msg);
     setTimeout(() => {
       messageBox.style.display = 'none';
     }, 2000);
@@ -1449,7 +2309,31 @@
       });
       // 设置选中状态
       if (selectedTemplates.has(idx)) li.classList.add('active');
-      li.textContent = tpl.name;
+      let exportState = 'none';
+      if (exportSelectionMode) {
+        exportState = getTemplateExportState(tpl);
+        if (exportState === 'all') li.classList.add('export-all');
+        if (exportState === 'partial') li.classList.add('export-partial');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = exportState === 'all';
+        checkbox.indeterminate = exportState === 'partial';
+        checkbox.addEventListener('click', (e) => {
+          e.stopPropagation();
+          handleTemplateExportCheckbox(idx, exportState, e);
+        });
+        li.appendChild(checkbox);
+      }
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = tpl.name;
+      li.appendChild(nameSpan);
+      if (exportSelectionMode) {
+        const counts = getTemplateExportCounts(tpl);
+        const countSpan = document.createElement('span');
+        countSpan.className = 'export-count';
+        countSpan.textContent = `${counts.selected}/${counts.total}`;
+        li.appendChild(countSpan);
+      }
       li.addEventListener('click', (e) => {
         // Ctrl+点击：切换该项选中状态（不丢失已有选择）
         if (e.ctrlKey) {
@@ -1558,6 +2442,7 @@
     instanceListEl.innerHTML = "";
     if (currentTemplateIndex < 0) return;
     const tpl = templates[currentTemplateIndex];
+    const templateIdxForExport = currentTemplateIndex;
     tpl.instances.forEach((inst, idx) => {
       const li = document.createElement("li");
       li.setAttribute('draggable','true');
@@ -1592,7 +2477,21 @@
       });
       // 设置选中状态
       if (selectedInstances.has(idx)) li.classList.add('active');
-      li.textContent = `${inst.id}: ${inst.name}`;
+      let instanceExportSelected = false;
+      if (exportSelectionMode) {
+        instanceExportSelected = isInstanceSelectedForExport(tpl, inst);
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = instanceExportSelected;
+        checkbox.addEventListener('click', (e) => {
+          e.stopPropagation();
+          handleInstanceExportCheckbox(templateIdxForExport, idx, instanceExportSelected, e);
+        });
+        li.appendChild(checkbox);
+      }
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = `${inst.id}: ${inst.name}`;
+      li.appendChild(nameSpan);
       li.addEventListener('click', (e) => {
         if (e.ctrlKey) {
           // Ctrl+点击：切换该实例选中状态
