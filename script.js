@@ -42,7 +42,6 @@
   const builtinParamTypeSet = new Set(builtinParamTypeOptions.map((opt) => opt.value));
   const indexTemplateSelect = $("indexTemplate");
   const indexParamSelect = $("indexParam");
-  const INDEXABLE_PARAM_TYPES = new Set(["int", "long", "float", "string"]);
   const templateListEl = $("templateList");
   const instanceListEl = $("instanceList");
   const paramListEl = $("paramList");
@@ -61,15 +60,6 @@
   const messageBox = $("message");
   const helpBtn = $("helpBtn");
   const regenerateCsBtn = $("regenerateCs");
-  const exportCsvBtn = $("exportCsv");
-  const confirmExportCsvBtn = $("confirmExportCsv");
-  const cancelExportCsvBtn = $("cancelExportCsv");
-  const importCsvBtn = $("importCsv");
-  const viewLogsBtn = $("viewLogs");
-  const logOverlay = $("logOverlay");
-  const logListEl = $("logList");
-  const closeLogBtn = $("closeLog");
-  const clearLogsBtn = $("clearLogs");
 
   // 行高调整滑块
   const rowHeightSlider = $("rowHeight");
@@ -107,13 +97,6 @@
   function renderLogs() {
     if (!logListEl) return;
     logListEl.innerHTML = '';
-    if (operationLogs.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'log-empty';
-      empty.textContent = '暂无日志';
-      logListEl.appendChild(empty);
-      return;
-    }
     operationLogs.forEach((entry) => {
       const div = document.createElement('div');
       div.className = `log-entry ${entry.level}`;
@@ -177,14 +160,14 @@
   }
 
   function beginExportSelection() {
-    const missingDirectory = !directoryHandle || !dataEntityHandle;
+    if (!directoryHandle) {
+      alert('请先选择工作目录');
+      return;
+    }
     exportSelectionMode = true;
     exportTemplateAnchorIndex = null;
     updateExportButtons();
-    const message = missingDirectory
-      ? '未选择工作目录，请先勾选需要导出的模板或实例，导出时会提示选择目录'
-      : '已进入导出选择模式，勾选需要导出的模板或实例';
-    showMessage(message, missingDirectory ? 'warn' : 'info');
+    showMessage('已进入导出选择模式，勾选需要导出的模板或实例');
     refreshTemplates();
     refreshInstances();
   }
@@ -512,7 +495,7 @@
 
   async function performExportCsv() {
     if (!directoryHandle || !dataEntityHandle) {
-      showMessage('请先选择工作目录', 'warn');
+      alert('请先选择工作目录');
       return;
     }
     const selected = collectTemplatesForExport();
@@ -957,34 +940,6 @@
   $("pasteInstance").addEventListener("click", pasteInstance);
   $("deleteInstance").addEventListener("click", deleteInstance);
   $("newParam").addEventListener("click", newParam);
-  if (exportCsvBtn) {
-    exportCsvBtn.addEventListener('click', beginExportSelection);
-  }
-  if (confirmExportCsvBtn) {
-    confirmExportCsvBtn.addEventListener('click', performExportCsv);
-  }
-  if (cancelExportCsvBtn) {
-    cancelExportCsvBtn.addEventListener('click', () => exitExportSelectionMode(true));
-  }
-  if (importCsvBtn) {
-    importCsvBtn.addEventListener('click', importFromCsv);
-  }
-  if (viewLogsBtn) {
-    viewLogsBtn.addEventListener('click', openLogOverlay);
-  }
-  if (closeLogBtn) {
-    closeLogBtn.addEventListener('click', closeLogOverlay);
-  }
-  if (clearLogsBtn) {
-    clearLogsBtn.addEventListener('click', clearLogEntries);
-  }
-  if (logOverlay) {
-    logOverlay.addEventListener('click', (e) => {
-      if (e.target === logOverlay) {
-        closeLogOverlay();
-      }
-    });
-  }
   if (regenerateCsBtn) {
     regenerateCsBtn.addEventListener("click", regenerateCSharpStructures);
   }
@@ -1946,14 +1901,8 @@
           alert('索引目标不能是 enum 模板');
           indexTemplateSelect.value = '';
           updateIndexParamOptions();
-        } else if (targetTpl) {
-          const targetParam = (targetTpl.parameters || []).find(p => p && p.name === idxParam);
-          if (!targetParam || !INDEXABLE_PARAM_TYPES.has(targetParam.type)) {
-            alert('索引字段类型必须是 int/long/float/string');
-            indexParamSelect.value = '';
-          } else {
-            indexObj = { template: idxTpl, param: idxParam };
-          }
+        } else {
+          indexObj = { template: idxTpl, param: idxParam };
         }
       }
     } else {
@@ -3458,16 +3407,6 @@
       opt.textContent = "不允许指向 enum";
       indexParamSelect.appendChild(opt);
       indexParamSelect.value = "";
-      return;
-    }
-    const indexableParams = (tpl.parameters || []).filter((p) => p && INDEXABLE_PARAM_TYPES.has(p.type));
-    if (indexableParams.length === 0) {
-      const opt = document.createElement("option");
-      opt.value = "";
-      opt.textContent = "无可用参数";
-      indexParamSelect.appendChild(opt);
-      indexParamSelect.value = "";
-      indexParamSelect.disabled = true;
       return;
     }
     const optDef = document.createElement("option");
