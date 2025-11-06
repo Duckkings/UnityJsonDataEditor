@@ -451,6 +451,12 @@ body.dark .log-header {
   white-space: pre-wrap;
 }
 
+.log-empty {
+  text-align: center;
+  color: #777;
+  padding: 24px 0;
+}
+
 .log-entry {
   margin-bottom: 8px;
 }
@@ -482,4 +488,8 @@ body.dark .log-entry.warn {
 
 body.dark .log-entry.error {
   color: #ef9a9a;
+}
+
+body.dark .log-empty {
+  color: #aaa;
 }
