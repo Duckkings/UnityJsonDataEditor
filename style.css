@@ -274,6 +274,15 @@ body.dark .list li.export-partial {
   text-overflow: ellipsis;
 }
 
+#instanceList li.duplicate-index > span {
+  color: #d93025;
+  font-weight: 600;
+}
+
+body.dark #instanceList li.duplicate-index > span {
+  color: #ff8080;
+}
+
 .list li .export-count {
   margin-left: 6px;
   font-size: 12px;

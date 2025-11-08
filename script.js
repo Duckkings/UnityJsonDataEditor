@@ -28,6 +28,8 @@
   let lastSelectedCategory = null;
   // 当前正在编辑的参数索引，-1 表示新建
   let editingParamIndex = -1;
+  // 缓存当前模板的索引重复信息，便于在索引跳转时复用
+  let lastDuplicateIndexInfo = null;
 
   // DOM 元素获取
   const $ = (id) => document.getElementById(id);
@@ -805,6 +807,138 @@
     }
     const value = inst.payload[fieldName];
     return value == null ? '' : String(value);
+  }
+
+  function getNumericInstanceId(inst) {
+    if (!inst) return Number.NaN;
+    const raw = inst.id;
+    if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+    if (typeof raw === 'string' && raw.trim() !== '') {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return Number.NaN;
+  }
+
+  function collectDuplicateIndexInfo(tpl) {
+    if (!tpl) {
+      return { field: 'id', duplicates: new Map(), byIndex: new Map() };
+    }
+    const field = tpl.indexField || 'id';
+    const instList = Array.isArray(tpl.instances) ? tpl.instances : [];
+    const buckets = new Map();
+    instList.forEach((inst, idx) => {
+      const rawValue = computeExpectedIndexValue(tpl, inst, field);
+      const key = rawValue == null ? '' : String(rawValue);
+      if (!buckets.has(key)) {
+        buckets.set(key, []);
+      }
+      buckets.get(key).push({
+        idx,
+        inst,
+        id: getNumericInstanceId(inst),
+        value: key,
+      });
+    });
+    const duplicates = new Map();
+    const byIndex = new Map();
+    buckets.forEach((entries, key) => {
+      if (entries.length > 1) {
+        duplicates.set(key, entries);
+        entries.forEach((entry) => {
+          byIndex.set(entry.idx, { value: key, entries });
+        });
+      }
+    });
+    return { field, duplicates, byIndex };
+  }
+
+  function chooseDuplicateNavigationTarget(group, currentInst) {
+    if (!Array.isArray(group) || group.length <= 1) return null;
+    const currentEntry = group.find((entry) => entry.inst === currentInst);
+    const others = group.filter((entry) => entry.inst !== currentInst);
+    if (others.length === 0) return null;
+    if (!currentEntry) {
+      return others.slice().sort((a, b) => a.idx - b.idx)[0];
+    }
+    const currentId = currentEntry.id;
+    const greater = others
+      .filter((entry) => Number.isFinite(entry.id) && Number.isFinite(currentId)
+        && entry.id > currentId)
+      .sort((a, b) => a.id - b.id);
+    if (greater.length > 0) {
+      return greater[0];
+    }
+    const smaller = others
+      .filter((entry) => Number.isFinite(entry.id) && Number.isFinite(currentId)
+        && entry.id < currentId)
+      .sort((a, b) => a.id - b.id);
+    if (smaller.length > 0) {
+      return smaller[0];
+    }
+    return others.slice().sort((a, b) => a.idx - b.idx)[0];
+  }
+
+  function jumpToDuplicateIndexInstance(tpl, inst) {
+    if (!tpl || !inst) return false;
+    ensureTemplateUid(tpl);
+    let info = null;
+    if (lastDuplicateIndexInfo && lastDuplicateIndexInfo.uid === tpl.__uid) {
+      info = lastDuplicateIndexInfo.info;
+    }
+    if (!info) {
+      info = collectDuplicateIndexInfo(tpl);
+      lastDuplicateIndexInfo = { uid: tpl.__uid, info };
+    }
+    const field = info.field;
+    const key = computeExpectedIndexValue(tpl, inst, field);
+    const normalized = key == null ? '' : String(key);
+    const group = info.duplicates.get(normalized);
+    if (!group || group.length <= 1) {
+      showMessage('该索引值没有重复', 'info');
+      return false;
+    }
+    const target = chooseDuplicateNavigationTarget(group, inst);
+    if (!target) {
+      showMessage('该索引值没有其他重复项', 'info');
+      return false;
+    }
+    let targetIdx = target.idx;
+    if (!(targetIdx >= 0 && targetIdx < tpl.instances.length)) {
+      targetIdx = tpl.instances.indexOf(target.inst);
+    }
+    if (!(targetIdx >= 0 && targetIdx < tpl.instances.length)) {
+      showMessage('未能定位到重复索引的实例', 'warn');
+      return false;
+    }
+    currentInstanceIndex = targetIdx;
+    selectedInstances.clear();
+    selectedInstances.add(targetIdx);
+    anchorInstance = targetIdx;
+    instanceNameInput.value = tpl.instances[targetIdx]?.name || '';
+    refreshInstances();
+    refreshParams();
+    lastSelectedCategory = 'instance';
+    requestAnimationFrame(() => {
+      const li = instanceListEl.children[targetIdx];
+      if (li && typeof li.scrollIntoView === 'function') {
+        try {
+          li.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        } catch (err) {
+          li.scrollIntoView({ block: 'center' });
+        }
+      }
+    });
+    const instLabel = tpl.instances[targetIdx];
+    let labelText = '';
+    if (instLabel) {
+      const parts = [];
+      if (instLabel.name) parts.push(String(instLabel.name));
+      if (instLabel.id != null && instLabel.id !== '') parts.push(`ID:${instLabel.id}`);
+      labelText = parts.join(' ');
+    }
+    showMessage(labelText ? `已跳转到索引重复的实例：${labelText}` : '已跳转到索引重复的实例', 'warn');
+    return true;
   }
 
   function enforceImportedIndexField(tpl, fileName) {
@@ -2492,8 +2626,15 @@
    */
   function refreshInstances() {
     instanceListEl.innerHTML = "";
-    if (currentTemplateIndex < 0) return;
+    if (currentTemplateIndex < 0) {
+      lastDuplicateIndexInfo = null;
+      return;
+    }
     const tpl = templates[currentTemplateIndex];
+    ensureTemplateUid(tpl);
+    const duplicateInfo = collectDuplicateIndexInfo(tpl);
+    lastDuplicateIndexInfo = { uid: tpl.__uid, info: duplicateInfo };
+    const duplicatesByIndex = duplicateInfo.byIndex;
     const templateIdxForExport = currentTemplateIndex;
     tpl.instances.forEach((inst, idx) => {
       const li = document.createElement("li");
@@ -2527,7 +2668,13 @@
         else if (from > currentInstanceIndex && to <= currentInstanceIndex) currentInstanceIndex++;
         refreshInstances();
       });
-      // 设置选中状态
+      // 设置索引重复状态与选中状态
+      const duplicateEntry = duplicatesByIndex.get(idx);
+      if (duplicateEntry) {
+        li.classList.add('duplicate-index');
+        const displayValue = duplicateEntry.value !== '' ? duplicateEntry.value : '（空）';
+        li.title = `索引值重复：${displayValue}`;
+      }
       if (selectedInstances.has(idx)) li.classList.add('active');
       let instanceExportSelected = false;
       if (exportSelectionMode) {
@@ -2659,6 +2806,7 @@
             if (!one.payload) one.payload = {};
             one.payload.index = vv == null ? '' : String(vv);
           });
+          refreshInstances();
           refreshParams();
         });
         // 显示当前实例的 index 值（只读）
@@ -2670,6 +2818,12 @@
         inst.payload.index = valueSpan.textContent;
         item.appendChild(select);
         item.appendChild(valueSpan);
+        item.addEventListener('mousedown', (evt) => {
+          if (evt.button !== 0 || !evt.altKey) return;
+          evt.preventDefault();
+          evt.stopPropagation();
+          jumpToDuplicateIndexInstance(tpl, inst);
+        });
       } else {
         const span = document.createElement("span");
         span.textContent = inst.payload[f.name];
@@ -3072,6 +3226,7 @@
     const tpl = templates[currentTemplateIndex];
     const inst = tpl.instances[currentInstanceIndex];
     const param = tpl.parameters[paramIndex];
+    if (!inst.payload) inst.payload = {};
     switch (param.type) {
       case "string":
         inst.payload[param.name] = inputEl.value;
@@ -3101,6 +3256,11 @@
         break;
       default:
         inst.payload[param.name] = inputEl.value;
+    }
+    if (tpl.indexField === param.name) {
+      const newIndexValue = computeExpectedIndexValue(tpl, inst, tpl.indexField);
+      inst.payload.index = newIndexValue == null ? '' : String(newIndexValue);
+      refreshInstances();
     }
   }
 
