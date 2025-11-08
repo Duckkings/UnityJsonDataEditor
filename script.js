@@ -3694,11 +3694,13 @@
   /**
    * 保存所有模板到文件
    */
-  function askCSharpReplacement(templateName) {
+  function askCSharpReplacementBulk(templateNames) {
+    const readableList = templateNames.join('、');
     const lines = [
-      `${templateName} 模板的结构发生变化，检测到 C# 脚本内容可能发生变化。`,
+      '以下模板的结构发生变化，检测到 C# 脚本内容可能发生变化：',
+      readableList,
       '请选择操作：',
-      '1. 替换原有 C# 脚本',
+      '1. 替换 C#，同时保存 JSON 数据',
       '2. 只保存 JSON 数据，不替换脚本',
       '3. 取消保存',
     ];
@@ -3725,6 +3727,7 @@
       const csCache = new Map();
       let enumTemplateSaved = false;
       let shouldUpdateDataRef = false;
+      const pendingStructureDecision = [];
 
       for (const tpl of templates) {
         ensureTemplateUid(tpl);
@@ -3743,16 +3746,23 @@
           templateDecisions.set(tpl.__uid, { decision: 'jsonOnly', structureChanged: true });
           continue;
         }
-        const answer = askCSharpReplacement(tpl.name);
+        pendingStructureDecision.push(tpl);
+      }
+
+      if (pendingStructureDecision.length > 0) {
+        const answer = askCSharpReplacementBulk(pendingStructureDecision.map((tpl) => tpl.name));
         if (answer === 'cancel') {
           showMessage('已取消保存');
           return;
         }
         if (answer === 'replace') {
           shouldUpdateDataRef = true;
-          templateDecisions.set(tpl.__uid, { decision: 'replace', structureChanged: true });
-        } else {
-          templateDecisions.set(tpl.__uid, { decision: 'jsonOnly', structureChanged: true });
+        }
+        for (const tpl of pendingStructureDecision) {
+          templateDecisions.set(tpl.__uid, {
+            decision: answer === 'replace' ? 'replace' : 'jsonOnly',
+            structureChanged: true,
+          });
         }
       }
 
