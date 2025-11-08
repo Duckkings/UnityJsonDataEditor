@@ -390,12 +390,12 @@
   }
 
   function serializeValueForCsv(param, value) {
-    if (param && param.index) {
+    if (param && param.parameterIndexes) {
       if (value && typeof value === 'object') {
         try {
           return JSON.stringify({
-            template: value.template ?? param.index.template,
-            by: value.by ?? param.index.param,
+            template: value.template ?? param.parameterIndexes.template,
+            by: value.by ?? param.parameterIndexes.param,
             value: value.value ?? '',
           });
         } catch (_) {
@@ -405,7 +405,7 @@
       if (value == null || value === '') {
         return '';
       }
-      return JSON.stringify({ template: param.index.template, by: param.index.param, value: String(value) });
+      return JSON.stringify({ template: param.parameterIndexes.template, by: param.parameterIndexes.param, value: String(value) });
     }
     if (Array.isArray(value)) {
       try {
@@ -485,8 +485,10 @@
     (tpl.parameters || []).forEach((p) => {
       if (!p) return;
       headers.push(p.name);
-      if (p.index && p.index.template && p.index.param) {
-        types.push(`${p.type}/${p.index.template}/${p.index.param}`);
+      if (p.parameterIndexes && p.parameterIndexes.template && p.parameterIndexes.param) {
+        const idxField = p.parameterIndexes.indexField || '';
+        const suffix = idxField ? `/${idxField}` : '';
+        types.push(`${p.type}/${p.parameterIndexes.template}/${p.parameterIndexes.param}${suffix}`);
       } else {
         types.push(p.type);
       }
@@ -650,21 +652,21 @@
   function parseDataRefCell(raw, param) {
     const trimmed = String(raw ?? '').trim();
     if (!trimmed) {
-      return { template: param.index.template, by: param.index.param, value: '' };
+      return { template: param.parameterIndexes.template, by: param.parameterIndexes.param, value: '' };
     }
     try {
       const parsed = JSON.parse(trimmed);
       if (parsed && typeof parsed === 'object') {
         return {
-          template: parsed.template || param.index.template,
-          by: parsed.by || param.index.param,
+          template: parsed.template || param.parameterIndexes.template,
+          by: parsed.by || param.parameterIndexes.param,
           value: parsed.value != null ? String(parsed.value) : '',
         };
       }
     } catch (_) {
       // fallback to plain string
     }
-    return { template: param.index.template, by: param.index.param, value: trimmed };
+    return { template: param.parameterIndexes.template, by: param.parameterIndexes.param, value: trimmed };
   }
 
   function buildTemplateFromCsv(rows, fileName) {
@@ -729,7 +731,11 @@
       }
       const param = { name, type: baseType };
       if (info.length >= 3 && info[1] && info[2]) {
-        param.index = { template: info[1], param: info[2] };
+        param.parameterIndexes = {
+          template: info[1],
+          param: info[2],
+          indexField: info[3] || '',
+        };
       }
       parameterDefs.push(param);
     });
@@ -757,7 +763,7 @@
       parameterDefs.forEach((param) => {
         const colIdx = columnIndexMap.get(param.name);
         const raw = row[colIdx];
-        if (param.index) {
+        if (param.parameterIndexes) {
           payload[param.name] = parseDataRefCell(raw, param);
         } else {
           payload[param.name] = convertCsvValueByType(param.type, raw);
@@ -1219,10 +1225,11 @@
         return {
           name: p.name,
           type: p.type,
-          index: p.index
+          parameterIndexes: p.parameterIndexes
             ? {
-                template: p.index.template || '',
-                param: p.index.param || '',
+                template: p.parameterIndexes.template || '',
+                param: p.parameterIndexes.param || '',
+                indexField: p.parameterIndexes.indexField || '',
               }
             : null,
         };
@@ -1707,6 +1714,7 @@
       currentDirLabel.textContent = directoryHandle.name;
       await ensureSubFolders();
       await ensureModelStruct();
+      await generateRuntimeLoaderArtifacts();
       await loadAllTemplates();
       refreshTemplates();
       updateIndexTemplateOptions();
@@ -1725,6 +1733,7 @@
       currentDirLabel.textContent = directoryHandle.name;
       await ensureSubFolders();
       await ensureModelStruct();
+      await generateRuntimeLoaderArtifacts();
       await loadAllTemplates();
       refreshTemplates();
       updateIndexTemplateOptions();
@@ -1783,6 +1792,7 @@
         const content = [
           'using System;',
           'using System.Collections.Generic;',
+          'using Newtonsoft.Json;',
           '',
           '[Serializable]',
           'public class TableSchema',
@@ -1790,7 +1800,7 @@
           '    public string name;',
           '    public string indexField;',
           '    public List<ParamDef> parameters;',
-          '    public List<Row> instances;',
+          '    public Dictionary<string, object> instances;',
           '}',
           '',
           '[Serializable]',
@@ -1798,7 +1808,15 @@
           '{',
           '    public string name;',
           '    public string type;',
-          '    public object index;',
+          '    public ParameterIndexBinding parameterIndexes;',
+          '}',
+          '',
+          '[Serializable]',
+          'public class ParameterIndexBinding',
+          '{',
+          '    public string template;',
+          '    public string param;',
+          '    public string indexField;',
           '}',
           '',
           '[Serializable]',
@@ -1832,6 +1850,511 @@
     }
   }
 
+  function normalizeParamIndexStructure(param) {
+    if (!param || typeof param !== 'object') return;
+    if (param.index && !param.parameterIndexes) {
+      const legacy = param.index;
+      if (legacy && typeof legacy === 'object') {
+        param.parameterIndexes = {
+          template: legacy.template || '',
+          param: legacy.param || '',
+          indexField: legacy.indexField || '',
+        };
+      } else {
+        param.parameterIndexes = { template: '', param: '', indexField: '' };
+      }
+      delete param.index;
+    } else if (param.index) {
+      delete param.index;
+    }
+    if (param.parameterIndexes && typeof param.parameterIndexes === 'object') {
+      if (!Object.prototype.hasOwnProperty.call(param.parameterIndexes, 'indexField')) {
+        param.parameterIndexes.indexField = '';
+      }
+      if (!Object.prototype.hasOwnProperty.call(param.parameterIndexes, 'template')) {
+        param.parameterIndexes.template = '';
+      }
+      if (!Object.prototype.hasOwnProperty.call(param.parameterIndexes, 'param')) {
+        param.parameterIndexes.param = '';
+      }
+    }
+  }
+
+  function normalizeTemplateParameterIndexes(template) {
+    if (!template || !Array.isArray(template.parameters)) return;
+    template.parameters.forEach((param) => normalizeParamIndexStructure(param));
+  }
+
+  function populateMissingIndexFields(templatesList) {
+    if (!Array.isArray(templatesList)) return;
+    templatesList.forEach((tpl) => {
+      if (!tpl || !Array.isArray(tpl.parameters)) return;
+      tpl.parameters.forEach((param) => {
+        if (!param || !param.parameterIndexes || typeof param.parameterIndexes !== 'object') return;
+        if (!param.parameterIndexes.indexField) {
+          const target = templatesList.find((item) => item && item.name === param.parameterIndexes.template);
+          if (target) {
+            param.parameterIndexes.indexField = target.indexField || 'id';
+          }
+        }
+      });
+    });
+  }
+
+  async function generateRuntimeLoaderArtifacts() {
+    if (!csharpHandle) return;
+    if (!modelStructHandle) {
+      await ensureModelStruct();
+    }
+    if (!modelStructHandle) return;
+    const loaderLines = [
+      "using System;",
+      "using System.Collections.Generic;",
+      "using System.Globalization;",
+      "using System.IO;",
+      "using System.Linq;",
+      "using Newtonsoft.Json;",
+      "using Newtonsoft.Json.Linq;",
+      "using UnityEngine;",
+      "#if UNITY_EDITOR",
+      "using UnityEditor;",
+      "#endif",
+      "",
+      "public static class DataEntityRuntimeLoader",
+      "{",
+      "    private const string DefaultManifestName = \"manifest.json\";",
+      "    private static readonly JsonSerializerSettings SerializerSettings = new JsonSerializerSettings",
+      "    {",
+      "        MissingMemberHandling = MissingMemberHandling.Ignore,",
+      "        NullValueHandling = NullValueHandling.Ignore,",
+      "    };",
+      "",
+      "    private static readonly Dictionary<string, string> ManifestIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);",
+      "    private static readonly Dictionary<string, TableSchema> SchemaCache = new Dictionary<string, TableSchema>(StringComparer.OrdinalIgnoreCase);",
+      "    private static string _dataDirectory = string.Empty;",
+      "    private static bool _initialized;",
+      "",
+      "    public static IReadOnlyDictionary<string, TableSchema> Schemas => SchemaCache;",
+      "",
+      "    public static void Initialize(string dataDirectory = null)",
+      "    {",
+      "        _dataDirectory = string.IsNullOrWhiteSpace(dataDirectory)",
+      "            ? Path.GetFullPath(Path.Combine(Application.dataPath, \"..\", \"dataEntity\"))",
+      "            : Path.GetFullPath(dataDirectory);",
+      "        LoadAll();",
+      "    }",
+      "",
+      "    public static TableSchema GetSchema(string templateName)",
+      "    {",
+      "        EnsureInitialized();",
+      "        if (!SchemaCache.TryGetValue(templateName, out var schema))",
+      "        {",
+      "            throw new KeyNotFoundException($\"\u6a21\u677f {templateName} \u672a\u52a0\u8f7d\u3002\");",
+      "        }",
+      "        return schema;",
+      "    }",
+      "",
+      "    public static T GetValue<T>(string templateName, string instanceName, string indexKey, string parameterName)",
+      "    {",
+      "        var value = GetValue(templateName, instanceName, indexKey, parameterName, typeof(T));",
+      "        if (value == null)",
+      "        {",
+      "            return default;",
+      "        }",
+      "        return (T)value;",
+      "    }",
+      "",
+      "    public static object GetValue(string templateName, string instanceName, string indexKey, string parameterName, Type parameterType)",
+      "    {",
+      "        EnsureInitialized();",
+      "        if (string.IsNullOrWhiteSpace(templateName))",
+      "        {",
+      "            throw new ArgumentException(\"\u6a21\u677f\u540d\u4e0d\u80fd\u4e3a\u7a7a\", nameof(templateName));",
+      "        }",
+      "        if (string.IsNullOrWhiteSpace(parameterName))",
+      "        {",
+      "            throw new ArgumentException(\"\u53c2\u6570\u540d\u4e0d\u80fd\u4e3a\u7a7a\", nameof(parameterName));",
+      "        }",
+      "        if (!SchemaCache.TryGetValue(templateName, out var schema))",
+      "        {",
+      "            throw new KeyNotFoundException($\"\u6a21\u677f {templateName} \u672a\u627e\u5230\u3002\");",
+      "        }",
+      "",
+      "        var instance = LocateInstance(schema, instanceName, indexKey);",
+      "        var payload = ExtractPayload(instance);",
+      "        if (payload == null)",
+      "        {",
+      "            throw new InvalidOperationException($\"\u5b9e\u4f8b {instanceName ?? indexKey} \u4e0d\u5305\u542b payload\u3002\");",
+      "        }",
+      "        if (!payload.TryGetValue(parameterName, out var rawValue))",
+      "        {",
+      "            throw new KeyNotFoundException($\"\u5b9e\u4f8b\u4e2d\u672a\u627e\u5230\u53c2\u6570 {parameterName}\u3002\");",
+      "        }",
+      "",
+      "        return ConvertValue(rawValue, parameterType ?? typeof(object), templateName, parameterName);",
+      "    }",
+      "",
+      "    public static void Reload()",
+      "    {",
+      "#if UNITY_EDITOR",
+      "        var wasPaused = EditorApplication.isPaused;",
+      "        if (!wasPaused)",
+      "        {",
+      "            EditorApplication.isPaused = true;",
+      "        }",
+      "#endif",
+      "        try",
+      "        {",
+      "            if (string.IsNullOrWhiteSpace(_dataDirectory))",
+      "            {",
+      "                throw new InvalidOperationException(\"\u8bf7\u5148\u8c03\u7528 Initialize \u6307\u5b9a\u6570\u636e\u76ee\u5f55\u3002\");",
+      "            }",
+      "            LoadAll();",
+      "        }",
+      "        finally",
+      "        {",
+      "#if UNITY_EDITOR",
+      "            if (!wasPaused)",
+      "            {",
+      "                EditorApplication.isPaused = false;",
+      "            }",
+      "#endif",
+      "        }",
+      "    }",
+      "",
+      "    private static void EnsureInitialized()",
+      "    {",
+      "        if (!_initialized)",
+      "        {",
+      "            if (string.IsNullOrWhiteSpace(_dataDirectory))",
+      "            {",
+      "                Initialize();",
+      "            }",
+      "            else",
+      "            {",
+      "                LoadAll();",
+      "            }",
+      "        }",
+      "    }",
+      "",
+      "    private static void LoadAll()",
+      "    {",
+      "        ManifestIndex.Clear();",
+      "        SchemaCache.Clear();",
+      "",
+      "        var manifestPath = ResolvePath(DefaultManifestName);",
+      "        if (!File.Exists(manifestPath))",
+      "        {",
+      "            throw new FileNotFoundException($\"\u672a\u627e\u5230 manifest \u6587\u4ef6: {manifestPath}\");",
+      "        }",
+      "",
+      "        var manifestContent = File.ReadAllText(manifestPath);",
+      "        var manifestEntries = JsonConvert.DeserializeObject<List<ManifestRecord>>(manifestContent, SerializerSettings) ?? new List<ManifestRecord>();",
+      "        foreach (var entry in manifestEntries)",
+      "        {",
+      "            if (string.IsNullOrWhiteSpace(entry.template) || string.IsNullOrWhiteSpace(entry.path))",
+      "            {",
+      "                continue;",
+      "            }",
+      "            var normalized = entry.template.Trim();",
+      "            ManifestIndex[normalized] = ResolvePath(entry.path);",
+      "        }",
+      "",
+      "        foreach (var kv in ManifestIndex)",
+      "        {",
+      "            try",
+      "            {",
+      "                var schema = LoadSchema(kv.Key, kv.Value);",
+      "                SchemaCache[kv.Key] = schema;",
+      "            }",
+      "            catch (Exception ex)",
+      "            {",
+      "                Debug.LogError($\"\u52a0\u8f7d\u6a21\u677f {kv.Key} \u5931\u8d25: {ex.Message}\\n{ex.StackTrace}\");",
+      "            }",
+      "        }",
+      "",
+      "        foreach (var schema in SchemaCache.Values)",
+      "        {",
+      "            if (schema?.parameters == null) continue;",
+      "            foreach (var param in schema.parameters)",
+      "            {",
+      "                if (param?.parameterIndexes == null) continue;",
+      "                if (string.IsNullOrEmpty(param.parameterIndexes.indexField) && !string.IsNullOrEmpty(param.parameterIndexes.template) && SchemaCache.TryGetValue(param.parameterIndexes.template, out var target))",
+      "                {",
+      "                    param.parameterIndexes.indexField = target.indexField ?? \"id\";",
+      "                }",
+      "            }",
+      "        }",
+      "",
+      "        _initialized = true;",
+      "    }",
+      "",
+      "    private static TableSchema LoadSchema(string templateName, string filePath)",
+      "    {",
+      "        if (!File.Exists(filePath))",
+      "        {",
+      "            throw new FileNotFoundException($\"\u627e\u4e0d\u5230\u6a21\u677f {templateName} \u7684\u6570\u636e\u6587\u4ef6\", filePath);",
+      "        }",
+      "        var json = File.ReadAllText(filePath);",
+      "        var raw = JsonConvert.DeserializeObject<RawTableSchema>(json, SerializerSettings) ?? new RawTableSchema();",
+      "        if (raw.parameters != null)",
+      "        {",
+      "            foreach (var param in raw.parameters)",
+      "            {",
+      "                if (param?.parameterIndexes != null && string.IsNullOrEmpty(param.parameterIndexes.indexField))",
+      "                {",
+      "                    param.parameterIndexes.indexField = string.Empty;",
+      "                }",
+      "            }",
+      "        }",
+      "        var schema = new TableSchema",
+      "        {",
+      "            name = string.IsNullOrWhiteSpace(raw.name) ? templateName : raw.name,",
+      "            indexField = string.IsNullOrWhiteSpace(raw.indexField) ? \"id\" : raw.indexField,",
+      "            parameters = raw.parameters ?? new List<ParamDef>(),",
+      "            instances = BuildInstanceDictionary(templateName, raw.instances)",
+      "        };",
+      "        return schema;",
+      "    }",
+      "",
+      "    private static Dictionary<string, object> BuildInstanceDictionary(string templateName, List<RawInstance> instances)",
+      "    {",
+      "        var result = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);",
+      "        if (instances == null || instances.Count == 0)",
+      "        {",
+      "            return result;",
+      "        }",
+      "",
+      "        var grouped = new Dictionary<string, List<RawInstance>>(StringComparer.OrdinalIgnoreCase);",
+      "        foreach (var inst in instances)",
+      "        {",
+      "            var payloadIndex = inst?.payload?.Value<string>(\"index\");",
+      "            var key = string.IsNullOrWhiteSpace(payloadIndex) ? inst?.id.ToString() ?? Guid.NewGuid().ToString(\"N\") : payloadIndex;",
+      "            if (!grouped.TryGetValue(key, out var list))",
+      "            {",
+      "                list = new List<RawInstance>();",
+      "                grouped[key] = list;",
+      "            }",
+      "            list.Add(inst);",
+      "        }",
+      "",
+      "        var duplicateMessages = new List<string>();",
+      "        foreach (var kv in grouped)",
+      "        {",
+      "            var ordered = kv.Value.OrderBy(r => r?.id ?? int.MaxValue).ToList();",
+      "            if (ordered.Count > 1)",
+      "            {",
+      "                var names = ordered",
+      "                    .Select(r => !string.IsNullOrEmpty(r?.name) ? r.name : r?.payload?.Value<string>(\"name\") ?? string.Empty)",
+      "                    .Where(n => !string.IsNullOrEmpty(n))",
+      "                    .ToList();",
+      "                if (names.Count > 0)",
+      "                {",
+      "                    duplicateMessages.Add($\"{templateName}[{string.Join(\",\", names)}]\");",
+      "                }",
+      "            }",
+      "            for (var i = 0; i < ordered.Count; i++)",
+      "            {",
+      "                var suffix = i == 0 ? string.Empty : $\"_{i}\";",
+      "                var baseKey = string.IsNullOrEmpty(kv.Key) ? ordered[i]?.id.ToString() ?? $\"__generated_{i}\" : kv.Key;",
+      "                var finalKey = baseKey + suffix;",
+      "                var attempt = 1;",
+      "                while (result.ContainsKey(finalKey))",
+      "                {",
+      "                    finalKey = $\"{baseKey}_{attempt++}\";",
+      "                }",
+      "                result[finalKey] = ordered[i]?.ToDictionary();",
+      "            }",
+      "        }",
+      "",
+      "        if (duplicateMessages.Count > 0)",
+      "        {",
+      "            Debug.LogError($\"{string.Join(\",\", duplicateMessages)} \u91cd\u590d\u5b9e\u4f8b \u8fd9\u4e9b\u5b9e\u4f8b\u7684index\u91cd\u590d\u5bfc\u5165\u5931\u8d25\");",
+      "        }",
+      "",
+      "        return result;",
+      "    }",
+      "",
+      "    private static object LocateInstance(TableSchema schema, string instanceName, string indexKey)",
+      "    {",
+      "        if (schema.instances == null)",
+      "        {",
+      "            throw new InvalidOperationException($\"\u6a21\u677f {schema.name} \u6ca1\u6709\u52a0\u8f7d\u4efb\u4f55\u5b9e\u4f8b\u3002\");",
+      "        }",
+      "",
+      "        if (!string.IsNullOrWhiteSpace(indexKey) && schema.instances.TryGetValue(indexKey, out var indexed))",
+      "        {",
+      "            return indexed;",
+      "        }",
+      "",
+      "        if (!string.IsNullOrWhiteSpace(instanceName))",
+      "        {",
+      "            foreach (var kv in schema.instances)",
+      "            {",
+      "                var payload = ExtractPayload(kv.Value);",
+      "                var name = payload != null && payload.TryGetValue(\"name\", out var v) ? v?.ToString() : null;",
+      "                if (!string.IsNullOrEmpty(name) && string.Equals(name, instanceName, StringComparison.OrdinalIgnoreCase))",
+      "                {",
+      "                    return kv.Value;",
+      "                }",
+      "            }",
+      "        }",
+      "",
+      "        throw new KeyNotFoundException($\"\u672a\u627e\u5230\u5b9e\u4f8b\uff1a\u6a21\u677f={schema.name}, \u540d\u79f0={instanceName}, \u7d22\u5f15={indexKey}\");",
+      "    }",
+      "",
+      "    private static Dictionary<string, object> ExtractPayload(object instance)",
+      "    {",
+      "        if (instance is RawInstance raw)",
+      "        {",
+      "            return raw.payload?.ToObject<Dictionary<string, object>>();",
+      "        }",
+      "        if (instance is Dictionary<string, object> dict)",
+      "        {",
+      "            if (dict.TryGetValue(\"payload\", out var payloadObj))",
+      "            {",
+      "                return ConvertToDictionary(payloadObj);",
+      "            }",
+      "            return dict;",
+      "        }",
+      "        if (instance is JObject jObject)",
+      "        {",
+      "            var payload = jObject[\"payload\"] ?? jObject;",
+      "            return payload.ToObject<Dictionary<string, object>>();",
+      "        }",
+      "        return ConvertToDictionary(instance);",
+      "    }",
+      "",
+      "    private static Dictionary<string, object> ConvertToDictionary(object value)",
+      "    {",
+      "        switch (value)",
+      "        {",
+      "            case null:",
+      "                return null;",
+      "            case Dictionary<string, object> dict:",
+      "                return dict;",
+      "            case JObject jObject:",
+      "                return jObject.ToObject<Dictionary<string, object>>();",
+      "            default:",
+      "                return JsonConvert.DeserializeObject<Dictionary<string, object>>(JsonConvert.SerializeObject(value, SerializerSettings));",
+      "        }",
+      "    }",
+      "",
+      "    private static object ConvertValue(object rawValue, Type targetType, string templateName, string parameterName)",
+      "    {",
+      "        if (rawValue == null || targetType == typeof(object))",
+      "        {",
+      "            return rawValue;",
+      "        }",
+      "        if (targetType.IsInstanceOfType(rawValue))",
+      "        {",
+      "            return rawValue;",
+      "        }",
+      "        try",
+      "        {",
+      "            switch (rawValue)",
+      "            {",
+      "                case JToken token:",
+      "                    return token.ToObject(targetType);",
+      "                case Dictionary<string, object> dict:",
+      "                    return JsonConvert.DeserializeObject(JsonConvert.SerializeObject(dict, SerializerSettings), targetType);",
+      "                case IList<object> list when targetType.IsAssignableFrom(rawValue.GetType()):",
+      "                    return rawValue;",
+      "                case IConvertible convertible when typeof(IConvertible).IsAssignableFrom(targetType):",
+      "                    return Convert.ChangeType(convertible, targetType, CultureInfo.InvariantCulture);",
+      "                default:",
+      "                    return JsonConvert.DeserializeObject(JsonConvert.SerializeObject(rawValue, SerializerSettings), targetType);",
+      "            }",
+      "        }",
+      "        catch (Exception ex)",
+      "        {",
+      "            throw new InvalidCastException($\"\u6a21\u677f {templateName} \u7684\u53c2\u6570 {parameterName} \u65e0\u6cd5\u8f6c\u6362\u4e3a {targetType.Name}\", ex);",
+      "        }",
+      "    }",
+      "",
+      "    private static string ResolvePath(string relativePath)",
+      "    {",
+      "        if (string.IsNullOrWhiteSpace(relativePath))",
+      "        {",
+      "            return _dataDirectory;",
+      "        }",
+      "        if (Path.IsPathRooted(relativePath))",
+      "        {",
+      "            return relativePath;",
+      "        }",
+      "        var sanitized = relativePath.Replace(\"\\\\\", \"/\").TrimStart('.', '/');",
+      "        if (sanitized.StartsWith(\"dataEntity/\", StringComparison.OrdinalIgnoreCase))",
+      "        {",
+      "            sanitized = sanitized.Substring(\"dataEntity/\".Length);",
+      "        }",
+      "        var combined = string.IsNullOrEmpty(_dataDirectory) ? sanitized : Path.Combine(_dataDirectory, sanitized);",
+      "        return Path.GetFullPath(combined);",
+      "    }",
+      "",
+      "    private class ManifestRecord",
+      "    {",
+      "        public string template;",
+      "        public string path;",
+      "    }",
+      "",
+      "    private class RawTableSchema",
+      "    {",
+      "        public string name;",
+      "        public string indexField;",
+      "        public List<ParamDef> parameters;",
+      "        public List<RawInstance> instances;",
+      "    }",
+      "",
+      "    private class RawInstance",
+      "    {",
+      "        public int id;",
+      "        public string name;",
+      "        public JObject payload;",
+      "",
+      "        public Dictionary<string, object> ToDictionary()",
+      "        {",
+      "            return new Dictionary<string, object>",
+      "            {",
+      "                { \"id\", id },",
+      "                { \"name\", name },",
+      "                { \"payload\", payload != null ? payload.ToObject<Dictionary<string, object>>() : new Dictionary<string, object>() }",
+      "            };",
+      "        }",
+      "    }",
+      "}"
+    ];
+    const loaderContent = loaderLines.join('\n');
+    await writeTextFile(modelStructHandle, 'DataEntityRuntimeLoader.cs', loaderContent);
+    const guideLines = [
+      "DataEntityRuntimeLoader \u4f7f\u7528\u8bf4\u660e",
+      "================================",
+      "",
+      "1. \u521d\u59cb\u5316",
+      "   // dataEntity \u76ee\u5f55\u4f4d\u4e8e\u9879\u76ee\u6839\u76ee\u5f55\u65f6\u53ef\u76f4\u63a5\u8c03\u7528",
+      "   DataEntityRuntimeLoader.Initialize();",
+      "   // \u6216\u8005\u663e\u5f0f\u4f20\u5165\u8def\u5f84",
+      "   DataEntityRuntimeLoader.Initialize(Path.Combine(Application.dataPath, \"..\", \"dataEntity\"));",
+      "",
+      "2. \u8bfb\u53d6\u53c2\u6570",
+      "   var damage = DataEntityRuntimeLoader.GetValue<int>(\"TemplateName\", null, \"indexKey\", \"damage\");",
+      "   var display = DataEntityRuntimeLoader.GetValue<string>(\"TemplateName\", \"\u5b9e\u4f8b\u540d\u79f0\", null, \"displayName\");",
+      "",
+      "3. \u83b7\u53d6\u5b8c\u6574\u6a21\u677f",
+      "   var schema = DataEntityRuntimeLoader.GetSchema(\"TemplateName\");",
+      "   // schema.instances \u4e3a Dictionary<string, object>",
+      "",
+      "4. \u70ed\u91cd\u8f7d",
+      "   DataEntityRuntimeLoader.Reload(); // \u81ea\u52a8\u6682\u505c\u5e76\u6062\u590d EditorApplication.isPaused",
+      "",
+      "\u6ce8\u610f\u4e8b\u9879:",
+      "- manifest.json \u4f4d\u4e8e dataEntity \u76ee\u5f55\uff0cpath \u5b57\u6bb5\u662f JSON \u6587\u4ef6\u540d\u3002",
+      "- \u91cd\u590d\u7684\u5b9e\u4f8b\u7d22\u5f15\u4f1a\u5728\u63a7\u5236\u53f0\u8f93\u51fa\u9519\u8bef\uff0c\u5e76\u4e3a\u540e\u7eed\u5b9e\u4f8b\u8ffd\u52a0 _1/_2 \u540e\u7f00\u3002",
+      "- \u5982\u679c\u8bf7\u6c42\u7684\u53c2\u6570\u7c7b\u578b\u4e0d\u5339\u914d\u4f1a\u629b\u51fa InvalidCastException\u3002"
+    ];
+    const guideContent = guideLines.join('\n');
+    await writeTextFile(modelStructHandle, 'DataEntityRuntimeLoaderGuide.txt', guideContent);
+  }
+
   /**
    * 从 dataEntity 读取所有模板文件
    */
@@ -1844,6 +2367,7 @@
     let enumLoadedFromJson = false;
     for await (const entry of dataEntityHandle.values()) {
       if (entry.kind === "file" && entry.name.toLowerCase().endsWith(".json")) {
+        if (entry.name.toLowerCase() === 'manifest.json') continue;
         try {
           const file = await entry.getFile();
           const text = await file.text();
@@ -1855,6 +2379,7 @@
               instances: obj.instances,
               indexField: obj.indexField || 'id',
             };
+            normalizeTemplateParameterIndexes(template);
             if (isEnumTemplate(template) && Array.isArray(template.parameters)) {
               template.parameters = template.parameters.map((param) => {
                 if (!param) return param;
@@ -1884,6 +2409,7 @@
     }
     // 按名称排序
     templates.sort((a, b) => a.name.localeCompare(b.name));
+    populateMissingIndexFields(templates);
     if (templates.length > 0) {
       currentTemplateIndex = 0;
       currentInstanceIndex = templates[0].instances.length > 0 ? 0 : -1;
@@ -2115,7 +2641,11 @@
             alert('索引字段类型必须是 int/long/float/string');
             indexParamSelect.value = '';
           } else {
-            indexObj = { template: idxTpl, param: idxParam };
+            indexObj = {
+              template: idxTpl,
+              param: idxParam,
+              indexField: targetTpl ? (targetTpl.indexField || 'id') : '',
+            };
           }
         }
       }
@@ -2193,6 +2723,8 @@
         if (!targetParam || !INDEXABLE_PARAM_TYPES.has(targetParam.type)) {
           alert('索引字段类型必须是 int/long/float/string');
           newIndexObj = null;
+        } else {
+          newIndexObj.indexField = targetTpl.indexField || 'id';
         }
       }
     }
@@ -2201,8 +2733,8 @@
     // 更新定义
     param.name = newName;
     param.type = newType;
-    const oldIndex = param.index;
-    param.index = newIndexObj;
+    const oldIndex = param.parameterIndexes;
+    param.parameterIndexes = newIndexObj;
     // 对所有实例调整 payload
     tpl.instances.forEach((inst) => {
       // 如果重命名
@@ -2933,23 +3465,24 @@
       label.textContent = p.name;
       item.appendChild(label);
       if (selectedParams.has(idx)) item.classList.add('active');
-      if (p.index) {
+      if (p.parameterIndexes) {
         const info = document.createElement('span');
-        info.textContent = `索引：${p.index.template} → ${p.index.param}`;
+        const idxField = p.parameterIndexes.indexField ? ` (${p.parameterIndexes.indexField})` : '';
+        info.textContent = `索引：${p.parameterIndexes.template} → ${p.parameterIndexes.param}${idxField}`;
         info.style.marginRight = '8px';
         item.appendChild(info);
 
         // 为索引参数提供可编辑的 value 输入框（并规范化存储结构）
         let refObj = inst.payload[p.name];
         if (refObj == null) {
-          refObj = { template: p.index.template, by: p.index.param, value: '' };
+          refObj = { template: p.parameterIndexes.template, by: p.parameterIndexes.param, value: '' };
           inst.payload[p.name] = refObj;
         } else if (typeof refObj !== 'object') {
-          refObj = { template: p.index.template, by: p.index.param, value: String(refObj) };
+          refObj = { template: p.parameterIndexes.template, by: p.parameterIndexes.param, value: String(refObj) };
           inst.payload[p.name] = refObj;
         } else {
-          refObj.template = p.index.template;
-          refObj.by = p.index.param;
+          refObj.template = p.parameterIndexes.template;
+          refObj.by = p.parameterIndexes.param;
           if (refObj.value == null) refObj.value = '';
         }
 
@@ -2957,11 +3490,11 @@
         const suggestId = `idx-suggest-${p.name}`;
         const dataList = document.createElement('datalist');
         dataList.id = suggestId;
-        const targetTpl = templates.find(t => t.name === p.index.template);
+        const targetTpl = templates.find(t => t.name === p.parameterIndexes.template);
         if (targetTpl && !isEnumTemplate(targetTpl)) {
           const seen = new Set();
           targetTpl.instances.forEach(it => {
-            const v = it.payload ? it.payload[p.index.param] : undefined;
+            const v = it.payload ? it.payload[p.parameterIndexes.param] : undefined;
             const sv = v == null ? '' : String(v);
             if (sv && !seen.has(sv)) {
               seen.add(sv);
@@ -2982,11 +3515,11 @@
         inputElIdx.addEventListener('change', () => {
           let obj = inst.payload[p.name];
           if (!obj || typeof obj !== 'object') {
-            obj = { template: p.index.template, by: p.index.param, value: '' };
+            obj = { template: p.parameterIndexes.template, by: p.parameterIndexes.param, value: '' };
             inst.payload[p.name] = obj;
           }
           // 若索引目标是 enum，阻止写入
-          const tt = templates.find(t => t.name === p.index.template);
+          const tt = templates.find(t => t.name === p.parameterIndexes.template);
           if (tt && isEnumTemplate(tt)) {
             showMessage('索引目标不能是 enum 模板');
             indexTemplateSelect.value = '';
@@ -2994,8 +3527,8 @@
             obj.template = '';
             obj.by = '';
           } else {
-            obj.template = p.index.template;
-            obj.by = p.index.param;
+            obj.template = p.parameterIndexes.template;
+            obj.by = p.parameterIndexes.param;
           }
           obj.value = inputElIdx.value;
         });
@@ -3139,12 +3672,12 @@
           // 点击输入/选择/删除不触发选择逻辑
           if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT') return;
         // Alt+点击：若为索引参数则跳转
-        if (e.altKey && p.index) {
+        if (e.altKey && p.parameterIndexes) {
           // 将当前参数选择压栈
           pushParamHistory();
           const ref = inst.payload[p.name];
-          const targetTplName = ref && typeof ref === 'object' ? (ref.template || p.index.template) : p.index.template;
-          const byField = ref && typeof ref === 'object' ? (ref.by || p.index.param) : p.index.param;
+          const targetTplName = ref && typeof ref === 'object' ? (ref.template || p.parameterIndexes.template) : p.parameterIndexes.template;
+          const byField = ref && typeof ref === 'object' ? (ref.by || p.parameterIndexes.param) : p.parameterIndexes.param;
           const byValue = ref && typeof ref === 'object' ? (ref.value ?? '') : '';
           // 禁止跳转到 enum 模板
           if (isEnumTemplate({ name: targetTplName })) {
@@ -3334,10 +3867,10 @@
     }
     // 设置索引下拉
     if (!indexTemplateSelect.disabled) {
-      if (p.index) {
-        indexTemplateSelect.value = p.index.template;
+      if (p.parameterIndexes) {
+        indexTemplateSelect.value = p.parameterIndexes.template;
         updateIndexParamOptions();
-        indexParamSelect.value = p.index.param;
+        indexParamSelect.value = p.parameterIndexes.param;
       } else {
         indexTemplateSelect.value = '';
         updateIndexParamOptions();
@@ -3519,7 +4052,7 @@
       newParam.name = newName;
       if (isEnumTemplate(tpl)) {
         newParam.type = 'string';
-        delete newParam.index;
+        delete newParam.parameterIndexes;
       }
       tpl.parameters.push(newParam);
       // 为每个实例复制值
@@ -3784,7 +4317,7 @@
       }
 
       if (shouldUpdateDataRef) {
-        if (templates.some(t => Array.isArray(t.parameters) && t.parameters.some(p => p && p.index))) {
+        if (templates.some(t => Array.isArray(t.parameters) && t.parameters.some(p => p && p.parameterIndexes))) {
           const dataRefContent = [
             'using System;',
             'using System.Collections.Generic;',
@@ -3813,8 +4346,9 @@
 
       const manifest = templates
         .filter((tpl) => !isEnumTemplate(tpl))
-        .map((tpl) => ({ template: tpl.name, path: `dataEntity/${tpl.name}.json` }));
-      await writeTextFile(directoryHandle, 'manifest.json', JSON.stringify(manifest, null, 2));
+        .map((tpl) => ({ template: tpl.name, path: `${tpl.name}.json` }));
+      await writeTextFile(dataEntityHandle, 'manifest.json', JSON.stringify(manifest, null, 2));
+      await generateRuntimeLoaderArtifacts();
 
       lastSavedStructureSnapshot = captureCurrentStructureSnapshot();
       showMessage("已保存所有更改");
@@ -3841,7 +4375,7 @@
         await writeTextFile(csharpHandle, `${tpl.name}.cs`, content);
         updatedAny = true;
       }
-      if (templates.some(t => Array.isArray(t.parameters) && t.parameters.some(p => p && p.index))) {
+      if (templates.some(t => Array.isArray(t.parameters) && t.parameters.some(p => p && p.parameterIndexes))) {
         const dataRefContent = [
           'using System;',
           'using System.Collections.Generic;',
@@ -3870,6 +4404,7 @@
       } else {
         showMessage('没有可生成的 C# 数据结构脚本');
       }
+      await generateRuntimeLoaderArtifacts();
     } catch (err) {
       console.error(err);
       showMessage('重新生成 C# 脚本失败，请检查权限');
@@ -3966,7 +4501,7 @@
     // 索引参数使用可复用的全局类型 DataRef（在保存时生成 DataRef.cs）
     tpl.parameters.forEach((p) => {
       if (!p) return;
-      if (p.index) {
+      if (p.parameterIndexes) {
         lines.push(`    public DataRef ${p.name};`);
       } else {
         const csType = mapToCSharpType(p.type);
