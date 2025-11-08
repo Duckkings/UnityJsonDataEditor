@@ -809,6 +809,27 @@
     return value == null ? '' : String(value);
   }
 
+  function enforceEnumIndexField(tpl) {
+    if (!tpl || !isEnumTemplate(tpl)) return false;
+    let changed = false;
+    if (tpl.indexField !== 'id') {
+      tpl.indexField = 'id';
+      changed = true;
+    }
+    const instList = Array.isArray(tpl.instances) ? tpl.instances : [];
+    instList.forEach((inst) => {
+      const expected = computeExpectedIndexValue(tpl, inst, 'id');
+      if (!inst) return;
+      if (!inst.payload) inst.payload = {};
+      if (inst.payload.index !== expected) {
+        inst.payload.index = expected;
+        changed = true;
+      }
+    });
+    return changed;
+  }
+
+
   function getNumericInstanceId(inst) {
     if (!inst) return Number.NaN;
     const raw = inst.id;
@@ -942,6 +963,13 @@
   }
 
   function enforceImportedIndexField(tpl, fileName) {
+    if (isEnumTemplate(tpl)) {
+      const changed = enforceEnumIndexField(tpl);
+      if (changed) {
+        showMessage(`${tpl.name}模版的index清空`, 'warn');
+      }
+      return;
+    }
     let idxField = tpl.indexField || 'id';
     let needReset = false;
     const params = Array.isArray(tpl.parameters) ? tpl.parameters : [];
@@ -2774,6 +2802,10 @@
     if (currentTemplateIndex < 0 || currentInstanceIndex < 0) return;
     const tpl = templates[currentTemplateIndex];
     const inst = tpl.instances[currentInstanceIndex];
+    const isEnumTpl = isEnumTemplate(tpl);
+    if (isEnumTpl) {
+      enforceEnumIndexField(tpl);
+    }
     // 保留字段
     const reserved = [
       { name: "template", type: "string" },
@@ -2788,28 +2820,32 @@
       label.textContent = f.name;
       item.appendChild(label);
       if (f.name === 'index') {
-        // 在 index 行放置“索引字段选择”下拉，选项来自该模板的所有可选字段
         const select = document.createElement('select');
-        const candidates = ['id','name', ...tpl.parameters.map(p => p.name).filter(n => n !== 'index')];
-        candidates.forEach(n => {
+        const candidates = isEnumTpl
+          ? ['id']
+          : ['id', 'name', ...tpl.parameters.map((p) => p.name).filter((n) => n !== 'index')];
+        candidates.forEach((n) => {
           const opt = document.createElement('option');
           opt.value = n;
           opt.textContent = n;
           select.appendChild(opt);
         });
         select.value = tpl.indexField || 'id';
-        select.addEventListener('change', () => {
-          tpl.indexField = select.value || 'id';
-          // 同步整个模板的实例 index 值
-          tpl.instances.forEach(one => {
-            const vv = getValueByFieldForInstance(tpl, one, tpl.indexField);
-            if (!one.payload) one.payload = {};
-            one.payload.index = vv == null ? '' : String(vv);
+        if (isEnumTpl) {
+          select.disabled = true;
+          select.title = 'enum 模板的索引固定为 id';
+        } else {
+          select.addEventListener('change', () => {
+            tpl.indexField = select.value || 'id';
+            tpl.instances.forEach((one) => {
+              const vv = getValueByFieldForInstance(tpl, one, tpl.indexField);
+              if (!one.payload) one.payload = {};
+              one.payload.index = vv == null ? '' : String(vv);
+            });
+            refreshInstances();
+            refreshParams();
           });
-          refreshInstances();
-          refreshParams();
-        });
-        // 显示当前实例的 index 值（只读）
+        }
         const valueSpan = document.createElement('span');
         valueSpan.style.flex = '1';
         const vNow = getValueByFieldForInstance(tpl, inst, tpl.indexField || 'id');
@@ -2833,7 +2869,7 @@
       paramListEl.appendChild(item);
     });
     // enum：参数与实例对应，使用实例自身的数字键渲染并返回
-    if (isEnumTemplate(tpl)) {
+    if (isEnumTpl) {
       const keys = getEnumParamKeysForInstance(tpl, inst);
       keys.forEach((key, idx) => {
         const item = document.createElement('div');
