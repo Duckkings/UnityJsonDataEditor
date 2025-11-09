@@ -9,6 +9,7 @@
   let csharpHandle = null;
   let dataEntityHandle = null;
   let modelStructHandle = null;
+  let editorHandle = null;
   // 剪贴板，用于复制粘贴不同类型的条目
   // { type: 'template' | 'instance' | 'param', items: Array<any>, extra?: any }
   let copyBuffer = null;
@@ -1750,6 +1751,12 @@
   async function ensureSubFolders() {
     csharpHandle = await directoryHandle.getDirectoryHandle("csharpDate", { create: true });
     dataEntityHandle = await directoryHandle.getDirectoryHandle("dataEntity", { create: true });
+    try {
+      editorHandle = await directoryHandle.getDirectoryHandle("Editor", { create: true });
+    } catch (err) {
+      console.warn('无法创建或访问 Editor 文件夹', err);
+      editorHandle = null;
+    }
     // 检查文件类型
     for await (const entry of csharpHandle.values()) {
       if (entry.kind === "file" && !entry.name.toLowerCase().endsWith(".cs")) {
@@ -1907,6 +1914,14 @@
       await ensureModelStruct();
     }
     if (!modelStructHandle) return;
+    if (!editorHandle && directoryHandle) {
+      try {
+        editorHandle = await directoryHandle.getDirectoryHandle("Editor", { create: true });
+      } catch (err) {
+        console.warn('generateRuntimeLoaderArtifacts 无法访问 Editor 文件夹', err);
+        editorHandle = null;
+      }
+    }
     const loaderLines = [
       "using System;",
       "using System.Collections.Generic;",
@@ -2632,6 +2647,260 @@
     ];
     const guideContent = guideLines.join('\n');
     await writeTextFile(modelStructHandle, 'DataEntityRuntimeLoaderGuide.txt', guideContent);
+    if (editorHandle) {
+      const testerLines = [
+      "using System;"
+      "using System.Collections.Generic;"
+      "using UnityEngine;"
+      "#if UNITY_EDITOR"
+      "using UnityEditor;"
+      "#endif"
+      ""
+      "public class DataEntityRuntimeTester : MonoBehaviour"
+      "{"
+      "    public enum TestOperation"
+      "    {"
+      "        Initialize,"
+      "        Reload,"
+      "        GetValue,"
+      "    }"
+      ""
+      "    [SerializeField]"
+      "    private TestOperation operation = TestOperation.Initialize;"
+      ""
+      "    [SerializeField]"
+      "    private string dataDirectory = string.Empty;"
+      ""
+      "    [SerializeField]"
+      "    private string templateName = string.Empty;"
+      ""
+      "    [SerializeField]"
+      "    private string instanceName = string.Empty;"
+      ""
+      "    [SerializeField]"
+      "    private string indexKey = string.Empty;"
+      ""
+      "    [SerializeField]"
+      "    private string parameterName = string.Empty;"
+      ""
+      "    [SerializeField]"
+      "    private string parameterType = \"string\";"
+      ""
+      "    [SerializeField]"
+      "    private string getParameter = string.Empty;"
+      ""
+      "    public void ExecuteSelectedOperation()"
+      "    {"
+      "        try"
+      "        {"
+      "            switch (operation)"
+      "            {"
+      "                case TestOperation.Initialize:"
+      "                    ExecuteInitialize();"
+      "                    break;"
+      "                case TestOperation.Reload:"
+      "                    ExecuteReload();"
+      "                    break;"
+      "                case TestOperation.GetValue:"
+      "                    ExecuteGetValue();"
+      "                    break;"
+      "                default:"
+      "                    Debug.LogError(\"Unsupported operation\");"
+      "                    break;"
+      "            }"
+      "        }"
+      "        catch (Exception ex)"
+      "        {"
+      "            Debug.LogError($\"[DataEntityRuntimeTester] {ex.Message}\\\n{ex}\");"
+      "        }"
+      "    }"
+      ""
+      "    private void ExecuteInitialize()"
+      "    {"
+      "        var path = string.IsNullOrWhiteSpace(dataDirectory) ? null : dataDirectory;"
+      "        DataEntityRuntimeLoader.Initialize(path);"
+      "        Debug.Log(\"[DataEntityRuntimeTester] Initialize completed\");"
+      "    }"
+      ""
+      "    private void ExecuteReload()"
+      "    {"
+      "        DataEntityRuntimeLoader.Reload();"
+      "        Debug.Log(\"[DataEntityRuntimeTester] Reload completed\");"
+      "    }"
+      ""
+      "    private void ExecuteGetValue()"
+      "    {"
+      "        if (string.IsNullOrWhiteSpace(templateName) || string.IsNullOrWhiteSpace(parameterName))"
+      "        {"
+      "            Debug.LogError(\"输入不合法\");"
+      "            return;"
+      "        }"
+      ""
+      "        var type = ResolveParameterType(parameterType);"
+      "        if (type == null)"
+      "        {"
+      "            Debug.LogError(\"输入不合法\");"
+      "            return;"
+      "        }"
+      ""
+      "        var instance = string.IsNullOrWhiteSpace(instanceName) ? null : instanceName;"
+      "        var index = string.IsNullOrWhiteSpace(indexKey) ? null : indexKey;"
+      ""
+      "        object value;"
+      "        if (string.IsNullOrWhiteSpace(getParameter))"
+      "        {"
+      "            value = DataEntityRuntimeLoader.GetValue(templateName, instance, index, parameterName, type);"
+      "        }"
+      "        else"
+      "        {"
+      "            value = DataEntityRuntimeLoader.GetValue(templateName, instance, index, parameterName, type, getParameter);"
+      "        }"
+      ""
+      "        var identifier = !string.IsNullOrWhiteSpace(instance) ? instance : index;"
+      "        var valueText = value == null ? \"<null>\" : value.ToString();"
+      "        Debug.Log($\"{templateName}/{identifier ?? \"(null)\"}/{parameterName}/{valueText}\");"
+      "    }"
+      ""
+      "    private static Type ResolveParameterType(string typeName)"
+      "    {"
+      "        if (string.IsNullOrWhiteSpace(typeName))"
+      "        {"
+      "            return typeof(object);"
+      "        }"
+      ""
+      "        var normalized = typeName.Trim();"
+      "        if (TypeMappings.TryGetValue(normalized, out var mapped))"
+      "        {"
+      "            return mapped;"
+      "        }"
+      "        if (TypeMappings.TryGetValue(normalized.ToLowerInvariant(), out mapped))"
+      "        {"
+      "            return mapped;"
+      "        }"
+      "        try"
+      "        {"
+      "            return Type.GetType(normalized, false);"
+      "        }"
+      "        catch"
+      "        {"
+      "            return null;"
+      "        }"
+      "    }"
+      ""
+      "    private static readonly Dictionary<string, Type> TypeMappings = new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase)"
+      "    {"
+      "        { \"bool\", typeof(bool) },"
+      "        { \"byte\", typeof(byte) },"
+      "        { \"sbyte\", typeof(sbyte) },"
+      "        { \"char\", typeof(char) },"
+      "        { \"decimal\", typeof(decimal) },"
+      "        { \"double\", typeof(double) },"
+      "        { \"float\", typeof(float) },"
+      "        { \"int\", typeof(int) },"
+      "        { \"uint\", typeof(uint) },"
+      "        { \"long\", typeof(long) },"
+      "        { \"ulong\", typeof(ulong) },"
+      "        { \"short\", typeof(short) },"
+      "        { \"ushort\", typeof(ushort) },"
+      "        { \"string\", typeof(string) },"
+      "        { \"datetime\", typeof(DateTime) },"
+      "        { \"guid\", typeof(Guid) },"
+      "    };"
+      "}"
+      ""
+      "#if UNITY_EDITOR"
+      "[CustomEditor(typeof(DataEntityRuntimeTester))]"
+      "public class DataEntityRuntimeTesterEditor : Editor"
+      "{"
+      "    private SerializedProperty operation;"
+      "    private SerializedProperty dataDirectory;"
+      "    private SerializedProperty templateName;"
+      "    private SerializedProperty instanceName;"
+      "    private SerializedProperty indexKey;"
+      "    private SerializedProperty parameterName;"
+      "    private SerializedProperty parameterType;"
+      "    private SerializedProperty getParameter;"
+      ""
+      "    private void OnEnable()"
+      "    {"
+      "        operation = serializedObject.FindProperty(\"operation\");"
+      "        dataDirectory = serializedObject.FindProperty(\"dataDirectory\");"
+      "        templateName = serializedObject.FindProperty(\"templateName\");"
+      "        instanceName = serializedObject.FindProperty(\"instanceName\");"
+      "        indexKey = serializedObject.FindProperty(\"indexKey\");"
+      "        parameterName = serializedObject.FindProperty(\"parameterName\");"
+      "        parameterType = serializedObject.FindProperty(\"parameterType\");"
+      "        getParameter = serializedObject.FindProperty(\"getParameter\");"
+      "    }"
+      ""
+      "    public override void OnInspectorGUI()"
+      "    {"
+      "        serializedObject.Update();"
+      "        EditorGUILayout.PropertyField(operation);"
+      "        var op = (DataEntityRuntimeTester.TestOperation)operation.enumValueIndex;"
+      "        switch (op)"
+      "        {"
+      "            case DataEntityRuntimeTester.TestOperation.Initialize:"
+      "                EditorGUILayout.HelpBox(\"调用 DataEntityRuntimeLoader.Initialize\", MessageType.Info);"
+      "                EditorGUILayout.PropertyField(dataDirectory, new GUIContent(\"数据目录(可空)\"));"
+      "                break;"
+      "            case DataEntityRuntimeTester.TestOperation.Reload:"
+      "                EditorGUILayout.HelpBox(\"调用 DataEntityRuntimeLoader.Reload\", MessageType.Info);"
+      "                break;"
+      "            case DataEntityRuntimeTester.TestOperation.GetValue:"
+      "                EditorGUILayout.HelpBox(\"读取数据并在控制台输出\", MessageType.Info);"
+      "                EditorGUILayout.PropertyField(templateName, new GUIContent(\"模板名\"));"
+      "                EditorGUILayout.PropertyField(instanceName, new GUIContent(\"实例名\"));"
+      "                EditorGUILayout.PropertyField(indexKey, new GUIContent(\"索引字符\"));"
+      "                EditorGUILayout.PropertyField(parameterName, new GUIContent(\"参数名\"));"
+      "                EditorGUILayout.PropertyField(parameterType, new GUIContent(\"参数类型\"));"
+      "                EditorGUILayout.PropertyField(getParameter, new GUIContent(\"索引获取参数(getParameter)\"));"
+      "                break;"
+      "        }"
+      "        serializedObject.ApplyModifiedProperties();"
+      "        if (GUILayout.Button(\"执行\"))"
+      "        {"
+      "            foreach (UnityEngine.Object target in targets)"
+      "            {"
+      "                if (target is DataEntityRuntimeTester tester)"
+      "                {"
+      "                    tester.ExecuteSelectedOperation();"
+      "                }"
+      "            }"
+      "        }"
+      "    }"
+      "}"
+      "#endif"
+      ""
+    ];
+      const testerContent = testerLines.join('\n');
+      await writeTextFile(editorHandle, 'DataEntityRuntimeTester.cs', testerContent);
+      const testerGuideLines = [
+        "DataEntityRuntimeTester 使用说明",
+        "================================",
+        "",
+        "挂载脚本",
+        "1. 将 DataEntityRuntimeTester.cs 挂载到需要测试的 GameObject。",
+        "2. 在 Inspector 中使用自定义面板选择要执行的操作。",
+        "",
+        "操作说明",
+        "- Initialize：可选填写数据目录，为空时使用 dataEntity 目录。",
+        "- Reload：调用 DataEntityRuntimeLoader.Reload 并在 Editor 内自动暂停/恢复。",
+        "- GetValue：填写模板名、实例名或索引字符、参数名、参数类型。",
+        "  * 若目标参数为索引参数，在 getParameter 中填写要读取的字段。",
+        "  * 控制台会输出 template/entity/参数名/参数内容 或错误信息。",
+        "",
+        "执行步骤",
+        "- 参数填写完成后点击“执行”按钮触发对应操作。",
+        "- 若输入不合法，Console 面板会打印提示便于排查。",
+        "",
+        "注意事项",
+        "- 在未调用 Initialize 前执行读取会抛出异常。",
+        "- getParameter 仅在索引参数读取时需要，普通参数保持为空。"
+      ];
+      const testerGuideContent = testerGuideLines.join('\n');
+      await writeTextFile(editorHandle, 'DataEntityRuntimeTesterGuide.txt', testerGuideContent);
+    }
   }
 
   /**
