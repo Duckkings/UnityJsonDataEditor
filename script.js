@@ -1967,994 +1967,990 @@
         editorHandle = null;
       }
     }
-    const loaderLines = [
-      "using System;",
-      "using System.Collections.Generic;",
-      "using System.Globalization;",
-      "using System.IO;",
-      "using System.Linq;",
-      "using Newtonsoft.Json;",
-      "using Newtonsoft.Json.Linq;",
-      "using UnityEngine;",
-      "#if UNITY_EDITOR",
-      "using UnityEditor;",
-      "#endif",
-      "",
-      "public static class DataEntityRuntimeLoader",
-      "{",
-      "    private const string DefaultManifestName = \"manifest.json\";",
-      "    private static readonly JsonSerializerSettings SerializerSettings = new JsonSerializerSettings",
-      "    {",
-      "        MissingMemberHandling = MissingMemberHandling.Ignore,",
-      "        NullValueHandling = NullValueHandling.Ignore,",
-      "    };",
-      "",
-      "    private static readonly Dictionary<string, string> ManifestIndex = new Dictionary<string, string>(StringComparer." +
-        "OrdinalIgnoreCase);",
-      "    private static readonly Dictionary<string, TableSchema> SchemaCache = new Dictionary<string, TableSchema>(StringComparer." +
-        "OrdinalIgnoreCase);",
-      "    private static string _dataDirectory = string.Empty;",
-      "    private static bool _initialized;",
-      "",
-      "    public static IReadOnlyDictionary<string, TableSchema> Schemas => SchemaCache;",
-      "",
-      "    public static void Initialize(string dataDirectory = null)",
-      "    {",
-      "        _dataDirectory = string.IsNullOrWhiteSpace(dataDirectory)",
-      "            ? Path.GetFullPath(Path.Combine(Application.dataPath, \"..\", \"dataEntity\"))",
-      "            : Path.GetFullPath(dataDirectory);",
-      "        LoadAll();",
-      "    }",
-      "",
-      "    public static TableSchema GetSchema(string templateName)",
-      "    {",
-      "        EnsureInitialized();",
-      "        if (!SchemaCache.TryGetValue(templateName, out var schema))",
-      "        {",
-      "            throw new KeyNotFoundException($\"\u6a21\u677f {templateName} \u672a\u52a0\u8f7d\u3002\");",
-      "        }",
-      "        return schema;",
-      "    }",
-      "",
-      "    public static T GetValue<T>(string templateName, string instanceName, string indexKey, string parameterName)",
-      "    {",
-      "        var value = GetValueInternal(templateName, instanceName, indexKey, parameterName, typeof(T), null, false);",
-      "        if (value == null)",
-      "        {",
-      "            return default;",
-      "        }",
-      "        return (T)value;",
-      "    }",
-      "",
-      "    public static T GetValue<T>(string templateName, string instanceName, string indexKey, string parameterName, string getParameter)",
-      "    {",
-      "        var value = GetValueInternal(templateName, instanceName, indexKey, parameterName, typeof(T), getParameter, false);",
-      "        if (value == null)",
-      "        {",
-      "            return default;",
-      "        }",
-      "        return (T)value;",
-      "    }",
-      "",
-      "    public static object GetValue(string templateName, string instanceName, string indexKey, string parameterName, Type parameterType)",
-      "    {",
-      "        return GetValueInternal(templateName, instanceName, indexKey, parameterName, parameterType, null, false);",
-      "    }",
-      "",
-      "    public static object GetValue(string templateName, string instanceName, string indexKey, string parameterName, Type parameterType, string getParameter)",
-      "    {",
-      "        return GetValueInternal(templateName, instanceName, indexKey, parameterName, parameterType, getParameter, false);",
-      "    }",
-      "",
-      "    public static DataRef GetIndexReference(string templateName, string instanceName, string indexKey, string parameterName)",
-      "    {",
-      "        var value = GetValueInternal(templateName, instanceName, indexKey, parameterName, typeof(DataRef), null, true);",
-      "        return value as DataRef;",
-      "    }",
-      "",
-      "    public static string GetIndexValue(string templateName, string instanceName, string indexKey, string parameterName)",
-      "    {",
-      "        var reference = GetIndexReference(templateName, instanceName, indexKey, parameterName);",
-      "        return reference?.value;",
-      "    }",
-      "",
-      "    private static object GetValueInternal(string templateName, string instanceName, string indexKey, string parameterName, Type parameterType, string getParameter, bool allowIndexReference)",
-      "    {",
-      "        EnsureInitialized();",
-      "        if (string.IsNullOrWhiteSpace(templateName))",
-      "        {",
-      "            throw new ArgumentException("\u6a21\u677f\u540d\u4e0d\u80fd\u4e3a\u7a7a", nameof(templateName));",
-      "        }",
-      "        if (string.IsNullOrWhiteSpace(parameterName))",
-      "        {",
-      "            throw new ArgumentException("\u53c2\u6570\u540d\u4e0d\u80fd\u4e3a\u7a7a", nameof(parameterName));",
-      "        }",
-      "        if (!SchemaCache.TryGetValue(templateName, out var schema))",
-      "        {",
-      "            throw new KeyNotFoundException($"\u6a21\u677f {templateName} \u672a\u627e\u5230\u3002");",
-      "        }",
-      "",
-      "        var paramDef = FindParameter(schema, parameterName);",
-      "        var binding = paramDef?.parameterIndexes;",
-      "        var isIndexParameter = binding != null",
-      "            && !string.IsNullOrEmpty(binding.template)",
-      "            && !string.IsNullOrEmpty(binding.param);",
-      "",
-      "        if (isIndexParameter)",
-      "        {",
-      "            if (string.IsNullOrWhiteSpace(getParameter) && !allowIndexReference)",
-      "            {",
-      "                var identifier = FormatInstanceIdentifier(templateName, instanceName, indexKey, parameterName);",
-      "                throw new InvalidOperationException($"{identifier} \u662f\u7d22\u5f15\u53c2\u6570\uff0c\u65e0\u6cd5\u6b63\u5e38\u8bfb\u53d6");",
-      "            }",
-      "        }",
-      "        else if (!string.IsNullOrWhiteSpace(getParameter))",
-      "        {",
-      "            var identifier = FormatInstanceIdentifier(templateName, instanceName, indexKey, parameterName);",
-      "            throw new InvalidOperationException($"{identifier} \u4e0d\u662f\u7d22\u5f15\u53c2\u6570\uff0c\u4e0d\u914dgetparameter\u3002");",
-      "        }",
-      "",
-      "        var instance = LocateInstance(schema, instanceName, indexKey);",
-      "        var payload = ExtractPayload(instance);",
-      "        if (payload == null)",
-      "        {",
-      "            throw new InvalidOperationException($"\u5b9e\u4f8b {instanceName ?? indexKey} \u4e0d\u5305\u542b payload\u3002");",
-      "        }",
-      "        if (!payload.TryGetValue(parameterName, out var rawValue))",
-      "        {",
-      "            throw new KeyNotFoundException($"\u5b9e\u4f8b\u4e2d\u672a\u627e\u5230\u53c2\u6570 {parameterName}\u3002");",
-      "        }",
-      "",
-      "        if (!isIndexParameter)",
-      "        {",
-      "            return ConvertValue(rawValue, parameterType ?? typeof(object), templateName, parameterName);",
-      "        }",
-      "",
-      "        var payloadName = payload.TryGetValue("name", out var payloadNameObj) ? payloadNameObj?.ToString() : instanceName;",
-      "        var payloadIndex = indexKey;",
-      "        if (string.IsNullOrWhiteSpace(payloadIndex) && payload.TryGetValue("index", out var payloadIndexObj))",
-      "        {",
-      "            payloadIndex = payloadIndexObj?.ToString();",
-      "        }",
-      "        var identifierFull = FormatInstanceIdentifier(templateName, payloadName, payloadIndex, parameterName);",
-      "        var dataRef = NormalizeDataRef(rawValue);",
-      "        if (dataRef == null)",
-      "        {",
-      "            throw new InvalidOperationException($"{identifierFull} \u7d22\u5f15\u89e3\u6790\u5931\u8d25\u3002");",
-      "        }",
-      "",
-      "        ApplyReferenceDefaults(dataRef, binding);",
-      "        EnsureDataRefInstance(schema, paramDef, payloadName, payloadIndex, dataRef);",
-      "        payload[parameterName] = dataRef;",
-      "",
-      "        if (allowIndexReference && string.IsNullOrWhiteSpace(getParameter))",
-      "        {",
-      "            return dataRef;",
-      "        }",
-      "",
-      "        if (string.IsNullOrWhiteSpace(getParameter))",
-      "        {",
-      "            return ConvertValue(dataRef, parameterType ?? typeof(object), templateName, parameterName);",
-      "        }",
-      "",
-      "        if (dataRef.instance == null)",
-      "        {",
-      "            throw new KeyNotFoundException($"{identifierFull} \u672a\u627e\u5230\u7d22\u5f15\u5b9e\u4f8b\u3002");",
-      "        }",
-      "",
-      "        var referencedPayload = ExtractPayload(dataRef.instance);",
-      "        if (referencedPayload == null || !referencedPayload.TryGetValue(getParameter, out var indexedValue))",
-      "        {",
-      "            throw new KeyNotFoundException($"{identifierFull} \u7d22\u5f15\u5b9e\u4f8b\u6ca1\u6709\u53c2\u6570 {getParameter}\u3002");",
-      "        }",
-      "",
-      "        var targetTemplate = dataRef.template ?? binding?.template ?? templateName;",
-      "        return ConvertValue(indexedValue, parameterType ?? typeof(object), targetTemplate, getParameter);",
-      "    }",
-      "",
-      "    public static void Reload()",
-      "    {",
-      "#if UNITY_EDITOR",
-      "        var wasPaused = EditorApplication.isPaused;",
-      "        if (!wasPaused)",
-      "        {",
-      "            EditorApplication.isPaused = true;",
-      "        }",
-      "#endif",
-      "        try",
-      "        {",
-      "            if (string.IsNullOrWhiteSpace(_dataDirectory))",
-      "            {",
-      "                throw new InvalidOperationException(\"\u8bf7\u5148\u8c03\u7528 Initialize \u6307\u5b9a\u6570\u636e\u76ee\u5f55\u3002\");",
-      "            }",
-      "            LoadAll();",
-      "        }",
-      "        finally",
-      "        {",
-      "#if UNITY_EDITOR",
-      "            if (!wasPaused)",
-      "            {",
-      "                EditorApplication.isPaused = false;",
-      "            }",
-      "#endif",
-      "        }",
-      "    }",
-      "",
-      "    private static void EnsureInitialized()",
-      "    {",
-      "        if (!_initialized)",
-      "        {",
-      "            if (string.IsNullOrWhiteSpace(_dataDirectory))",
-      "            {",
-      "                Initialize();",
-      "            }",
-      "            else",
-      "            {",
-      "                LoadAll();",
-      "            }",
-      "        }",
-      "    }",
-      "",
-      "    private static void LoadAll()",
-      "    {",
-      "        ManifestIndex.Clear();",
-      "        SchemaCache.Clear();",
-      "",
-      "        var manifestPath = ResolvePath(DefaultManifestName);",
-      "        if (!File.Exists(manifestPath))",
-      "        {",
-      "            throw new FileNotFoundException($\"\u672a\u627e\u5230 manifest \u6587\u4ef6: {manifestPath}\");",
-      "        }",
-      "",
-      "        var manifestContent = File.ReadAllText(manifestPath);",
-      "        var manifestEntries = JsonConvert.DeserializeObject<List<ManifestRecord>>(manifestContent, SerializerSettings) ?? new List<ManifestRecord>();",
-      "        foreach (var entry in manifestEntries)",
-      "        {",
-      "            if (string.IsNullOrWhiteSpace(entry.template) || string.IsNullOrWhiteSpace(entry.path))",
-      "            {",
-      "                continue;",
-      "            }",
-      "            var normalized = entry.template.Trim();",
-      "            ManifestIndex[normalized] = ResolvePath(entry.path);",
-      "        }",
-      "",
-      "        foreach (var kv in ManifestIndex)",
-      "        {",
-      "            try",
-      "            {",
-      "                var schema = LoadSchema(kv.Key, kv.Value);",
-      "                SchemaCache[kv.Key] = schema;",
-      "            }",
-      "            catch (Exception ex)",
-      "            {",
-      "                Debug.LogError($\"\u52a0\u8f7d\u6a21\u677f {kv.Key} \u5931\u8d25: {ex.Message}\\n{ex.StackTrace}\");",
-      "            }",
-      "        }",
-      "",
-      "        foreach (var schema in SchemaCache.Values)",
-      "        {",
-      "            if (schema?.parameters == null) continue;",
-      "            foreach (var param in schema.parameters)",
-      "            {",
-      "                if (param?.parameterIndexes == null) continue;",
-      "                if (string.IsNullOrEmpty(param.parameterIndexes.indexField) && !string.IsNullOrEmpty(param.parameterIndexes.template) && SchemaCache.TryGetValue(param.parameterIndexes.template, out var target))",
-      "                {",
-      "                    param.parameterIndexes.indexField = target.indexField ?? \"id\";",
-      "                }",
-      "            }",
-      "        }",
-      "",
-      "        foreach (var kvp in SchemaCache)",
-      "        {",
-      "            HydrateIndexReferences(kvp.Value);",
-      "        }",
-      "",
-      "        _initialized = true;",
-      "    }",
-      "",
-      "    private static TableSchema LoadSchema(string templateName, string filePath)",
-      "    {",
-      "        if (!File.Exists(filePath))",
-      "        {",
-      "            throw new FileNotFoundException($\"\u627e\u4e0d\u5230\u6a21\u677f {templateName} \u7684\u6570\u636e\u6587\u4ef6\", filePath);",
-      "        }",
-      "        var json = File.ReadAllText(filePath);",
-      "        var raw = JsonConvert.DeserializeObject<RawTableSchema>(json, SerializerSettings) ?? new RawTableSchema();",
-      "        if (raw.parameters != null)",
-      "        {",
-      "            foreach (var param in raw.parameters)",
-      "            {",
-      "                if (param?.parameterIndexes != null && string.IsNullOrEmpty(param.parameterIndexes.indexField))",
-      "                {",
-      "                    param.parameterIndexes.indexField = string.Empty;",
-      "                }",
-      "            }",
-      "        }",
-      "        var schema = new TableSchema",
-      "        {",
-      "            name = string.IsNullOrWhiteSpace(raw.name) ? templateName : raw.name,",
-      "            indexField = string.IsNullOrWhiteSpace(raw.indexField) ? \"id\" : raw.indexField,",
-      "            parameters = raw.parameters ?? new List<ParamDef>(),",
-      "            instances = BuildInstanceDictionary(templateName, raw.instances)",
-      "        };",
-      "        return schema;",
-      "    }",
-      "",
-      "    private static Dictionary<string, object> BuildInstanceDictionary(string templateName, List<RawInstance> instances)",
-      "    {",
-      "        var result = new Dictionary<string, object>(StringComparer." +
-        "OrdinalIgnoreCase);",
-      "        if (instances == null || instances.Count == 0)",
-      "        {",
-      "            return result;",
-      "        }",
-      "",
-      "        var grouped = new Dictionary<string, List<RawInstance>>(StringComparer." +
-        "OrdinalIgnoreCase);",
-      "        foreach (var inst in instances)",
-      "        {",
-      "            var payloadIndex = inst?.payload?.Value<string>(\"index\");",
-      "            var key = string.IsNullOrWhiteSpace(payloadIndex) ? inst?.id.ToString() ?? Guid.NewGuid().ToString(\"N\") : payloadIndex;",
-      "            if (!grouped.TryGetValue(key, out var list))",
-      "            {",
-      "                list = new List<RawInstance>();",
-      "                grouped[key] = list;",
-      "            }",
-      "            list.Add(inst);",
-      "        }",
-      "",
-      "        var duplicateMessages = new List<string>();",
-      "        foreach (var kv in grouped)",
-      "        {",
-      "            var ordered = kv.Value.OrderBy(r => r?.id ?? int.MaxValue).ToList();",
-      "            if (ordered.Count > 1)",
-      "            {",
-      "                var names = ordered",
-      "                    .Select(r => !string.IsNullOrEmpty(r?.name) ? r.name : r?.payload?.Value<string>(\"name\") ?? string.Empty)",
-      "                    .Where(n => !string.IsNullOrEmpty(n))",
-      "                    .ToList();",
-      "                if (names.Count > 0)",
-      "                {",
-      "                    duplicateMessages.Add($\"{templateName}[{string.Join(\",\", names)}]\");",
-      "                }",
-      "            }",
-      "            for (var i = 0; i < ordered.Count; i++)",
-      "            {",
-      "                var suffix = i == 0 ? string.Empty : $\"_{i}\";",
-      "                var baseKey = string.IsNullOrEmpty(kv.Key) ? ordered[i]?.id.ToString() ?? $\"__generated_{i}\" : kv.Key;",
-      "                var finalKey = baseKey + suffix;",
-      "                var attempt = 1;",
-      "                while (result.ContainsKey(finalKey))",
-      "                {",
-      "                    finalKey = $\"{baseKey}_{attempt++}\";",
-      "                }",
-      "                result[finalKey] = ordered[i]?.ToDictionary();",
-      "            }",
-      "        }",
-      "",
-      "        if (duplicateMessages.Count > 0)",
-      "        {",
-      "            Debug.LogError($\"{string.Join(\",\", duplicateMessages)} \u91cd\u590d\u5b9e\u4f8b \u8fd9\u4e9b\u5b9e\u4f8b\u7684index\u91cd\u590d\u5bfc\u5165\u5931\u8d25\");",
-      "        }",
-      "",
-      "        return result;",
-      "    }",
-      "",
-      "    private static void HydrateIndexReferences(TableSchema schema)",
-      "    {",
-      "        if (schema?.parameters == null || schema.instances == null)",
-      "        {",
-      "            return;",
-      "        }",
-      "        foreach (var param in schema.parameters)",
-      "        {",
-      "            if (param?.parameterIndexes == null)",
-      "            {",
-      "                continue;",
-      "            }",
-      "            foreach (var kv in schema.instances)",
-      "            {",
-      "                var payload = ExtractPayload(kv.Value);",
-      "                if (payload == null || !payload.TryGetValue(param.name, out var rawValue))",
-      "                {",
-      "                    continue;",
-      "                }",
-      "                var payloadName = payload.TryGetValue("name", out var nameObj) ? nameObj?.ToString() : null;",
-      "                var payloadIndex = payload.TryGetValue("index", out var indexObj) ? indexObj?.ToString() : kv.Key;",
-      "                var dataRef = NormalizeDataRef(rawValue);",
-      "                if (dataRef == null)",
-      "                {",
-      "                    continue;",
-      "                }",
-      "                ApplyReferenceDefaults(dataRef, param.parameterIndexes);",
-      "                EnsureDataRefInstance(schema, param, payloadName, payloadIndex, dataRef);",
-      "                payload[param.name] = dataRef;",
-      "            }",
-      "        }",
-      "    }",
-      "",
-      "    private static ParamDef FindParameter(TableSchema schema, string parameterName)",
-      "    {",
-      "        if (schema?.parameters == null)",
-      "        {",
-      "            return null;",
-      "        }",
-      "        return schema.parameters.FirstOrDefault(p => p != null && string.Equals(p.name, parameterName, StringComparison." +
-        "OrdinalIgnoreCase));",
-      "    }",
-      "",
-      "    private static DataRef NormalizeDataRef(object rawValue)",
-      "    {",
-      "        switch (rawValue)",
-      "        {",
-      "            case null:",
-      "                return null;",
-      "            case DataRef existing:",
-      "                return existing;",
-      "            case JObject jObject:",
-      "                return jObject.ToObject<DataRef>();",
-      "            case Dictionary<string, object> dict:",
-      "                return JsonConvert.DeserializeObject<DataRef>(JsonConvert.SerializeObject(dict, SerializerSettings));",
-      "            default:",
-      "                try",
-      "                {",
-      "                    return JsonConvert.DeserializeObject<DataRef>(JsonConvert.SerializeObject(rawValue, SerializerSettings));",
-      "                }",
-      "                catch",
-      "                {",
-      "                    return null;",
-      "                }",
-      "        }",
-      "    }",
-      "",
-      "    private static void ApplyReferenceDefaults(DataRef dataRef, ParameterIndexBinding binding)",
-      "    {",
-      "        if (dataRef == null || binding == null)",
-      "        {",
-      "            return;",
-      "        }",
-      "        if (string.IsNullOrEmpty(dataRef.template))",
-      "        {",
-      "            dataRef.template = binding.template;",
-      "        }",
-      "        if (string.IsNullOrEmpty(dataRef.by))",
-      "        {",
-      "            dataRef.by = !string.IsNullOrEmpty(binding.param) ? binding.param : binding.indexField;",
-      "        }",
-      "    }",
-      "",
-      "    private static void EnsureDataRefInstance(TableSchema ownerSchema, ParamDef paramDef, string instanceName, string indexKey, DataRef dataRef)",
-      "    {",
-      "        if (dataRef == null || dataRef.instance != null)",
-      "        {",
-      "            return;",
-      "        }",
-      "        var binding = paramDef?.parameterIndexes;",
-      "        var targetTemplate = !string.IsNullOrEmpty(dataRef.template) ? dataRef.template : binding?.template;",
-      "        if (string.IsNullOrEmpty(targetTemplate))",
-      "        {",
-      "            return;",
-      "        }",
-      "        if (!SchemaCache.TryGetValue(targetTemplate, out var targetSchema) || targetSchema?.instances == null)",
-      "        {",
-      "            Debug.LogError($"{FormatInstanceIdentifier(ownerSchema?.name, instanceName, indexKey, paramDef?.name)} \u5f15\u7528\u7684\u6a21\u677f {targetTemplate} \u672a\u52a0\u8f7d\u3002");",
-      "            return;",
-      "        }",
-      "        var matchField = !string.IsNullOrEmpty(dataRef.by) ? dataRef.by : binding?.param;",
-      "        if (string.IsNullOrEmpty(matchField))",
-      "        {",
-      "            matchField = binding?.indexField;",
-      "        }",
-      "        if (string.IsNullOrEmpty(matchField))",
-      "        {",
-      "            matchField = targetSchema.indexField ?? "id";",
-      "        }",
-      "        if (string.IsNullOrWhiteSpace(dataRef.value))",
-      "        {",
-      "            dataRef.instance = null;",
-      "            return;",
-      "        }",
-      "        var resolved = FindInstanceByField(targetSchema, matchField, dataRef.value);",
-      "        if (resolved == null)",
-      "        {",
-      "            Debug.LogError($"{FormatInstanceIdentifier(ownerSchema?.name, instanceName, indexKey, paramDef?.name)} \u7d22\u5f15 {targetTemplate}.{matchField} = {dataRef.value} \u672a\u627e\u5230\u7d22\u5f15\u5b9e\u4f8b\u3002");",
-      "            return;",
-      "        }",
-      "        dataRef.instance = resolved;",
-      "    }",
-      "",
-      "    private static object FindInstanceByField(TableSchema schema, string fieldName, string expectedValue)",
-      "    {",
-      "        if (schema?.instances == null)",
-      "        {",
-      "            return null;",
-      "        }",
-      "        if (!string.IsNullOrEmpty(expectedValue))",
-      "        {",
-      "            if (string.Equals(fieldName, "index", StringComparison." +
-        "OrdinalIgnoreCase)",
-      "                || (!string.IsNullOrEmpty(schema.indexField) && string.Equals(fieldName, schema.indexField, StringComparison." +
-        "OrdinalIgnoreCase)))",
-      "            {",
-      "                if (schema.instances.TryGetValue(expectedValue, out var byIndex))",
-      "                {",
-      "                    return byIndex;",
-      "                }",
-      "            }",
-      "        }",
-      "        foreach (var kv in schema.instances)",
-      "        {",
-      "            var payload = ExtractPayload(kv.Value);",
-      "            if (payload == null)",
-      "            {",
-      "                continue;",
-      "            }",
-      "            if (!payload.TryGetValue(fieldName, out var candidate) || candidate == null)",
-      "            {",
-      "                continue;",
-      "            }",
-      "            var candidateValue = candidate.ToString();",
-      "            if (string.Equals(candidateValue, expectedValue, StringComparison." +
-        "OrdinalIgnoreCase))",
-      "            {",
-      "                return kv.Value;",
-      "            }",
-      "        }",
-      "        return null;",
-      "    }",
-      "",
-      "    private static string FormatInstanceIdentifier(string templateName, string instanceName, string indexKey, string parameterName)",
-      "    {",
-      "        var instancePart = !string.IsNullOrWhiteSpace(instanceName) ? instanceName : indexKey;",
-      "        if (string.IsNullOrWhiteSpace(instancePart))",
-      "        {",
-      "            instancePart = "(unknown)";",
-      "        }",
-      "        var tpl = string.IsNullOrWhiteSpace(templateName) ? "(unknown)" : templateName;",
-      "        var param = string.IsNullOrWhiteSpace(parameterName) ? "(unknown)" : parameterName;",
-      "        return $"{tpl}/{instancePart}/{param}";",
-      "    }",
-      "",
-      "    private static object LocateInstance(TableSchema schema, string instanceName, string indexKey)",
-      "    {",
-      "        if (schema.instances == null)",
-      "        {",
-      "            throw new InvalidOperationException($\"\u6a21\u677f {schema.name} \u6ca1\u6709\u52a0\u8f7d\u4efb\u4f55\u5b9e\u4f8b\u3002\");",
-      "        }",
-      "",
-      "        if (!string.IsNullOrWhiteSpace(indexKey) && schema.instances.TryGetValue(indexKey, out var indexed))",
-      "        {",
-      "            return indexed;",
-      "        }",
-      "",
-      "        if (!string.IsNullOrWhiteSpace(instanceName))",
-      "        {",
-      "            foreach (var kv in schema.instances)",
-      "            {",
-      "                var payload = ExtractPayload(kv.Value);",
-      "                var name = payload != null && payload.TryGetValue(\"name\", out var v) ? v?.ToString() : null;",
-      "                if (!string.IsNullOrEmpty(name) && string.Equals(name, instanceName, StringComparison." +
-        "OrdinalIgnoreCase))",
-      "                {",
-      "                    return kv.Value;",
-      "                }",
-      "            }",
-      "        }",
-      "",
-      "        throw new KeyNotFoundException($\"\u672a\u627e\u5230\u5b9e\u4f8b\uff1a\u6a21\u677f={schema.name}, \u540d\u79f0={instanceName}, \u7d22\u5f15={indexKey}\");",
-      "    }",
-      "",
-      "    private static Dictionary<string, object> ExtractPayload(object instance)",
-      "    {",
-      "        if (instance is RawInstance raw)",
-      "        {",
-      "            return raw.payload?.ToObject<Dictionary<string, object>>();",
-      "        }",
-      "        if (instance is Dictionary<string, object> dict)",
-      "        {",
-      "            if (dict.TryGetValue(\"payload\", out var payloadObj))",
-      "            {",
-      "                return ConvertToDictionary(payloadObj);",
-      "            }",
-      "            return dict;",
-      "        }",
-      "        if (instance is JObject jObject)",
-      "        {",
-      "            var payload = jObject[\"payload\"] ?? jObject;",
-      "            return payload.ToObject<Dictionary<string, object>>();",
-      "        }",
-      "        return ConvertToDictionary(instance);",
-      "    }",
-      "",
-      "    private static Dictionary<string, object> ConvertToDictionary(object value)",
-      "    {",
-      "        switch (value)",
-      "        {",
-      "            case null:",
-      "                return null;",
-      "            case Dictionary<string, object> dict:",
-      "                return dict;",
-      "            case JObject jObject:",
-      "                return jObject.ToObject<Dictionary<string, object>>();",
-      "            default:",
-      "                return JsonConvert.DeserializeObject<Dictionary<string, object>>(JsonConvert.SerializeObject(value, SerializerSettings));",
-      "        }",
-      "    }",
-      "",
-      "    private static object ConvertValue(object rawValue, Type targetType, string templateName, string parameterName)",
-      "    {",
-      "        if (rawValue == null || targetType == typeof(object))",
-      "        {",
-      "            return rawValue;",
-      "        }",
-      "        if (targetType.IsInstanceOfType(rawValue))",
-      "        {",
-      "            return rawValue;",
-      "        }",
-      "        try",
-      "        {",
-      "            switch (rawValue)",
-      "            {",
-      "                case JToken token:",
-      "                    return token.ToObject(targetType);",
-      "                case Dictionary<string, object> dict:",
-      "                    return JsonConvert.DeserializeObject(JsonConvert.SerializeObject(dict, SerializerSettings), targetType);",
-      "                case IList<object> list when targetType.IsAssignableFrom(rawValue.GetType()):",
-      "                    return rawValue;",
-      "                case IConvertible convertible when typeof(IConvertible).IsAssignableFrom(targetType):",
-      "                    return Convert.ChangeType(convertible, targetType, CultureInfo.InvariantCulture);",
-      "                default:",
-      "                    return JsonConvert.DeserializeObject(JsonConvert.SerializeObject(rawValue, SerializerSettings), targetType);",
-      "            }",
-      "        }",
-      "        catch (Exception ex)",
-      "        {",
-      "            throw new InvalidCastException($\"\u6a21\u677f {templateName} \u7684\u53c2\u6570 {parameterName} \u65e0\u6cd5\u8f6c\u6362\u4e3a {targetType.Name}\", ex);",
-      "        }",
-      "    }",
-      "",
-      "    private static string ResolvePath(string relativePath)",
-      "    {",
-      "        if (string.IsNullOrWhiteSpace(relativePath))",
-      "        {",
-      "            return _dataDirectory;",
-      "        }",
-      "        if (Path.IsPathRooted(relativePath))",
-      "        {",
-      "            return relativePath;",
-      "        }",
-      "        var sanitized = relativePath.Replace(\"\\\\\", \"/\").TrimStart('.', '/');",
-      "        if (sanitized.StartsWith(\"dataEntity/\", StringComparison." +
-        "OrdinalIgnoreCase))",
-      "        {",
-      "            sanitized = sanitized.Substring(\"dataEntity/\".Length);",
-      "        }",
-      "        var combined = string.IsNullOrEmpty(_dataDirectory) ? sanitized : Path.Combine(_dataDirectory, sanitized);",
-      "        return Path.GetFullPath(combined);",
-      "    }",
-      "",
-      "    private class ManifestRecord",
-      "    {",
-      "        public string template;",
-      "        public string path;",
-      "    }",
-      "",
-      "    private class RawTableSchema",
-      "    {",
-      "        public string name;",
-      "        public string indexField;",
-      "        public List<ParamDef> parameters;",
-      "        public List<RawInstance> instances;",
-      "    }",
-      "",
-      "    private class RawInstance",
-      "    {",
-      "        public int id;",
-      "        public string name;",
-      "        public JObject payload;",
-      "",
-      "        public Dictionary<string, object> ToDictionary()",
-      "        {",
-      "            return new Dictionary<string, object>",
-      "            {",
-      "                { \"id\", id },",
-      "                { \"name\", name },",
-      "                { \"payload\", payload != null ? payload.ToObject<Dictionary<string, object>>() : new Dictionary<string, object>() }",
-      "            };",
-      "        }",
-      "    }",
-      "}"
-    ];
-    const loaderContent = loaderLines.join('\n');
+    const loaderContent = `
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using UnityEngine;
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
+
+public static class DataEntityRuntimeLoader
+{
+    private const string DefaultManifestName = \"manifest.json\";
+    private static readonly JsonSerializerSettings SerializerSettings = new JsonSerializerSettings
+    {
+        MissingMemberHandling = MissingMemberHandling.Ignore,
+        NullValueHandling = NullValueHandling.Ignore,
+    };
+
+    private static readonly Dictionary<string, string> ManifestIndex = new Dictionary<string, string>(StringComparer.
+OrdinalIgnoreCase);
+    private static readonly Dictionary<string, TableSchema> SchemaCache = new Dictionary<string, TableSchema>(StringComparer.
+OrdinalIgnoreCase);
+    private static string _dataDirectory = string.Empty;
+    private static bool _initialized;
+
+    public static IReadOnlyDictionary<string, TableSchema> Schemas => SchemaCache;
+
+    public static void Initialize(string dataDirectory = null)
+    {
+        _dataDirectory = string.IsNullOrWhiteSpace(dataDirectory)
+            ? Path.GetFullPath(Path.Combine(Application.dataPath, \"..\", \"dataEntity\"))
+            : Path.GetFullPath(dataDirectory);
+        LoadAll();
+    }
+
+    public static TableSchema GetSchema(string templateName)
+    {
+        EnsureInitialized();
+        if (!SchemaCache.TryGetValue(templateName, out var schema))
+        {
+            throw new KeyNotFoundException($\"\u6a21\u677f {templateName} \u672a\u52a0\u8f7d\u3002\");
+        }
+        return schema;
+    }
+
+    public static T GetValue<T>(string templateName, string instanceName, string indexKey, string parameterName)
+    {
+        var value = GetValueInternal(templateName, instanceName, indexKey, parameterName, typeof(T), null, false);
+        if (value == null)
+        {
+            return default;
+        }
+        return (T)value;
+    }
+
+    public static T GetValue<T>(string templateName, string instanceName, string indexKey, string parameterName, string getParameter)
+    {
+        var value = GetValueInternal(templateName, instanceName, indexKey, parameterName, typeof(T), getParameter, false);
+        if (value == null)
+        {
+            return default;
+        }
+        return (T)value;
+    }
+
+    public static object GetValue(string templateName, string instanceName, string indexKey, string parameterName, Type parameterType)
+    {
+        return GetValueInternal(templateName, instanceName, indexKey, parameterName, parameterType, null, false);
+    }
+
+    public static object GetValue(string templateName, string instanceName, string indexKey, string parameterName, Type parameterType, string getParameter)
+    {
+        return GetValueInternal(templateName, instanceName, indexKey, parameterName, parameterType, getParameter, false);
+    }
+
+    public static DataRef GetIndexReference(string templateName, string instanceName, string indexKey, string parameterName)
+    {
+        var value = GetValueInternal(templateName, instanceName, indexKey, parameterName, typeof(DataRef), null, true);
+        return value as DataRef;
+    }
+
+    public static string GetIndexValue(string templateName, string instanceName, string indexKey, string parameterName)
+    {
+        var reference = GetIndexReference(templateName, instanceName, indexKey, parameterName);
+        return reference?.value;
+    }
+
+    private static object GetValueInternal(string templateName, string instanceName, string indexKey, string parameterName, Type parameterType, string getParameter, bool allowIndexReference)
+    {
+        EnsureInitialized();
+        if (string.IsNullOrWhiteSpace(templateName))
+        {
+            throw new ArgumentException("\u6a21\u677f\u540d\u4e0d\u80fd\u4e3a\u7a7a", nameof(templateName));
+        }
+        if (string.IsNullOrWhiteSpace(parameterName))
+        {
+            throw new ArgumentException("\u53c2\u6570\u540d\u4e0d\u80fd\u4e3a\u7a7a", nameof(parameterName));
+        }
+        if (!SchemaCache.TryGetValue(templateName, out var schema))
+        {
+            throw new KeyNotFoundException($"\u6a21\u677f {templateName} \u672a\u627e\u5230\u3002");
+        }
+
+        var paramDef = FindParameter(schema, parameterName);
+        var binding = paramDef?.parameterIndexes;
+        var isIndexParameter = binding != null
+            && !string.IsNullOrEmpty(binding.template)
+            && !string.IsNullOrEmpty(binding.param);
+
+        if (isIndexParameter)
+        {
+            if (string.IsNullOrWhiteSpace(getParameter) && !allowIndexReference)
+            {
+                var identifier = FormatInstanceIdentifier(templateName, instanceName, indexKey, parameterName);
+                throw new InvalidOperationException($"{identifier} \u662f\u7d22\u5f15\u53c2\u6570\uff0c\u65e0\u6cd5\u6b63\u5e38\u8bfb\u53d6");
+            }
+        }
+        else if (!string.IsNullOrWhiteSpace(getParameter))
+        {
+            var identifier = FormatInstanceIdentifier(templateName, instanceName, indexKey, parameterName);
+            throw new InvalidOperationException($"{identifier} \u4e0d\u662f\u7d22\u5f15\u53c2\u6570\uff0c\u4e0d\u914dgetparameter\u3002");
+        }
+
+        var instance = LocateInstance(schema, instanceName, indexKey);
+        var payload = ExtractPayload(instance);
+        if (payload == null)
+        {
+            throw new InvalidOperationException($"\u5b9e\u4f8b {instanceName ?? indexKey} \u4e0d\u5305\u542b payload\u3002");
+        }
+        if (!payload.TryGetValue(parameterName, out var rawValue))
+        {
+            throw new KeyNotFoundException($"\u5b9e\u4f8b\u4e2d\u672a\u627e\u5230\u53c2\u6570 {parameterName}\u3002");
+        }
+
+        if (!isIndexParameter)
+        {
+            return ConvertValue(rawValue, parameterType ?? typeof(object), templateName, parameterName);
+        }
+
+        var payloadName = payload.TryGetValue("name", out var payloadNameObj) ? payloadNameObj?.ToString() : instanceName;
+        var payloadIndex = indexKey;
+        if (string.IsNullOrWhiteSpace(payloadIndex) && payload.TryGetValue("index", out var payloadIndexObj))
+        {
+            payloadIndex = payloadIndexObj?.ToString();
+        }
+        var identifierFull = FormatInstanceIdentifier(templateName, payloadName, payloadIndex, parameterName);
+        var dataRef = NormalizeDataRef(rawValue);
+        if (dataRef == null)
+        {
+            throw new InvalidOperationException($"{identifierFull} \u7d22\u5f15\u89e3\u6790\u5931\u8d25\u3002");
+        }
+
+        ApplyReferenceDefaults(dataRef, binding);
+        EnsureDataRefInstance(schema, paramDef, payloadName, payloadIndex, dataRef);
+        payload[parameterName] = dataRef;
+
+        if (allowIndexReference && string.IsNullOrWhiteSpace(getParameter))
+        {
+            return dataRef;
+        }
+
+        if (string.IsNullOrWhiteSpace(getParameter))
+        {
+            return ConvertValue(dataRef, parameterType ?? typeof(object), templateName, parameterName);
+        }
+
+        if (dataRef.instance == null)
+        {
+            throw new KeyNotFoundException($"{identifierFull} \u672a\u627e\u5230\u7d22\u5f15\u5b9e\u4f8b\u3002");
+        }
+
+        var referencedPayload = ExtractPayload(dataRef.instance);
+        if (referencedPayload == null || !referencedPayload.TryGetValue(getParameter, out var indexedValue))
+        {
+            throw new KeyNotFoundException($"{identifierFull} \u7d22\u5f15\u5b9e\u4f8b\u6ca1\u6709\u53c2\u6570 {getParameter}\u3002");
+        }
+
+        var targetTemplate = dataRef.template ?? binding?.template ?? templateName;
+        return ConvertValue(indexedValue, parameterType ?? typeof(object), targetTemplate, getParameter);
+    }
+
+    public static void Reload()
+    {
+#if UNITY_EDITOR
+        var wasPaused = EditorApplication.isPaused;
+        if (!wasPaused)
+        {
+            EditorApplication.isPaused = true;
+        }
+#endif
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_dataDirectory))
+            {
+                throw new InvalidOperationException(\"\u8bf7\u5148\u8c03\u7528 Initialize \u6307\u5b9a\u6570\u636e\u76ee\u5f55\u3002\");
+            }
+            LoadAll();
+        }
+        finally
+        {
+#if UNITY_EDITOR
+            if (!wasPaused)
+            {
+                EditorApplication.isPaused = false;
+            }
+#endif
+        }
+    }
+
+    private static void EnsureInitialized()
+    {
+        if (!_initialized)
+        {
+            if (string.IsNullOrWhiteSpace(_dataDirectory))
+            {
+                Initialize();
+            }
+            else
+            {
+                LoadAll();
+            }
+        }
+    }
+
+    private static void LoadAll()
+    {
+        ManifestIndex.Clear();
+        SchemaCache.Clear();
+
+        var manifestPath = ResolvePath(DefaultManifestName);
+        if (!File.Exists(manifestPath))
+        {
+            throw new FileNotFoundException($\"\u672a\u627e\u5230 manifest \u6587\u4ef6: {manifestPath}\");
+        }
+
+        var manifestContent = File.ReadAllText(manifestPath);
+        var manifestEntries = JsonConvert.DeserializeObject<List<ManifestRecord>>(manifestContent, SerializerSettings) ?? new List<ManifestRecord>();
+        foreach (var entry in manifestEntries)
+        {
+            if (string.IsNullOrWhiteSpace(entry.template) || string.IsNullOrWhiteSpace(entry.path))
+            {
+                continue;
+            }
+            var normalized = entry.template.Trim();
+            ManifestIndex[normalized] = ResolvePath(entry.path);
+        }
+
+        foreach (var kv in ManifestIndex)
+        {
+            try
+            {
+                var schema = LoadSchema(kv.Key, kv.Value);
+                SchemaCache[kv.Key] = schema;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($\"\u52a0\u8f7d\u6a21\u677f {kv.Key} \u5931\u8d25: {ex.Message}\\n{ex.StackTrace}\");
+            }
+        }
+
+        foreach (var schema in SchemaCache.Values)
+        {
+            if (schema?.parameters == null) continue;
+            foreach (var param in schema.parameters)
+            {
+                if (param?.parameterIndexes == null) continue;
+                if (string.IsNullOrEmpty(param.parameterIndexes.indexField) && !string.IsNullOrEmpty(param.parameterIndexes.template) && SchemaCache.TryGetValue(param.parameterIndexes.template, out var target))
+                {
+                    param.parameterIndexes.indexField = target.indexField ?? \"id\";
+                }
+            }
+        }
+
+        foreach (var kvp in SchemaCache)
+        {
+            HydrateIndexReferences(kvp.Value);
+        }
+
+        _initialized = true;
+    }
+
+    private static TableSchema LoadSchema(string templateName, string filePath)
+    {
+        if (!File.Exists(filePath))
+        {
+            throw new FileNotFoundException($\"\u627e\u4e0d\u5230\u6a21\u677f {templateName} \u7684\u6570\u636e\u6587\u4ef6\", filePath);
+        }
+        var json = File.ReadAllText(filePath);
+        var raw = JsonConvert.DeserializeObject<RawTableSchema>(json, SerializerSettings) ?? new RawTableSchema();
+        if (raw.parameters != null)
+        {
+            foreach (var param in raw.parameters)
+            {
+                if (param?.parameterIndexes != null && string.IsNullOrEmpty(param.parameterIndexes.indexField))
+                {
+                    param.parameterIndexes.indexField = string.Empty;
+                }
+            }
+        }
+        var schema = new TableSchema
+        {
+            name = string.IsNullOrWhiteSpace(raw.name) ? templateName : raw.name,
+            indexField = string.IsNullOrWhiteSpace(raw.indexField) ? \"id\" : raw.indexField,
+            parameters = raw.parameters ?? new List<ParamDef>(),
+            instances = BuildInstanceDictionary(templateName, raw.instances)
+        };
+        return schema;
+    }
+
+    private static Dictionary<string, object> BuildInstanceDictionary(string templateName, List<RawInstance> instances)
+    {
+        var result = new Dictionary<string, object>(StringComparer.
+OrdinalIgnoreCase);
+        if (instances == null || instances.Count == 0)
+        {
+            return result;
+        }
+
+        var grouped = new Dictionary<string, List<RawInstance>>(StringComparer.
+OrdinalIgnoreCase);
+        foreach (var inst in instances)
+        {
+            var payloadIndex = inst?.payload?.Value<string>(\"index\");
+            var key = string.IsNullOrWhiteSpace(payloadIndex) ? inst?.id.ToString() ?? Guid.NewGuid().ToString(\"N\") : payloadIndex;
+            if (!grouped.TryGetValue(key, out var list))
+            {
+                list = new List<RawInstance>();
+                grouped[key] = list;
+            }
+            list.Add(inst);
+        }
+
+        var duplicateMessages = new List<string>();
+        foreach (var kv in grouped)
+        {
+            var ordered = kv.Value.OrderBy(r => r?.id ?? int.MaxValue).ToList();
+            if (ordered.Count > 1)
+            {
+                var names = ordered
+                    .Select(r => !string.IsNullOrEmpty(r?.name) ? r.name : r?.payload?.Value<string>(\"name\") ?? string.Empty)
+                    .Where(n => !string.IsNullOrEmpty(n))
+                    .ToList();
+                if (names.Count > 0)
+                {
+                    duplicateMessages.Add($\"{templateName}[{string.Join(\",\", names)}]\");
+                }
+            }
+            for (var i = 0; i < ordered.Count; i++)
+            {
+                var suffix = i == 0 ? string.Empty : $\"_{i}\";
+                var baseKey = string.IsNullOrEmpty(kv.Key) ? ordered[i]?.id.ToString() ?? $\"__generated_{i}\" : kv.Key;
+                var finalKey = baseKey + suffix;
+                var attempt = 1;
+                while (result.ContainsKey(finalKey))
+                {
+                    finalKey = $\"{baseKey}_{attempt++}\";
+                }
+                result[finalKey] = ordered[i]?.ToDictionary();
+            }
+        }
+
+        if (duplicateMessages.Count > 0)
+        {
+            Debug.LogError($\"{string.Join(\",\", duplicateMessages)} \u91cd\u590d\u5b9e\u4f8b \u8fd9\u4e9b\u5b9e\u4f8b\u7684index\u91cd\u590d\u5bfc\u5165\u5931\u8d25\");
+        }
+
+        return result;
+    }
+
+    private static void HydrateIndexReferences(TableSchema schema)
+    {
+        if (schema?.parameters == null || schema.instances == null)
+        {
+            return;
+        }
+        foreach (var param in schema.parameters)
+        {
+            if (param?.parameterIndexes == null)
+            {
+                continue;
+            }
+            foreach (var kv in schema.instances)
+            {
+                var payload = ExtractPayload(kv.Value);
+                if (payload == null || !payload.TryGetValue(param.name, out var rawValue))
+                {
+                    continue;
+                }
+                var payloadName = payload.TryGetValue("name", out var nameObj) ? nameObj?.ToString() : null;
+                var payloadIndex = payload.TryGetValue("index", out var indexObj) ? indexObj?.ToString() : kv.Key;
+                var dataRef = NormalizeDataRef(rawValue);
+                if (dataRef == null)
+                {
+                    continue;
+                }
+                ApplyReferenceDefaults(dataRef, param.parameterIndexes);
+                EnsureDataRefInstance(schema, param, payloadName, payloadIndex, dataRef);
+                payload[param.name] = dataRef;
+            }
+        }
+    }
+
+    private static ParamDef FindParameter(TableSchema schema, string parameterName)
+    {
+        if (schema?.parameters == null)
+        {
+            return null;
+        }
+        return schema.parameters.FirstOrDefault(p => p != null && string.Equals(p.name, parameterName, StringComparison.
+OrdinalIgnoreCase));
+    }
+
+    private static DataRef NormalizeDataRef(object rawValue)
+    {
+        switch (rawValue)
+        {
+            case null:
+                return null;
+            case DataRef existing:
+                return existing;
+            case JObject jObject:
+                return jObject.ToObject<DataRef>();
+            case Dictionary<string, object> dict:
+                return JsonConvert.DeserializeObject<DataRef>(JsonConvert.SerializeObject(dict, SerializerSettings));
+            default:
+                try
+                {
+                    return JsonConvert.DeserializeObject<DataRef>(JsonConvert.SerializeObject(rawValue, SerializerSettings));
+                }
+                catch
+                {
+                    return null;
+                }
+        }
+    }
+
+    private static void ApplyReferenceDefaults(DataRef dataRef, ParameterIndexBinding binding)
+    {
+        if (dataRef == null || binding == null)
+        {
+            return;
+        }
+        if (string.IsNullOrEmpty(dataRef.template))
+        {
+            dataRef.template = binding.template;
+        }
+        if (string.IsNullOrEmpty(dataRef.by))
+        {
+            dataRef.by = !string.IsNullOrEmpty(binding.param) ? binding.param : binding.indexField;
+        }
+    }
+
+    private static void EnsureDataRefInstance(TableSchema ownerSchema, ParamDef paramDef, string instanceName, string indexKey, DataRef dataRef)
+    {
+        if (dataRef == null || dataRef.instance != null)
+        {
+            return;
+        }
+        var binding = paramDef?.parameterIndexes;
+        var targetTemplate = !string.IsNullOrEmpty(dataRef.template) ? dataRef.template : binding?.template;
+        if (string.IsNullOrEmpty(targetTemplate))
+        {
+            return;
+        }
+        if (!SchemaCache.TryGetValue(targetTemplate, out var targetSchema) || targetSchema?.instances == null)
+        {
+            Debug.LogError($"{FormatInstanceIdentifier(ownerSchema?.name, instanceName, indexKey, paramDef?.name)} \u5f15\u7528\u7684\u6a21\u677f {targetTemplate} \u672a\u52a0\u8f7d\u3002");
+            return;
+        }
+        var matchField = !string.IsNullOrEmpty(dataRef.by) ? dataRef.by : binding?.param;
+        if (string.IsNullOrEmpty(matchField))
+        {
+            matchField = binding?.indexField;
+        }
+        if (string.IsNullOrEmpty(matchField))
+        {
+            matchField = targetSchema.indexField ?? "id";
+        }
+        if (string.IsNullOrWhiteSpace(dataRef.value))
+        {
+            dataRef.instance = null;
+            return;
+        }
+        var resolved = FindInstanceByField(targetSchema, matchField, dataRef.value);
+        if (resolved == null)
+        {
+            Debug.LogError($"{FormatInstanceIdentifier(ownerSchema?.name, instanceName, indexKey, paramDef?.name)} \u7d22\u5f15 {targetTemplate}.{matchField} = {dataRef.value} \u672a\u627e\u5230\u7d22\u5f15\u5b9e\u4f8b\u3002");
+            return;
+        }
+        dataRef.instance = resolved;
+    }
+
+    private static object FindInstanceByField(TableSchema schema, string fieldName, string expectedValue)
+    {
+        if (schema?.instances == null)
+        {
+            return null;
+        }
+        if (!string.IsNullOrEmpty(expectedValue))
+        {
+            if (string.Equals(fieldName, "index", StringComparison.
+OrdinalIgnoreCase)
+                || (!string.IsNullOrEmpty(schema.indexField) && string.Equals(fieldName, schema.indexField, StringComparison.
+OrdinalIgnoreCase)))
+            {
+                if (schema.instances.TryGetValue(expectedValue, out var byIndex))
+                {
+                    return byIndex;
+                }
+            }
+        }
+        foreach (var kv in schema.instances)
+        {
+            var payload = ExtractPayload(kv.Value);
+            if (payload == null)
+            {
+                continue;
+            }
+            if (!payload.TryGetValue(fieldName, out var candidate) || candidate == null)
+            {
+                continue;
+            }
+            var candidateValue = candidate.ToString();
+            if (string.Equals(candidateValue, expectedValue, StringComparison.
+OrdinalIgnoreCase))
+            {
+                return kv.Value;
+            }
+        }
+        return null;
+    }
+
+    private static string FormatInstanceIdentifier(string templateName, string instanceName, string indexKey, string parameterName)
+    {
+        var instancePart = !string.IsNullOrWhiteSpace(instanceName) ? instanceName : indexKey;
+        if (string.IsNullOrWhiteSpace(instancePart))
+        {
+            instancePart = "(unknown)";
+        }
+        var tpl = string.IsNullOrWhiteSpace(templateName) ? "(unknown)" : templateName;
+        var param = string.IsNullOrWhiteSpace(parameterName) ? "(unknown)" : parameterName;
+        return $"{tpl}/{instancePart}/{param}";
+    }
+
+    private static object LocateInstance(TableSchema schema, string instanceName, string indexKey)
+    {
+        if (schema.instances == null)
+        {
+            throw new InvalidOperationException($\"\u6a21\u677f {schema.name} \u6ca1\u6709\u52a0\u8f7d\u4efb\u4f55\u5b9e\u4f8b\u3002\");
+        }
+
+        if (!string.IsNullOrWhiteSpace(indexKey) && schema.instances.TryGetValue(indexKey, out var indexed))
+        {
+            return indexed;
+        }
+
+        if (!string.IsNullOrWhiteSpace(instanceName))
+        {
+            foreach (var kv in schema.instances)
+            {
+                var payload = ExtractPayload(kv.Value);
+                var name = payload != null && payload.TryGetValue(\"name\", out var v) ? v?.ToString() : null;
+                if (!string.IsNullOrEmpty(name) && string.Equals(name, instanceName, StringComparison.
+OrdinalIgnoreCase))
+                {
+                    return kv.Value;
+                }
+            }
+        }
+
+        throw new KeyNotFoundException($\"\u672a\u627e\u5230\u5b9e\u4f8b\uff1a\u6a21\u677f={schema.name}, \u540d\u79f0={instanceName}, \u7d22\u5f15={indexKey}\");
+    }
+
+    private static Dictionary<string, object> ExtractPayload(object instance)
+    {
+        if (instance is RawInstance raw)
+        {
+            return raw.payload?.ToObject<Dictionary<string, object>>();
+        }
+        if (instance is Dictionary<string, object> dict)
+        {
+            if (dict.TryGetValue(\"payload\", out var payloadObj))
+            {
+                return ConvertToDictionary(payloadObj);
+            }
+            return dict;
+        }
+        if (instance is JObject jObject)
+        {
+            var payload = jObject[\"payload\"] ?? jObject;
+            return payload.ToObject<Dictionary<string, object>>();
+        }
+        return ConvertToDictionary(instance);
+    }
+
+    private static Dictionary<string, object> ConvertToDictionary(object value)
+    {
+        switch (value)
+        {
+            case null:
+                return null;
+            case Dictionary<string, object> dict:
+                return dict;
+            case JObject jObject:
+                return jObject.ToObject<Dictionary<string, object>>();
+            default:
+                return JsonConvert.DeserializeObject<Dictionary<string, object>>(JsonConvert.SerializeObject(value, SerializerSettings));
+        }
+    }
+
+    private static object ConvertValue(object rawValue, Type targetType, string templateName, string parameterName)
+    {
+        if (rawValue == null || targetType == typeof(object))
+        {
+            return rawValue;
+        }
+        if (targetType.IsInstanceOfType(rawValue))
+        {
+            return rawValue;
+        }
+        try
+        {
+            switch (rawValue)
+            {
+                case JToken token:
+                    return token.ToObject(targetType);
+                case Dictionary<string, object> dict:
+                    return JsonConvert.DeserializeObject(JsonConvert.SerializeObject(dict, SerializerSettings), targetType);
+                case IList<object> list when targetType.IsAssignableFrom(rawValue.GetType()):
+                    return rawValue;
+                case IConvertible convertible when typeof(IConvertible).IsAssignableFrom(targetType):
+                    return Convert.ChangeType(convertible, targetType, CultureInfo.InvariantCulture);
+                default:
+                    return JsonConvert.DeserializeObject(JsonConvert.SerializeObject(rawValue, SerializerSettings), targetType);
+            }
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidCastException($\"\u6a21\u677f {templateName} \u7684\u53c2\u6570 {parameterName} \u65e0\u6cd5\u8f6c\u6362\u4e3a {targetType.Name}\", ex);
+        }
+    }
+
+    private static string ResolvePath(string relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath))
+        {
+            return _dataDirectory;
+        }
+        if (Path.IsPathRooted(relativePath))
+        {
+            return relativePath;
+        }
+        var sanitized = relativePath.Replace(\"\\\\\", \"/\").TrimStart('.', '/');
+        if (sanitized.StartsWith(\"dataEntity/\", StringComparison.
+OrdinalIgnoreCase))
+        {
+            sanitized = sanitized.Substring(\"dataEntity/\".Length);
+        }
+        var combined = string.IsNullOrEmpty(_dataDirectory) ? sanitized : Path.Combine(_dataDirectory, sanitized);
+        return Path.GetFullPath(combined);
+    }
+
+    private class ManifestRecord
+    {
+        public string template;
+        public string path;
+    }
+
+    private class RawTableSchema
+    {
+        public string name;
+        public string indexField;
+        public List<ParamDef> parameters;
+        public List<RawInstance> instances;
+    }
+
+    private class RawInstance
+    {
+        public int id;
+        public string name;
+        public JObject payload;
+
+        public Dictionary<string, object> ToDictionary()
+        {
+            return new Dictionary<string, object>
+            {
+                { \"id\", id },
+                { \"name\", name },
+                { \"payload\", payload != null ? payload.ToObject<Dictionary<string, object>>() : new Dictionary<string, object>() }
+            };
+        }
+    }
+}
+    `;
     await writeTextFile(modelStructHandle, 'DataEntityRuntimeLoader.cs', loaderContent);
-    const guideLines = [
-      "DataEntityRuntimeLoader \u4f7f\u7528\u8bf4\u660e",
-      "================================",
-      "",
-      "1. \u521d\u59cb\u5316",
-      "   // dataEntity \u76ee\u5f55\u4f4d\u4e8e\u9879\u76ee\u6839\u76ee\u5f55\u65f6\u53ef\u76f4\u63a5\u8c03\u7528",
-      "   DataEntityRuntimeLoader.Initialize();",
-      "   // \u6216\u8005\u663e\u5f0f\u4f20\u5165\u8def\u5f84",
-      "   DataEntityRuntimeLoader.Initialize(Path.Combine(Application.dataPath, \"..\", \"dataEntity\"));",
-      "",
-      "2. \u8bfb\u53d6\u53c2\u6570",
-      "   // \u666e\u901a\u53c2\u6570\uff1a\u652f\u6301\u901a\u8fc7\u5b9e\u4f8b\u540d\u6216\u7d22\u5f15\u952e\u67e5\u8be2",
-      "   var damage = DataEntityRuntimeLoader.GetValue<int>(\"TemplateName\", null, \"indexKey\", \"damage\");",
-      "   // \u7d22\u5f15\u53c2\u6570\uff1a\u901a\u8fc7 getParameter \u6307\u5b9a\u5f15\u7528\u5b9e\u4f8b\u4e2d\u7684\u5b57\u6bb5",
-      "   var hp = DataEntityRuntimeLoader.GetValue<int>(\"TemplateName\", \"\u5b9e\u4f8b\u540d\u79f0\", null, \"refParam\", \"hp\");",
-      "   // \u82e5\u9700\u76f4\u63a5\u8bbf\u95ee DataRef \u53ca\u5176\u7d22\u5f15\u503c",
-      "   var dataRef = DataEntityRuntimeLoader.GetIndexReference(\"TemplateName\", \"\u5b9e\u4f8b\u540d\u79f0\", null, \"refParam\");",
-      "   var refKey = DataEntityRuntimeLoader.GetIndexValue(\"TemplateName\", \"\u5b9e\u4f8b\u540d\u79f0\", null, \"refParam\");",
-      "",
-      "3. \u83b7\u53d6\u5b8c\u6574\u6a21\u677f",
-      "   var schema = DataEntityRuntimeLoader.GetSchema(\"TemplateName\");",
-      "   // schema.instances \u4e3a Dictionary<string, object>",
-      "",
-      "4. \u70ed\u91cd\u8f7d",
-      "   DataEntityRuntimeLoader.Reload(); // \u81ea\u52a8\u6682\u505c\u5e76\u6062\u590d EditorApplication.isPaused",
-      "",
-      "\u6ce8\u610f\u4e8b\u9879:",
-      "- manifest.json \u4f4d\u4e8e dataEntity \u76ee\u5f55\uff0cpath \u5b57\u6bb5\u662f JSON \u6587\u4ef6\u540d\u3002",
-      "- \u91cd\u590d\u7684\u5b9e\u4f8b\u7d22\u5f15\u4f1a\u5728\u63a7\u5236\u53f0\u8f93\u51fa\u9519\u8bef\uff0c\u5e76\u4e3a\u540e\u7eed\u5b9e\u4f8b\u8ffd\u52a0 _1/_2 \u540e\u7f00\u3002",
-      "- \u7d22\u5f15\u53c2\u6570\u5fc5\u987b\u901a\u8fc7\u5e26 getParameter \u7684 GetValue \u91cd\u8f7d\u6216 GetIndexReference/GetIndexValue \u8bbf\u95ee\uff0c\u76f4\u63a5\u8bfb\u53d6\u4f1a\u629b\u51fa\u5f02\u5e38\u3002",
-      "- \u5982\u679c\u7d22\u5f15\u5b9e\u4f8b\u7f3a\u5c11 getParameter \u6307\u5b9a\u7684\u5b57\u6bb5\uff0c\u4f1a\u629b\u51fa\u5f02\u5e38\u5e76\u5728\u63a7\u5236\u53f0\u6253\u5370\u9519\u8bef\u3002",
-      "- \u5982\u679c\u8bf7\u6c42\u7684\u53c2\u6570\u7c7b\u578b\u4e0d\u5339\u914d\u4f1a\u629b\u51fa InvalidCastException\u3002"
-    ];
-    const guideContent = guideLines.join('\n');
+    const guideContent = `
+DataEntityRuntimeLoader \u4f7f\u7528\u8bf4\u660e
+================================
+
+1. \u521d\u59cb\u5316
+   // dataEntity \u76ee\u5f55\u4f4d\u4e8e\u9879\u76ee\u6839\u76ee\u5f55\u65f6\u53ef\u76f4\u63a5\u8c03\u7528
+   DataEntityRuntimeLoader.Initialize();
+   // \u6216\u8005\u663e\u5f0f\u4f20\u5165\u8def\u5f84
+   DataEntityRuntimeLoader.Initialize(Path.Combine(Application.dataPath, \"..\", \"dataEntity\"));
+
+2. \u8bfb\u53d6\u53c2\u6570
+   // \u666e\u901a\u53c2\u6570\uff1a\u652f\u6301\u901a\u8fc7\u5b9e\u4f8b\u540d\u6216\u7d22\u5f15\u952e\u67e5\u8be2
+   var damage = DataEntityRuntimeLoader.GetValue<int>(\"TemplateName\", null, \"indexKey\", \"damage\");
+   // \u7d22\u5f15\u53c2\u6570\uff1a\u901a\u8fc7 getParameter \u6307\u5b9a\u5f15\u7528\u5b9e\u4f8b\u4e2d\u7684\u5b57\u6bb5
+   var hp = DataEntityRuntimeLoader.GetValue<int>(\"TemplateName\", \"\u5b9e\u4f8b\u540d\u79f0\", null, \"refParam\", \"hp\");
+   // \u82e5\u9700\u76f4\u63a5\u8bbf\u95ee DataRef \u53ca\u5176\u7d22\u5f15\u503c
+   var dataRef = DataEntityRuntimeLoader.GetIndexReference(\"TemplateName\", \"\u5b9e\u4f8b\u540d\u79f0\", null, \"refParam\");
+   var refKey = DataEntityRuntimeLoader.GetIndexValue(\"TemplateName\", \"\u5b9e\u4f8b\u540d\u79f0\", null, \"refParam\");
+
+3. \u83b7\u53d6\u5b8c\u6574\u6a21\u677f
+   var schema = DataEntityRuntimeLoader.GetSchema(\"TemplateName\");
+   // schema.instances \u4e3a Dictionary<string, object>
+
+4. \u70ed\u91cd\u8f7d
+   DataEntityRuntimeLoader.Reload(); // \u81ea\u52a8\u6682\u505c\u5e76\u6062\u590d EditorApplication.isPaused
+
+\u6ce8\u610f\u4e8b\u9879:
+- manifest.json \u4f4d\u4e8e dataEntity \u76ee\u5f55\uff0cpath \u5b57\u6bb5\u662f JSON \u6587\u4ef6\u540d\u3002
+- \u91cd\u590d\u7684\u5b9e\u4f8b\u7d22\u5f15\u4f1a\u5728\u63a7\u5236\u53f0\u8f93\u51fa\u9519\u8bef\uff0c\u5e76\u4e3a\u540e\u7eed\u5b9e\u4f8b\u8ffd\u52a0 _1/_2 \u540e\u7f00\u3002
+- \u7d22\u5f15\u53c2\u6570\u5fc5\u987b\u901a\u8fc7\u5e26 getParameter \u7684 GetValue \u91cd\u8f7d\u6216 GetIndexReference/GetIndexValue \u8bbf\u95ee\uff0c\u76f4\u63a5\u8bfb\u53d6\u4f1a\u629b\u51fa\u5f02\u5e38\u3002
+- \u5982\u679c\u7d22\u5f15\u5b9e\u4f8b\u7f3a\u5c11 getParameter \u6307\u5b9a\u7684\u5b57\u6bb5\uff0c\u4f1a\u629b\u51fa\u5f02\u5e38\u5e76\u5728\u63a7\u5236\u53f0\u6253\u5370\u9519\u8bef\u3002
+- \u5982\u679c\u8bf7\u6c42\u7684\u53c2\u6570\u7c7b\u578b\u4e0d\u5339\u914d\u4f1a\u629b\u51fa InvalidCastException\u3002
+    `;
     await writeTextFile(modelStructHandle, 'DataEntityRuntimeLoaderGuide.txt', guideContent);
     if (editorHandle) {
-      const testerLines = [
-      "using System;"
-      "using System.Collections.Generic;"
-      "using UnityEngine;"
-      "#if UNITY_EDITOR"
-      "using UnityEditor;"
-      "#endif"
-      ""
-      "public class DataEntityRuntimeTester : MonoBehaviour"
-      "{"
-      "    public enum TestOperation"
-      "    {"
-      "        Initialize,"
-      "        Reload,"
-      "        GetValue,"
-      "    }"
-      ""
-      "    [SerializeField]"
-      "    private TestOperation operation = TestOperation.Initialize;"
-      ""
-      "    [SerializeField]"
-      "    private string dataDirectory = string.Empty;"
-      ""
-      "    [SerializeField]"
-      "    private string templateName = string.Empty;"
-      ""
-      "    [SerializeField]"
-      "    private string instanceName = string.Empty;"
-      ""
-      "    [SerializeField]"
-      "    private string indexKey = string.Empty;"
-      ""
-      "    [SerializeField]"
-      "    private string parameterName = string.Empty;"
-      ""
-      "    [SerializeField]"
-      "    private string parameterType = \"string\";"
-      ""
-      "    [SerializeField]"
-      "    private string getParameter = string.Empty;"
-      ""
-      "    public void ExecuteSelectedOperation()"
-      "    {"
-      "        try"
-      "        {"
-      "            switch (operation)"
-      "            {"
-      "                case TestOperation.Initialize:"
-      "                    ExecuteInitialize();"
-      "                    break;"
-      "                case TestOperation.Reload:"
-      "                    ExecuteReload();"
-      "                    break;"
-      "                case TestOperation.GetValue:"
-      "                    ExecuteGetValue();"
-      "                    break;"
-      "                default:"
-      "                    Debug.LogError(\"Unsupported operation\");"
-      "                    break;"
-      "            }"
-      "        }"
-      "        catch (Exception ex)"
-      "        {"
-      "            Debug.LogError($\"[DataEntityRuntimeTester] {ex.Message}\\\n{ex}\");"
-      "        }"
-      "    }"
-      ""
-      "    private void ExecuteInitialize()"
-      "    {"
-      "        var path = string.IsNullOrWhiteSpace(dataDirectory) ? null : dataDirectory;"
-      "        DataEntityRuntimeLoader.Initialize(path);"
-      "        Debug.Log(\"[DataEntityRuntimeTester] Initialize completed\");"
-      "    }"
-      ""
-      "    private void ExecuteReload()"
-      "    {"
-      "        DataEntityRuntimeLoader.Reload();"
-      "        Debug.Log(\"[DataEntityRuntimeTester] Reload completed\");"
-      "    }"
-      ""
-      "    private void ExecuteGetValue()"
-      "    {"
-      "        if (string.IsNullOrWhiteSpace(templateName) || string.IsNullOrWhiteSpace(parameterName))"
-      "        {"
-      "            Debug.LogError(\"输入不合法\");"
-      "            return;"
-      "        }"
-      ""
-      "        var type = ResolveParameterType(parameterType);"
-      "        if (type == null)"
-      "        {"
-      "            Debug.LogError(\"输入不合法\");"
-      "            return;"
-      "        }"
-      ""
-      "        var instance = string.IsNullOrWhiteSpace(instanceName) ? null : instanceName;"
-      "        var index = string.IsNullOrWhiteSpace(indexKey) ? null : indexKey;"
-      ""
-      "        object value;"
-      "        if (string.IsNullOrWhiteSpace(getParameter))"
-      "        {"
-      "            value = DataEntityRuntimeLoader.GetValue(templateName, instance, index, parameterName, type);"
-      "        }"
-      "        else"
-      "        {"
-      "            value = DataEntityRuntimeLoader.GetValue(templateName, instance, index, parameterName, type, getParameter);"
-      "        }"
-      ""
-      "        var identifier = !string.IsNullOrWhiteSpace(instance) ? instance : index;"
-      "        var valueText = value == null ? \"<null>\" : value.ToString();"
-      "        Debug.Log($\"{templateName}/{identifier ?? \"(null)\"}/{parameterName}/{valueText}\");"
-      "    }"
-      ""
-      "    private static Type ResolveParameterType(string typeName)"
-      "    {"
-      "        if (string.IsNullOrWhiteSpace(typeName))"
-      "        {"
-      "            return typeof(object);"
-      "        }"
-      ""
-      "        var normalized = typeName.Trim();"
-      "        if (TypeMappings.TryGetValue(normalized, out var mapped))"
-      "        {"
-      "            return mapped;"
-      "        }"
-      "        if (TypeMappings.TryGetValue(normalized.ToLowerInvariant(), out mapped))"
-      "        {"
-      "            return mapped;"
-      "        }"
-      "        try"
-      "        {"
-      "            return Type.GetType(normalized, false);"
-      "        }"
-      "        catch"
-      "        {"
-      "            return null;"
-      "        }"
-      "    }"
-      ""
-      "    private static readonly Dictionary<string, Type> TypeMappings = new Dictionary<string, Type>(StringComparer." +
-      "OrdinalIgnoreCase)"
-      "    {"
-      "        { \"bool\", typeof(bool) },"
-      "        { \"byte\", typeof(byte) },"
-      "        { \"sbyte\", typeof(sbyte) },"
-      "        { \"char\", typeof(char) },"
-      "        { \"decimal\", typeof(decimal) },"
-      "        { \"double\", typeof(double) },"
-      "        { \"float\", typeof(float) },"
-      "        { \"int\", typeof(int) },"
-      "        { \"uint\", typeof(uint) },"
-      "        { \"long\", typeof(long) },"
-      "        { \"ulong\", typeof(ulong) },"
-      "        { \"short\", typeof(short) },"
-      "        { \"ushort\", typeof(ushort) },"
-      "        { \"string\", typeof(string) },"
-      "        { \"datetime\", typeof(DateTime) },"
-      "        { \"guid\", typeof(Guid) },"
-      "    };"
-      "}"
-      ""
-      "#if UNITY_EDITOR"
-      "[CustomEditor(typeof(DataEntityRuntimeTester))]"
-      "public class DataEntityRuntimeTesterEditor : Editor"
-      "{"
-      "    private SerializedProperty operation;"
-      "    private SerializedProperty dataDirectory;"
-      "    private SerializedProperty templateName;"
-      "    private SerializedProperty instanceName;"
-      "    private SerializedProperty indexKey;"
-      "    private SerializedProperty parameterName;"
-      "    private SerializedProperty parameterType;"
-      "    private SerializedProperty getParameter;"
-      ""
-      "    private void OnEnable()"
-      "    {"
-      "        operation = serializedObject.FindProperty(\"operation\");"
-      "        dataDirectory = serializedObject.FindProperty(\"dataDirectory\");"
-      "        templateName = serializedObject.FindProperty(\"templateName\");"
-      "        instanceName = serializedObject.FindProperty(\"instanceName\");"
-      "        indexKey = serializedObject.FindProperty(\"indexKey\");"
-      "        parameterName = serializedObject.FindProperty(\"parameterName\");"
-      "        parameterType = serializedObject.FindProperty(\"parameterType\");"
-      "        getParameter = serializedObject.FindProperty(\"getParameter\");"
-      "    }"
-      ""
-      "    public override void OnInspectorGUI()"
-      "    {"
-      "        serializedObject.Update();"
-      "        EditorGUILayout.PropertyField(operation);"
-      "        var op = (DataEntityRuntimeTester.TestOperation)operation.enumValueIndex;"
-      "        switch (op)"
-      "        {"
-      "            case DataEntityRuntimeTester.TestOperation.Initialize:"
-      "                EditorGUILayout.HelpBox(\"调用 DataEntityRuntimeLoader.Initialize\", MessageType.Info);"
-      "                EditorGUILayout.PropertyField(dataDirectory, new GUIContent(\"数据目录(可空)\"));"
-      "                break;"
-      "            case DataEntityRuntimeTester.TestOperation.Reload:"
-      "                EditorGUILayout.HelpBox(\"调用 DataEntityRuntimeLoader.Reload\", MessageType.Info);"
-      "                break;"
-      "            case DataEntityRuntimeTester.TestOperation.GetValue:"
-      "                EditorGUILayout.HelpBox(\"读取数据并在控制台输出\", MessageType.Info);"
-      "                EditorGUILayout.PropertyField(templateName, new GUIContent(\"模板名\"));"
-      "                EditorGUILayout.PropertyField(instanceName, new GUIContent(\"实例名\"));"
-      "                EditorGUILayout.PropertyField(indexKey, new GUIContent(\"索引字符\"));"
-      "                EditorGUILayout.PropertyField(parameterName, new GUIContent(\"参数名\"));"
-      "                EditorGUILayout.PropertyField(parameterType, new GUIContent(\"参数类型\"));"
-      "                EditorGUILayout.PropertyField(getParameter, new GUIContent(\"索引获取参数(getParameter)\"));"
-      "                break;"
-      "        }"
-      "        serializedObject.ApplyModifiedProperties();"
-      "        if (GUILayout.Button(\"执行\"))"
-      "        {"
-      "            foreach (UnityEngine.Object target in targets)"
-      "            {"
-      "                if (target is DataEntityRuntimeTester tester)"
-      "                {"
-      "                    tester.ExecuteSelectedOperation();"
-      "                }"
-      "            }"
-      "        }"
-      "    }"
-      "}"
-      "#endif"
-      ""
-    ];
-      const testerContent = testerLines.join('\n');
+      const testerContent = `
+using System;
+using System.Collections.Generic;
+using UnityEngine;
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
+
+public class DataEntityRuntimeTester : MonoBehaviour
+{
+    public enum TestOperation
+    {
+        Initialize,
+        Reload,
+        GetValue,
+    }
+
+    [SerializeField]
+    private TestOperation operation = TestOperation.Initialize;
+
+    [SerializeField]
+    private string dataDirectory = string.Empty;
+
+    [SerializeField]
+    private string templateName = string.Empty;
+
+    [SerializeField]
+    private string instanceName = string.Empty;
+
+    [SerializeField]
+    private string indexKey = string.Empty;
+
+    [SerializeField]
+    private string parameterName = string.Empty;
+
+    [SerializeField]
+    private string parameterType = \"string\";
+
+    [SerializeField]
+    private string getParameter = string.Empty;
+
+    public void ExecuteSelectedOperation()
+    {
+        try
+        {
+            switch (operation)
+            {
+                case TestOperation.Initialize:
+                    ExecuteInitialize();
+                    break;
+                case TestOperation.Reload:
+                    ExecuteReload();
+                    break;
+                case TestOperation.GetValue:
+                    ExecuteGetValue();
+                    break;
+                default:
+                    Debug.LogError(\"Unsupported operation\");
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($\"[DataEntityRuntimeTester] {ex.Message}\\\n{ex}\");
+        }
+    }
+
+    private void ExecuteInitialize()
+    {
+        var path = string.IsNullOrWhiteSpace(dataDirectory) ? null : dataDirectory;
+        DataEntityRuntimeLoader.Initialize(path);
+        Debug.Log(\"[DataEntityRuntimeTester] Initialize completed\");
+    }
+
+    private void ExecuteReload()
+    {
+        DataEntityRuntimeLoader.Reload();
+        Debug.Log(\"[DataEntityRuntimeTester] Reload completed\");
+    }
+
+    private void ExecuteGetValue()
+    {
+        if (string.IsNullOrWhiteSpace(templateName) || string.IsNullOrWhiteSpace(parameterName))
+        {
+            Debug.LogError(\"输入不合法\");
+            return;
+        }
+
+        var type = ResolveParameterType(parameterType);
+        if (type == null)
+        {
+            Debug.LogError(\"输入不合法\");
+            return;
+        }
+
+        var instance = string.IsNullOrWhiteSpace(instanceName) ? null : instanceName;
+        var index = string.IsNullOrWhiteSpace(indexKey) ? null : indexKey;
+
+        object value;
+        if (string.IsNullOrWhiteSpace(getParameter))
+        {
+            value = DataEntityRuntimeLoader.GetValue(templateName, instance, index, parameterName, type);
+        }
+        else
+        {
+            value = DataEntityRuntimeLoader.GetValue(templateName, instance, index, parameterName, type, getParameter);
+        }
+
+        var identifier = !string.IsNullOrWhiteSpace(instance) ? instance : index;
+        var valueText = value == null ? \"<null>\" : value.ToString();
+        Debug.Log($\"{templateName}/{identifier ?? \"(null)\"}/{parameterName}/{valueText}\");
+    }
+
+    private static Type ResolveParameterType(string typeName)
+    {
+        if (string.IsNullOrWhiteSpace(typeName))
+        {
+            return typeof(object);
+        }
+
+        var normalized = typeName.Trim();
+        if (TypeMappings.TryGetValue(normalized, out var mapped))
+        {
+            return mapped;
+        }
+        if (TypeMappings.TryGetValue(normalized.ToLowerInvariant(), out mapped))
+        {
+            return mapped;
+        }
+        try
+        {
+            return Type.GetType(normalized, false);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static readonly Dictionary<string, Type> TypeMappings = new Dictionary<string, Type>(StringComparer.
+OrdinalIgnoreCase)
+    {
+        { \"bool\", typeof(bool) },
+        { \"byte\", typeof(byte) },
+        { \"sbyte\", typeof(sbyte) },
+        { \"char\", typeof(char) },
+        { \"decimal\", typeof(decimal) },
+        { \"double\", typeof(double) },
+        { \"float\", typeof(float) },
+        { \"int\", typeof(int) },
+        { \"uint\", typeof(uint) },
+        { \"long\", typeof(long) },
+        { \"ulong\", typeof(ulong) },
+        { \"short\", typeof(short) },
+        { \"ushort\", typeof(ushort) },
+        { \"string\", typeof(string) },
+        { \"datetime\", typeof(DateTime) },
+        { \"guid\", typeof(Guid) },
+    };
+}
+
+#if UNITY_EDITOR
+[CustomEditor(typeof(DataEntityRuntimeTester))]
+public class DataEntityRuntimeTesterEditor : Editor
+{
+    private SerializedProperty operation;
+    private SerializedProperty dataDirectory;
+    private SerializedProperty templateName;
+    private SerializedProperty instanceName;
+    private SerializedProperty indexKey;
+    private SerializedProperty parameterName;
+    private SerializedProperty parameterType;
+    private SerializedProperty getParameter;
+
+    private void OnEnable()
+    {
+        operation = serializedObject.FindProperty(\"operation\");
+        dataDirectory = serializedObject.FindProperty(\"dataDirectory\");
+        templateName = serializedObject.FindProperty(\"templateName\");
+        instanceName = serializedObject.FindProperty(\"instanceName\");
+        indexKey = serializedObject.FindProperty(\"indexKey\");
+        parameterName = serializedObject.FindProperty(\"parameterName\");
+        parameterType = serializedObject.FindProperty(\"parameterType\");
+        getParameter = serializedObject.FindProperty(\"getParameter\");
+    }
+
+    public override void OnInspectorGUI()
+    {
+        serializedObject.Update();
+        EditorGUILayout.PropertyField(operation);
+        var op = (DataEntityRuntimeTester.TestOperation)operation.enumValueIndex;
+        switch (op)
+        {
+            case DataEntityRuntimeTester.TestOperation.Initialize:
+                EditorGUILayout.HelpBox(\"调用 DataEntityRuntimeLoader.Initialize\", MessageType.Info);
+                EditorGUILayout.PropertyField(dataDirectory, new GUIContent(\"数据目录(可空)\"));
+                break;
+            case DataEntityRuntimeTester.TestOperation.Reload:
+                EditorGUILayout.HelpBox(\"调用 DataEntityRuntimeLoader.Reload\", MessageType.Info);
+                break;
+            case DataEntityRuntimeTester.TestOperation.GetValue:
+                EditorGUILayout.HelpBox(\"读取数据并在控制台输出\", MessageType.Info);
+                EditorGUILayout.PropertyField(templateName, new GUIContent(\"模板名\"));
+                EditorGUILayout.PropertyField(instanceName, new GUIContent(\"实例名\"));
+                EditorGUILayout.PropertyField(indexKey, new GUIContent(\"索引字符\"));
+                EditorGUILayout.PropertyField(parameterName, new GUIContent(\"参数名\"));
+                EditorGUILayout.PropertyField(parameterType, new GUIContent(\"参数类型\"));
+                EditorGUILayout.PropertyField(getParameter, new GUIContent(\"索引获取参数(getParameter)\"));
+                break;
+        }
+        serializedObject.ApplyModifiedProperties();
+        if (GUILayout.Button(\"执行\"))
+        {
+            foreach (UnityEngine.Object target in targets)
+            {
+                if (target is DataEntityRuntimeTester tester)
+                {
+                    tester.ExecuteSelectedOperation();
+                }
+            }
+        }
+    }
+}
+#endif
+
+      `;
       await writeTextFile(editorHandle, 'DataEntityRuntimeTester.cs', testerContent);
-      const testerGuideLines = [
-        "DataEntityRuntimeTester 使用说明",
-        "================================",
-        "",
-        "挂载脚本",
-        "1. 将 DataEntityRuntimeTester.cs 挂载到需要测试的 GameObject。",
-        "2. 在 Inspector 中使用自定义面板选择要执行的操作。",
-        "",
-        "操作说明",
-        "- Initialize：可选填写数据目录，为空时使用 dataEntity 目录。",
-        "- Reload：调用 DataEntityRuntimeLoader.Reload 并在 Editor 内自动暂停/恢复。",
-        "- GetValue：填写模板名、实例名或索引字符、参数名、参数类型。",
-        "  * 若目标参数为索引参数，在 getParameter 中填写要读取的字段。",
-        "  * 控制台会输出 template/entity/参数名/参数内容 或错误信息。",
-        "",
-        "执行步骤",
-        "- 参数填写完成后点击“执行”按钮触发对应操作。",
-        "- 若输入不合法，Console 面板会打印提示便于排查。",
-        "",
-        "注意事项",
-        "- 在未调用 Initialize 前执行读取会抛出异常。",
-        "- getParameter 仅在索引参数读取时需要，普通参数保持为空。"
-      ];
-      const testerGuideContent = testerGuideLines.join('\n');
+      const testerGuideContent = `
+DataEntityRuntimeTester 使用说明
+================================
+
+挂载脚本
+1. 将 DataEntityRuntimeTester.cs 挂载到需要测试的 GameObject。
+2. 在 Inspector 中使用自定义面板选择要执行的操作。
+
+操作说明
+- Initialize：可选填写数据目录，为空时使用 dataEntity 目录。
+- Reload：调用 DataEntityRuntimeLoader.Reload 并在 Editor 内自动暂停/恢复。
+- GetValue：填写模板名、实例名或索引字符、参数名、参数类型。
+  * 若目标参数为索引参数，在 getParameter 中填写要读取的字段。
+  * 控制台会输出 template/entity/参数名/参数内容 或错误信息。
+
+执行步骤
+- 参数填写完成后点击“执行”按钮触发对应操作。
+- 若输入不合法，Console 面板会打印提示便于排查。
+
+注意事项
+- 在未调用 Initialize 前执行读取会抛出异常。
+- getParameter 仅在索引参数读取时需要，普通参数保持为空。
+      `;
       await writeTextFile(editorHandle, 'DataEntityRuntimeTesterGuide.txt', testerGuideContent);
     }
   }
