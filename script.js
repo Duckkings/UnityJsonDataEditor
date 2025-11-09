@@ -4988,7 +4988,6 @@ DataEntityRuntimeTester 使用说明
       const templateDecisions = new Map();
       const csCache = new Map();
       let enumTemplateSaved = false;
-      let shouldUpdateDataRef = false;
       const pendingStructureDecision = [];
 
       for (const tpl of templates) {
@@ -5017,9 +5016,6 @@ DataEntityRuntimeTester 使用说明
           showMessage('已取消保存');
           return;
         }
-        if (answer === 'replace') {
-          shouldUpdateDataRef = true;
-        }
         for (const tpl of pendingStructureDecision) {
           templateDecisions.set(tpl.__uid, {
             decision: answer === 'replace' ? 'replace' : 'jsonOnly',
@@ -5042,29 +5038,6 @@ DataEntityRuntimeTester 使用说明
         if (meta && meta.decision === 'replace') {
           const content = csCache.get(tpl.__uid) || generateCSContent(tpl);
           await writeTextFile(csharpHandle, `${tpl.name}.cs`, content);
-        }
-      }
-
-      if (shouldUpdateDataRef) {
-        if (templates.some(t => Array.isArray(t.parameters) && t.parameters.some(p => p && p.parameterIndexes))) {
-          const dataRefContent = [
-            'using System;',
-            'using System.Collections.Generic;',
-            'using Newtonsoft.Json;',
-            '',
-            '[Serializable]',
-            'public class DataRef',
-            '{',
-            '    public string template;',
-            '    public string by;',
-            '    public string value;',
-            '',
-            '    [JsonIgnore]',
-            '    public object instance;',
-            '}',
-            ''
-          ].join('\n');
-          await writeTextFile(csharpHandle, 'DataRef.cs', dataRefContent);
         }
       }
 
@@ -5104,27 +5077,6 @@ DataEntityRuntimeTester 使用说明
         if (isEnumTemplate(tpl)) continue;
         const content = generateCSContent(tpl);
         await writeTextFile(csharpHandle, `${tpl.name}.cs`, content);
-        updatedAny = true;
-      }
-      if (templates.some(t => Array.isArray(t.parameters) && t.parameters.some(p => p && p.parameterIndexes))) {
-        const dataRefContent = [
-          'using System;',
-          'using System.Collections.Generic;',
-          'using Newtonsoft.Json;',
-          '',
-          '[Serializable]',
-          'public class DataRef',
-          '{',
-          '    public string template;',
-          '    public string by;',
-          '    public string value;',
-          '',
-          '    [JsonIgnore]',
-          '    public object instance;',
-          '}',
-          ''
-        ].join('\n');
-        await writeTextFile(csharpHandle, 'DataRef.cs', dataRefContent);
         updatedAny = true;
       }
       const enumTpl = getEnumTemplate();
@@ -5231,7 +5183,7 @@ DataEntityRuntimeTester 使用说明
       if (pp) idxType = mapToCSharpType(pp.type);
     }
     lines.push(`    public ${idxType} index;`);
-    // 索引参数使用可复用的全局类型 DataRef（在保存时生成 DataRef.cs）
+    // 索引参数使用可复用的全局类型 DataRef（由 modelCsharpe.cs 提供）
     tpl.parameters.forEach((p) => {
       if (!p) return;
       if (p.parameterIndexes) {
