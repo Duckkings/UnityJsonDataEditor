@@ -2875,6 +2875,31 @@
     ];
       const testerContent = testerLines.join('\n');
       await writeTextFile(editorHandle, 'DataEntityRuntimeTester.cs', testerContent);
+      const testerGuideLines = [
+        "DataEntityRuntimeTester 使用说明",
+        "================================",
+        "",
+        "挂载脚本",
+        "1. 将 DataEntityRuntimeTester.cs 挂载到需要测试的 GameObject。",
+        "2. 在 Inspector 中使用自定义面板选择要执行的操作。",
+        "",
+        "操作说明",
+        "- Initialize：可选填写数据目录，为空时使用 dataEntity 目录。",
+        "- Reload：调用 DataEntityRuntimeLoader.Reload 并在 Editor 内自动暂停/恢复。",
+        "- GetValue：填写模板名、实例名或索引字符、参数名、参数类型。",
+        "  * 若目标参数为索引参数，在 getParameter 中填写要读取的字段。",
+        "  * 控制台会输出 template/entity/参数名/参数内容 或错误信息。",
+        "",
+        "执行步骤",
+        "- 参数填写完成后点击“执行”按钮触发对应操作。",
+        "- 若输入不合法，Console 面板会打印提示便于排查。",
+        "",
+        "注意事项",
+        "- 在未调用 Initialize 前执行读取会抛出异常。",
+        "- getParameter 仅在索引参数读取时需要，普通参数保持为空。"
+      ];
+      const testerGuideContent = testerGuideLines.join('\n');
+      await writeTextFile(editorHandle, 'DataEntityRuntimeTesterGuide.txt', testerGuideContent);
     }
   }
 
