@@ -1989,8 +1989,10 @@
       "        NullValueHandling = NullValueHandling.Ignore,",
       "    };",
       "",
-      "    private static readonly Dictionary<string, string> ManifestIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);",
-      "    private static readonly Dictionary<string, TableSchema> SchemaCache = new Dictionary<string, TableSchema>(StringComparer.OrdinalIgnoreCase);",
+      "    private static readonly Dictionary<string, string> ManifestIndex = new Dictionary<string, string>(StringComparer." +
+        "OrdinalIgnoreCase);",
+      "    private static readonly Dictionary<string, TableSchema> SchemaCache = new Dictionary<string, TableSchema>(StringComparer." +
+        "OrdinalIgnoreCase);",
       "    private static string _dataDirectory = string.Empty;",
       "    private static bool _initialized;",
       "",
@@ -2280,13 +2282,15 @@
       "",
       "    private static Dictionary<string, object> BuildInstanceDictionary(string templateName, List<RawInstance> instances)",
       "    {",
-      "        var result = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);",
+      "        var result = new Dictionary<string, object>(StringComparer." +
+        "OrdinalIgnoreCase);",
       "        if (instances == null || instances.Count == 0)",
       "        {",
       "            return result;",
       "        }",
       "",
-      "        var grouped = new Dictionary<string, List<RawInstance>>(StringComparer.OrdinalIgnoreCase);",
+      "        var grouped = new Dictionary<string, List<RawInstance>>(StringComparer." +
+        "OrdinalIgnoreCase);",
       "        foreach (var inst in instances)",
       "        {",
       "            var payloadIndex = inst?.payload?.Value<string>(\"index\");",
@@ -2375,7 +2379,8 @@
       "        {",
       "            return null;",
       "        }",
-      "        return schema.parameters.FirstOrDefault(p => p != null && string.Equals(p.name, parameterName, StringComparison.OrdinalIgnoreCase));",
+      "        return schema.parameters.FirstOrDefault(p => p != null && string.Equals(p.name, parameterName, StringComparison." +
+        "OrdinalIgnoreCase));",
       "    }",
       "",
       "    private static DataRef NormalizeDataRef(object rawValue)",
@@ -2466,8 +2471,10 @@
       "        }",
       "        if (!string.IsNullOrEmpty(expectedValue))",
       "        {",
-      "            if (string.Equals(fieldName, "index", StringComparison.OrdinalIgnoreCase)",
-      "                || (!string.IsNullOrEmpty(schema.indexField) && string.Equals(fieldName, schema.indexField, StringComparison.OrdinalIgnoreCase)))",
+      "            if (string.Equals(fieldName, "index", StringComparison." +
+        "OrdinalIgnoreCase)",
+      "                || (!string.IsNullOrEmpty(schema.indexField) && string.Equals(fieldName, schema.indexField, StringComparison." +
+        "OrdinalIgnoreCase)))",
       "            {",
       "                if (schema.instances.TryGetValue(expectedValue, out var byIndex))",
       "                {",
@@ -2487,7 +2494,8 @@
       "                continue;",
       "            }",
       "            var candidateValue = candidate.ToString();",
-      "            if (string.Equals(candidateValue, expectedValue, StringComparison.OrdinalIgnoreCase))",
+      "            if (string.Equals(candidateValue, expectedValue, StringComparison." +
+        "OrdinalIgnoreCase))",
       "            {",
       "                return kv.Value;",
       "            }",
@@ -2525,7 +2533,8 @@
       "            {",
       "                var payload = ExtractPayload(kv.Value);",
       "                var name = payload != null && payload.TryGetValue(\"name\", out var v) ? v?.ToString() : null;",
-      "                if (!string.IsNullOrEmpty(name) && string.Equals(name, instanceName, StringComparison.OrdinalIgnoreCase))",
+      "                if (!string.IsNullOrEmpty(name) && string.Equals(name, instanceName, StringComparison." +
+        "OrdinalIgnoreCase))",
       "                {",
       "                    return kv.Value;",
       "                }",
@@ -2615,7 +2624,8 @@
       "            return relativePath;",
       "        }",
       "        var sanitized = relativePath.Replace(\"\\\\\", \"/\").TrimStart('.', '/');",
-      "        if (sanitized.StartsWith(\"dataEntity/\", StringComparison.OrdinalIgnoreCase))",
+      "        if (sanitized.StartsWith(\"dataEntity/\", StringComparison." +
+        "OrdinalIgnoreCase))",
       "        {",
       "            sanitized = sanitized.Substring(\"dataEntity/\".Length);",
       "        }",
@@ -2832,7 +2842,8 @@
       "        }"
       "    }"
       ""
-      "    private static readonly Dictionary<string, Type> TypeMappings = new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase)"
+      "    private static readonly Dictionary<string, Type> TypeMappings = new Dictionary<string, Type>(StringComparer." +
+      "OrdinalIgnoreCase)"
       "    {"
       "        { \"bool\", typeof(bool) },"
       "        { \"byte\", typeof(byte) },"
