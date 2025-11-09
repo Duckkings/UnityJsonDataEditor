@@ -1787,6 +1787,16 @@
   /**
    * 保证工作目录下有 csharpDate 和 dataEntity 文件夹，并检测现有文件是否合法
    */
+  const IGNORED_FILE_SUFFIXES = [".meta"];
+  const IGNORED_FILE_NAMES = [".ds_store", "thumbs.db"];
+
+  function shouldIgnoreFileEntry(entryName) {
+    if (!entryName) return false;
+    const lower = entryName.toLowerCase();
+    if (IGNORED_FILE_NAMES.includes(lower)) return true;
+    return IGNORED_FILE_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+  }
+
   async function ensureSubFolders() {
     csharpHandle = await directoryHandle.getDirectoryHandle("csharpDate", { create: true });
     dataEntityHandle = await directoryHandle.getDirectoryHandle("dataEntity", { create: true });
@@ -1798,6 +1808,9 @@
     }
     // 检查文件类型
     for await (const entry of csharpHandle.values()) {
+      if (entry.kind === "file" && shouldIgnoreFileEntry(entry.name)) {
+        continue;
+      }
       if (entry.kind === "file" && !entry.name.toLowerCase().endsWith(".cs")) {
         showMessage(`csharpDate 文件夹内仅允许 .cs 文件：${entry.name}`);
         throw new Error("Invalid file in csharpDate");
@@ -1813,6 +1826,9 @@
       }
     }
     for await (const entry of dataEntityHandle.values()) {
+      if (entry.kind === "file" && shouldIgnoreFileEntry(entry.name)) {
+        continue;
+      }
       if (entry.kind === "file" && !entry.name.toLowerCase().endsWith(".json")) {
         showMessage(`dataEntity 文件夹内仅允许 .json 文件：${entry.name}`);
         throw new Error("Invalid file in dataEntity");
