@@ -4,7 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>数据表编辑器</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/css/pluginsCss.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/plugins.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/luckysheet.css" />
     <link rel="stylesheet" href="style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/js/plugin.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/luckysheet.umd.js" defer></script>
     <script src="script.js" defer></script>
   </head>
   <body class="dark">
@@ -15,6 +20,7 @@
         <span id="currentDir" class="dir-label"></span>
         <button id="saveBtn">保存</button>
         <button id="regenerateCs">重新生成C#数据结构脚本</button>
+        <button id="toggleMode" data-mode="column">切换为表格模式</button>
         <button id="exportCsv">导出为CSV</button>
         <button id="confirmExportCsv" style="display:none">导出</button>
         <button id="cancelExportCsv" style="display:none">退出选择</button>
@@ -30,7 +36,7 @@
         <div id="message" class="message" style="display:none"></div>
       </header>
       <!-- 主内容区域：三列布局 -->
-      <main class="container">
+      <main class="container" id="columnModeContainer">
         <!-- 模板列表 -->
         <section class="panel templates">
           <div class="panel-header">
@@ -79,6 +85,14 @@
           <div id="paramList" class="param-list"></div>
         </section>
       </main>
+      <div id="tableModeContainer" class="table-mode" style="display:none;">
+        <div class="table-mode-layout">
+          <div id="tableModeTemplateSlot" class="table-mode-templates"></div>
+          <div class="table-mode-sheet-area">
+            <div id="luckysheet" class="luckysheet-container"></div>
+          </div>
+        </div>
+      </div>
     </div>
     <div id="logOverlay" class="log-overlay" style="display:none">
       <div class="log-dialog">

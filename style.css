@@ -56,6 +56,33 @@ body.dark .toolbar button.primary {
   color: #fff;
 }
 
+.invalid-name {
+  color: #d14343;
+}
+
+body.dark .invalid-name {
+  color: #ff6b6b;
+}
+
+input.invalid-name {
+  border-color: #d14343;
+  color: #d14343;
+}
+
+body.dark input.invalid-name {
+  border-color: #ff6b6b;
+  color: #ff6b6b;
+}
+
+.invalid-structure {
+  color: #e65100;
+  font-weight: 600;
+}
+
+body.dark .invalid-structure {
+  color: #ff9800;
+}
+
 /* 定义行高缩放变量默认值 */
 :root {
   --row-scale: 1;
@@ -112,6 +139,14 @@ body.dark .toolbar button.primary {
   border-right: none;
 }
 
+body.table-mode #columnModeContainer {
+  display: none;
+}
+
+body.table-mode #tableModeContainer {
+  display: block !important;
+}
+
 /* 使用 flex 比例控制三栏宽度 */
 .templates {
   flex: var(--template-flex, 1);
@@ -126,6 +161,66 @@ body.dark .toolbar button.primary {
 .parameters {
   flex: var(--param-flex, 2);
   min-width: 260px;
+}
+
+.table-mode {
+  height: calc(100vh - 50px);
+}
+
+.table-mode-layout {
+  display: flex;
+  height: 100%;
+}
+
+.table-mode-templates {
+  width: 220px;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+}
+
+.table-mode-sheet-area {
+  flex: 1;
+  position: relative;
+  background: #fff;
+}
+
+.luckysheet-container {
+  position: absolute;
+  inset: 0;
+}
+
+body.dark .table-mode-sheet-area {
+  background: #1f1f1f;
+}
+
+body.table-mode .toolbar .table-mode-hidden,
+body.table-mode .toolbar .table-mode-hidden * {
+  display: none !important;
+}
+
+body.table-mode .table-mode-templates .search-bar {
+  display: none !important;
+}
+
+body.table-mode .table-mode-templates .panel-header input[type="text"],
+body.table-mode .table-mode-templates .panel-header button,
+body.table-mode .table-mode-templates .panel-header select {
+  display: initial;
+}
+
+body.table-mode .templates {
+  width: 100%;
+}
+
+body.table-mode .instances,
+body.table-mode .parameters,
+body.table-mode .search-bar,
+body.table-mode #paramWidth,
+body.table-mode #paramWidthLabel,
+body.table-mode #rowHeight,
+body.table-mode #rowHeightLabel {
+  display: none !important;
 }
 
 .panel-header {
