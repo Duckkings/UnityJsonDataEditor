@@ -189,6 +189,7 @@ body.table-mode #tableModeContainer {
   flex-direction: column;
   background: #fff;
   border-left: 1px solid rgba(0, 0, 0, 0.08);
+  position: relative;
 }
 
 .table-mode-toolbar {
@@ -210,10 +211,16 @@ body.table-mode #tableModeContainer {
   color: rgba(0, 0, 0, 0.6);
 }
 
-.table-mode-table-wrapper {
+.luckysheet-wrapper {
   position: relative;
   flex: 1;
-  overflow: auto;
+  min-height: 0;
+  background: #fff;
+}
+
+#luckysheet {
+  width: 100%;
+  height: 100%;
 }
 
 .table-mode-empty {
@@ -224,98 +231,7 @@ body.table-mode #tableModeContainer {
   justify-content: center;
   color: rgba(0, 0, 0, 0.5);
   font-size: 14px;
-}
-
-.table-grid {
-  width: 100%;
-  border-collapse: collapse;
-  min-width: 600px;
-}
-
-.table-grid th,
-.table-grid td {
-  border: 1px solid rgba(0, 0, 0, 0.1);
-  padding: 6px 8px;
-  font-size: 13px;
-  background: #fff;
-  vertical-align: middle;
-}
-
-.table-grid thead th {
-  background: rgba(0, 0, 0, 0.04);
-  font-weight: 600;
-  position: sticky;
-  top: 0;
-  z-index: 1;
-}
-
-.table-grid tbody tr:nth-child(even) td {
-  background: rgba(0, 0, 0, 0.015);
-}
-
-.table-grid tbody tr.active td {
-  background: rgba(24, 144, 255, 0.12);
-}
-
-.table-grid input,
-.table-grid select,
-.table-grid textarea {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 4px 6px;
-  font-size: 13px;
-  border: 1px solid rgba(0, 0, 0, 0.2);
-  border-radius: 3px;
-  background: inherit;
-  color: inherit;
-}
-
-.table-grid input[type="checkbox"] {
-  width: auto;
-}
-
-.table-grid textarea {
-  min-height: 60px;
-  resize: vertical;
-}
-
-.table-grid .cell-readonly {
-  color: rgba(0, 0, 0, 0.5);
-}
-
-.table-mode-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 10px 16px;
-  border-top: 1px solid rgba(0, 0, 0, 0.08);
-  background: rgba(0, 0, 0, 0.02);
-}
-
-.table-mode-tab {
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  border-radius: 4px;
-  padding: 4px 10px;
-  font-size: 13px;
-  background: #fff;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.table-mode-tab.active {
-  background: rgba(24, 144, 255, 0.15);
-  border-color: rgba(24, 144, 255, 0.5);
-}
-
-.table-mode-tab.invalid {
-  border-color: #ff7875;
-  color: #ff4d4f;
-}
-
-.table-grid .invalid-name,
-.table-grid .invalid-value {
-  border-color: #ff7875;
-  color: #ff4d4f;
+  pointer-events: none;
 }
 
 body.dark .table-mode-main {
@@ -332,36 +248,12 @@ body.dark .table-mode-index {
   color: rgba(255, 255, 255, 0.6);
 }
 
-body.dark .table-mode-tabs {
-  background: rgba(255, 255, 255, 0.04);
-  border-top-color: rgba(255, 255, 255, 0.12);
-}
-
-body.dark .table-mode-tab {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.12);
-}
-
-body.dark .table-grid th,
-body.dark .table-grid td {
-  background: rgba(0, 0, 0, 0.2);
-  border-color: rgba(255, 255, 255, 0.12);
-}
-
-body.dark .table-grid tbody tr:nth-child(even) td {
-  background: rgba(255, 255, 255, 0.05);
+body.dark .luckysheet-wrapper {
+  background: #1f1f1f;
 }
 
 body.dark .table-mode-empty {
   color: rgba(255, 255, 255, 0.6);
-}
-
-body.dark .table-grid input,
-body.dark .table-grid select,
-body.dark .table-grid textarea {
-  background: rgba(0, 0, 0, 0.4);
-  border-color: rgba(255, 255, 255, 0.2);
-  color: #f0f0f0;
 }
 
 body.table-mode #columnModeContainer {

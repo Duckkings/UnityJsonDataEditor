@@ -4,7 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>数据表编辑器</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/css/pluginsCss.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/plugins.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/css/luckysheet.css" />
     <link rel="stylesheet" href="style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/js/plugin.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/luckysheet.umd.js"></script>
     <script src="script.js" defer></script>
   </head>
   <body class="dark">
@@ -88,14 +93,10 @@
               <div class="table-mode-title">表格模式</div>
               <div class="table-mode-index">索引字段：<span id="tableModeIndexField"></span></div>
             </div>
-            <div class="table-mode-table-wrapper">
-              <table id="tableModeTable" class="table-grid">
-                <thead id="tableModeTableHead"></thead>
-                <tbody id="tableModeTableBody"></tbody>
-              </table>
-              <div id="tableModeEmpty" class="table-mode-empty">暂无实例</div>
+            <div id="luckysheetWrapper" class="luckysheet-wrapper">
+              <div id="luckysheet"></div>
+              <div id="tableModeEmpty" class="table-mode-empty">暂无数据</div>
             </div>
-            <div id="tableModeTabs" class="table-mode-tabs"></div>
           </div>
         </div>
       </div>

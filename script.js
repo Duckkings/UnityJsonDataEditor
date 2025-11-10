@@ -148,13 +148,13 @@
   const columnModeContainer = $("columnModeContainer");
   const tableModeContainer = $("tableModeContainer");
   const tableModeTemplateSlot = $("tableModeTemplateSlot");
-  const tableModeTabsEl = $("tableModeTabs");
-  const tableModeTable = $("tableModeTable");
-  const tableModeTableHead = $("tableModeTableHead");
-  const tableModeTableBody = $("tableModeTableBody");
   const tableModeEmptyEl = $("tableModeEmpty");
   const tableModeIndexFieldEl = $("tableModeIndexField");
-  let tableModeActiveInstance = -1;
+  const luckysheetWrapper = $("luckysheetWrapper");
+  const luckysheetEl = $("luckysheet");
+  const TABLE_LOCKED_ROWS = 2;
+  const TABLE_READONLY_COLUMNS = new Set([0, 1, 2]);
+  let luckysheetLoadedTemplateUid = null;
 
   if (templatePanelEl) {
     templatePanelOriginalParent = templatePanelEl.parentElement;
@@ -1762,358 +1762,189 @@
     }, 2000);
   }
 
-  function getTableModeColumns(tpl) {
-    if (!tpl) return [];
-    const columns = [
-      { key: '__row', header: '#', kind: 'rowIndex', readonly: true },
-      { key: 'id', header: 'ID', kind: 'id', readonly: true },
-      { key: 'name', header: '实例名', kind: 'name', readonly: false },
-    ];
-    const indexField = tpl.indexField || 'id';
-    columns.push({ key: 'index', header: `索引(${indexField})`, kind: 'indexField', readonly: true });
-    if (isEnumTemplate(tpl)) {
-      const numericKeys = new Set();
-      (tpl.instances || []).forEach((inst) => {
-        getEnumParamKeysForInstance(tpl, inst).forEach((key) => numericKeys.add(key));
-      });
-      const sorted = Array.from(numericKeys)
-        .map((key) => parseInt(key, 10))
-        .filter((num) => Number.isFinite(num))
-        .sort((a, b) => a - b)
-        .map((num) => String(num));
-      sorted.forEach((key) => {
-        columns.push({ key, header: key, kind: 'enumValue', enumKey: key, readonly: false });
-      });
-    } else {
-      (tpl.parameters || []).forEach((param) => {
-        if (!param) return;
-        columns.push({ key: param.name, header: param.name, kind: 'param', param, readonly: false });
-      });
-    }
-    return columns;
-  }
-
-  function syncInstanceIndexField(tpl, inst, indexSpan) {
-    if (!tpl || !inst) return;
-    const idxField = tpl.indexField || 'id';
-    const expected = computeExpectedIndexValue(tpl, inst, idxField);
-    if (!inst.payload) inst.payload = {};
-    inst.payload.index = expected;
-    if (indexSpan) {
-      indexSpan.textContent = expected;
+  function showLuckysheetPlaceholder(message) {
+    if (!tableModeEmptyEl) return;
+    const text = message && message.trim() ? message : '暂无数据';
+    tableModeEmptyEl.textContent = text;
+    tableModeEmptyEl.style.display = 'flex';
+    if (luckysheetEl) {
+      luckysheetEl.style.display = 'none';
     }
   }
 
-  function updateTableModeTabs(tpl) {
-    if (!tableModeTabsEl) return;
-    tableModeTabsEl.innerHTML = '';
-    if (!tpl) return;
-    const instances = tpl.instances || [];
-    instances.forEach((inst, idx) => {
-      const tab = document.createElement('button');
-      tab.type = 'button';
-      tab.className = 'table-mode-tab';
-      tab.dataset.index = String(idx);
-      const displayName = inst && inst.name ? inst.name : `实例${idx}`;
-      tab.textContent = displayName;
-      if (idx === tableModeActiveInstance) tab.classList.add('active');
-      if (isPureNumericName(displayName)) tab.classList.add('invalid');
-      tab.addEventListener('click', () => {
-        tableModeActiveInstance = idx;
-        currentInstanceIndex = idx;
-        selectedInstances.clear();
-        selectedInstances.add(idx);
-        refreshInstances();
-        refreshParams();
-        renderTableModeView();
-        scrollTableRowIntoView(idx);
+  function hideLuckysheetPlaceholder() {
+    if (tableModeEmptyEl) {
+      tableModeEmptyEl.style.display = 'none';
+    }
+    if (luckysheetEl) {
+      luckysheetEl.style.display = 'block';
+    }
+  }
+
+  function destroyLuckysheet() {
+    if (typeof window.luckysheet !== 'undefined' && typeof window.luckysheet.destroy === 'function') {
+      try {
+        window.luckysheet.destroy();
+      } catch (err) {
+        console.warn('销毁 Luckysheet 失败', err);
+      }
+    }
+    if (luckysheetEl) {
+      luckysheetEl.innerHTML = '';
+    }
+    luckysheetLoadedTemplateUid = null;
+  }
+
+  function ensureLuckysheetReady() {
+    return typeof window.luckysheet !== 'undefined' && typeof window.luckysheet.create === 'function';
+  }
+
+  function buildLuckysheetSheetData(rows) {
+    const targetCols = Math.max(rows.reduce((max, row) => Math.max(max, row.length), 0), 4);
+    const targetRows = Math.max(rows.length, 20);
+    const data = Array.from({ length: targetRows }, () => Array.from({ length: targetCols }, () => null));
+    rows.forEach((row, rIdx) => {
+      row.forEach((cell, cIdx) => {
+        if (rIdx >= targetRows || cIdx >= targetCols) return;
+        const value = cell == null ? '' : String(cell);
+        if (!value) return;
+        const cellData = { v: value, m: value };
+        if (rIdx === 0 || rIdx === 1) {
+          cellData.bg = rIdx === 0 ? '#f2f2f2' : '#fafafa';
+          cellData.fc = '#333333';
+          if (rIdx === 0) cellData.bl = 1;
+        }
+        data[rIdx][cIdx] = cellData;
       });
-      tableModeTabsEl.appendChild(tab);
+    });
+    return { data, rowCount: targetRows, columnCount: targetCols };
+  }
+
+  function readLuckysheetCell(cell) {
+    if (cell == null) return '';
+    if (typeof cell === 'string' || typeof cell === 'number' || typeof cell === 'boolean') {
+      return String(cell);
+    }
+    if (typeof cell === 'object') {
+      if (cell.v != null && typeof cell.v === 'object' && cell.v.v != null) {
+        return String(cell.v.v);
+      }
+      if (cell.v != null) {
+        return String(cell.v);
+      }
+      if (cell.m != null) {
+        return String(cell.m);
+      }
+    }
+    return '';
+  }
+
+  function trimLuckysheetMatrix(rows) {
+    if (!Array.isArray(rows)) return [];
+    let effectiveRows = rows.length;
+    while (effectiveRows > TABLE_LOCKED_ROWS) {
+      const row = rows[effectiveRows - 1] || [];
+      const hasValue = row.some((cell) => String(cell || '').trim() !== '');
+      if (hasValue) break;
+      effectiveRows -= 1;
+    }
+    effectiveRows = Math.max(effectiveRows, TABLE_LOCKED_ROWS);
+    const sliced = rows.slice(0, effectiveRows);
+    let effectiveCols = sliced.reduce((max, row) => Math.max(max, Array.isArray(row) ? row.length : 0), 0);
+    while (effectiveCols > 4) {
+      const colIdx = effectiveCols - 1;
+      const hasValue = sliced.some((row) => String((row && row[colIdx]) || '').trim() !== '');
+      if (hasValue) break;
+      effectiveCols -= 1;
+    }
+    effectiveCols = Math.max(effectiveCols, 4);
+    return sliced.map((row) => {
+      const normalized = Array.from({ length: effectiveCols }, (_, idx) => String((row && row[idx]) || ''));
+      return normalized;
     });
   }
 
-  function scrollTableRowIntoView(idx) {
-    if (!tableModeTableBody) return;
-    const row = tableModeTableBody.querySelector(`tr[data-index="${idx}"]`);
-    if (row && typeof row.scrollIntoView === 'function') {
-      row.scrollIntoView({ block: 'nearest' });
+  function collectLuckysheetRows() {
+    if (!ensureLuckysheetReady() || typeof window.luckysheet.getSheetData !== 'function') {
+      return null;
     }
-  }
-
-  function createParamEditorCell(tpl, inst, column, rowIdx, indexSpan) {
-    const cell = document.createElement('td');
-    if (!inst.payload) inst.payload = {};
-    const param = column.param;
-    const name = param.name;
-    const type = param.type;
-    const currentValue = inst.payload[name];
-    if (param.parameterIndexes) {
-      let ref = inst.payload[name];
-      if (!ref || typeof ref !== 'object') {
-        ref = { template: param.parameterIndexes.template, by: param.parameterIndexes.param, value: '' };
-        inst.payload[name] = ref;
-      } else {
-        if (!ref.template) ref.template = param.parameterIndexes.template;
-        if (!ref.by) ref.by = param.parameterIndexes.param;
-        if (ref.value == null) ref.value = '';
+    const sheetData = window.luckysheet.getSheetData();
+    if (!Array.isArray(sheetData)) return null;
+    const columnCount = sheetData.reduce((max, row) => Math.max(max, Array.isArray(row) ? row.length : 0), 0);
+    const rows = sheetData.map((row) => {
+      const normalized = [];
+      for (let c = 0; c < columnCount; c += 1) {
+        const cell = row && row[c];
+        normalized.push(readLuckysheetCell(cell));
       }
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.value = ref.value ?? '';
-      input.addEventListener('input', () => {
-        ref.value = input.value;
-        syncInstanceIndexField(tpl, inst, indexSpan);
-      });
-      cell.appendChild(input);
-      return cell;
-    }
-    if (isEnumType(type)) {
-      const def = getEnumDefinition(type);
-      const enumValues = def ? def.values : [];
-      const select = document.createElement('select');
-      const normalized = convertValueForType(currentValue, type) ?? '';
-      if (enumValues && enumValues.length > 0) {
-        enumValues.forEach((val) => {
-          const opt = document.createElement('option');
-          opt.value = val;
-          opt.textContent = val;
-          select.appendChild(opt);
-        });
-      }
-      if (normalized && (!enumValues || !enumValues.includes(normalized))) {
-        const opt = document.createElement('option');
-        opt.value = normalized;
-        opt.textContent = normalized;
-        select.appendChild(opt);
-      }
-      select.value = normalized;
-      select.disabled = !enumValues || enumValues.length === 0;
-      select.addEventListener('change', () => {
-        inst.payload[name] = select.value;
-        syncInstanceIndexField(tpl, inst, indexSpan);
-      });
-      cell.appendChild(select);
-      return cell;
-    }
-    switch (type) {
-      case 'bool': {
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.checked = Boolean(currentValue);
-        checkbox.addEventListener('change', () => {
-          inst.payload[name] = checkbox.checked;
-          syncInstanceIndexField(tpl, inst, indexSpan);
-        });
-        cell.appendChild(checkbox);
-        return cell;
-      }
-      case 'int':
-      case 'long':
-      case 'float': {
-        const input = document.createElement('input');
-        input.type = 'number';
-        if (type === 'float') input.step = 'any';
-        input.value = currentValue != null ? currentValue : '';
-        input.addEventListener('input', () => {
-          const raw = input.value;
-          if (raw === '') {
-            inst.payload[name] = raw;
-          } else if (type === 'float') {
-            inst.payload[name] = Number.parseFloat(raw) || 0;
-          } else {
-            inst.payload[name] = Number.parseInt(raw, 10) || 0;
-          }
-          syncInstanceIndexField(tpl, inst, indexSpan);
-        });
-        cell.appendChild(input);
-        return cell;
-      }
-      case 'list': {
-        const textarea = document.createElement('textarea');
-        const values = Array.isArray(currentValue) ? currentValue : [];
-        textarea.value = values.map((v) => (v == null ? '' : String(v))).join('\n');
-        textarea.addEventListener('input', () => {
-          inst.payload[name] = textarea.value.split(/\r?\n/);
-        });
-        cell.appendChild(textarea);
-        return cell;
-      }
-      case 'object': {
-        const textarea = document.createElement('textarea');
-        textarea.value = currentValue && typeof currentValue === 'object'
-          ? JSON.stringify(currentValue, null, 2)
-          : (currentValue != null ? String(currentValue) : '');
-        textarea.addEventListener('change', () => {
-          const raw = textarea.value.trim();
-          if (!raw) {
-            inst.payload[name] = {};
-            setElementClassState(textarea, 'invalid-value', false);
-            return;
-          }
-          try {
-            inst.payload[name] = JSON.parse(raw);
-            setElementClassState(textarea, 'invalid-value', false);
-          } catch (_) {
-            setElementClassState(textarea, 'invalid-value', true);
-          }
-        });
-        cell.appendChild(textarea);
-        return cell;
-      }
-      default: {
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.value = currentValue != null ? String(currentValue) : '';
-        input.addEventListener('input', () => {
-          inst.payload[name] = input.value;
-          syncInstanceIndexField(tpl, inst, indexSpan);
-        });
-        cell.appendChild(input);
-        return cell;
-      }
-    }
-  }
-
-  function createEnumValueCell(tpl, inst, column, indexSpan) {
-    const cell = document.createElement('td');
-    if (!inst.payload) inst.payload = {};
-    const key = column.enumKey;
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.value = inst.payload[key] != null ? String(inst.payload[key]) : '';
-    const updateValidity = () => {
-      const numeric = isPureNumericName(input.value);
-      setElementClassState(input, 'invalid-name', numeric);
-    };
-    input.addEventListener('input', () => {
-      inst.payload[key] = input.value;
-      updateValidity();
-      syncInstanceIndexField(tpl, inst, indexSpan);
+      return normalized;
     });
-    updateValidity();
-    cell.appendChild(input);
-    return cell;
+    return trimLuckysheetMatrix(rows);
   }
 
-  function renderTableModeTable(tpl) {
-    if (!tableModeTable || !tableModeTableHead || !tableModeTableBody) return;
-    tableModeTableHead.innerHTML = '';
-    tableModeTableBody.innerHTML = '';
+  function canEditLuckysheetRange(range) {
+    if (!range) return true;
+    const row = range.row || [0, 0];
+    const column = range.column || [0, 0];
+    for (let r = row[0]; r <= row[1]; r += 1) {
+      if (r < TABLE_LOCKED_ROWS) return false;
+    }
+    for (let c = column[0]; c <= column[1]; c += 1) {
+      if (TABLE_READONLY_COLUMNS.has(c)) return false;
+    }
+    return true;
+  }
+
+  function renderLuckysheetForTemplate(tpl) {
+    if (!luckysheetWrapper || !luckysheetEl) return;
     if (!tpl) {
-      if (tableModeEmptyEl) tableModeEmptyEl.style.display = 'flex';
+      destroyLuckysheet();
+      showLuckysheetPlaceholder('请选择模板');
       return;
     }
-    const columns = getTableModeColumns(tpl);
-    if (tableModeEmptyEl) tableModeEmptyEl.style.display = tpl.instances && tpl.instances.length > 0 ? 'none' : 'flex';
-    const headerRow = document.createElement('tr');
-    columns.forEach((column) => {
-      const th = document.createElement('th');
-      th.textContent = column.header;
-      if (column.kind === 'param' && column.param && isPureNumericName(column.param.name) && !isEnumTemplate(tpl)) {
-        th.classList.add('invalid-name');
-      }
-      headerRow.appendChild(th);
-    });
-    tableModeTableHead.appendChild(headerRow);
-    const instances = tpl.instances || [];
-    instances.forEach((inst, idx) => {
-      if (!inst.payload) inst.payload = {};
-      inst.payload.template = tpl.name;
-      inst.payload.id = inst.id;
-      inst.payload.name = inst.name;
-      const row = document.createElement('tr');
-      row.dataset.index = String(idx);
-      if (idx === tableModeActiveInstance) row.classList.add('active');
-      const indexSpan = document.createElement('span');
-      columns.forEach((column) => {
-        let cell;
-        switch (column.kind) {
-          case 'rowIndex':
-            cell = document.createElement('td');
-            cell.textContent = String(idx + 1);
-            cell.classList.add('cell-readonly');
-            break;
-          case 'id':
-            cell = document.createElement('td');
-            cell.textContent = inst.id != null ? String(inst.id) : '';
-            cell.classList.add('cell-readonly');
-            break;
-          case 'name': {
-            cell = document.createElement('td');
-            const input = document.createElement('input');
-            input.type = 'text';
-            input.value = inst.name || '';
-            const updateNameValidity = () => {
-              const numeric = isPureNumericName(input.value);
-              setElementClassState(input, 'invalid-name', numeric);
-            };
-            input.addEventListener('input', () => {
-              const value = input.value;
-              inst.name = value;
-              inst.payload.name = value;
-              updateNameValidity();
-              const tab = tableModeTabsEl ? tableModeTabsEl.querySelector(`.table-mode-tab[data-index="${idx}"]`) : null;
-              if (tab) {
-                tab.textContent = value || `实例${idx}`;
-                if (isPureNumericName(value)) tab.classList.add('invalid'); else tab.classList.remove('invalid');
-              }
-              syncInstanceIndexField(tpl, inst, indexSpan);
-            });
-            updateNameValidity();
-            cell.appendChild(input);
-            break;
-          }
-          case 'indexField': {
-            cell = document.createElement('td');
-            indexSpan.textContent = computeExpectedIndexValue(tpl, inst, tpl.indexField || 'id');
-            cell.appendChild(indexSpan);
-            cell.classList.add('cell-readonly');
-            break;
-          }
-          case 'param':
-            cell = createParamEditorCell(tpl, inst, column, idx, indexSpan);
-            break;
-          case 'enumValue':
-            cell = createEnumValueCell(tpl, inst, column, indexSpan);
-            break;
-          default:
-            cell = document.createElement('td');
-            cell.textContent = '';
-        }
-        row.appendChild(cell);
+    if (!ensureLuckysheetReady()) {
+      showLuckysheetPlaceholder('Luckysheet 未加载');
+      return;
+    }
+    ensureTemplateUid(tpl);
+    const rows = buildCsvRowsForTemplate(tpl, tpl.instances || []);
+    const dataset = buildLuckysheetSheetData(rows);
+    destroyLuckysheet();
+    hideLuckysheetPlaceholder();
+    try {
+      window.luckysheet.create({
+        container: 'luckysheet',
+        lang: 'zh',
+        showinfobar: false,
+        data: [
+          {
+            name: tpl.name || 'Sheet1',
+            status: 1,
+            order: 0,
+            row: dataset.rowCount,
+            column: dataset.columnCount,
+            data: dataset.data,
+          },
+        ],
+        hook: {
+          cellEditBefore: (range) => canEditLuckysheetRange(range),
+        },
       });
-      row.addEventListener('click', () => {
-        tableModeActiveInstance = idx;
-        currentInstanceIndex = idx;
-        selectedInstances.clear();
-        selectedInstances.add(idx);
-        renderTableModeView();
-        refreshInstances();
-        refreshParams();
-      });
-      tableModeTableBody.appendChild(row);
-      syncInstanceIndexField(tpl, inst, indexSpan);
-    });
+      luckysheetLoadedTemplateUid = tpl.__uid || null;
+    } catch (err) {
+      console.error('初始化 Luckysheet 失败', err);
+      showLuckysheetPlaceholder('表格加载失败');
+    }
   }
 
   function renderTableModeView() {
     if (currentEditMode !== MODE_TABLE) return;
     const tpl = currentTemplateIndex >= 0 ? templates[currentTemplateIndex] : null;
     tableModeTemplateIndex = currentTemplateIndex;
-    if (!tpl) {
-      tableModeActiveInstance = -1;
-    } else {
-      if (currentInstanceIndex >= 0 && currentInstanceIndex < (tpl.instances ? tpl.instances.length : 0)) {
-        tableModeActiveInstance = currentInstanceIndex;
-      } else if (tableModeActiveInstance < 0 || tableModeActiveInstance >= (tpl.instances ? tpl.instances.length : 0)) {
-        tableModeActiveInstance = tpl.instances && tpl.instances.length > 0 ? 0 : -1;
-      }
-    }
     if (tableModeIndexFieldEl) {
       tableModeIndexFieldEl.textContent = tpl ? (tpl.indexField || 'id') : '';
     }
-    updateTableModeTabs(tpl || null);
-    renderTableModeTable(tpl || null);
+    renderLuckysheetForTemplate(tpl || null);
   }
 
   function switchToTableMode() {
@@ -2153,6 +1984,8 @@
       toggleModeBtn.textContent = '切换为表格模式';
       toggleModeBtn.dataset.mode = MODE_COLUMN;
     }
+    destroyLuckysheet();
+    showLuckysheetPlaceholder('暂无数据');
     if (templatePanelEl && templatePanelOriginalParent) {
       if (templatePanelOriginalNextSibling && templatePanelOriginalNextSibling.parentElement === templatePanelOriginalParent) {
         templatePanelOriginalParent.insertBefore(templatePanelEl, templatePanelOriginalNextSibling);
@@ -2162,7 +1995,6 @@
     }
     currentEditMode = MODE_COLUMN;
     tableModeTemplateIndex = -1;
-    renderTableModeView();
     refreshTemplates();
     refreshInstances();
     refreshParams();
@@ -2173,13 +2005,43 @@
     if (tableModeTemplateIndex < 0) return true;
     const tpl = templates[tableModeTemplateIndex];
     if (!tpl) return true;
+    ensureTemplateUid(tpl);
+    if (luckysheetLoadedTemplateUid && tpl.__uid && luckysheetLoadedTemplateUid !== tpl.__uid) {
+      return true;
+    }
     try {
-      const rows = buildCsvRowsForTemplate(tpl, tpl.instances || []);
+      const rows = collectLuckysheetRows();
+      if (!rows || rows.length === 0) {
+        clearTemplateStructureError(tpl);
+        return true;
+      }
       const validated = buildTemplateFromCsv(rows, `${tpl.name}.csv`);
       if (validated.name !== tpl.name) {
         throw new Error('禁止通过表格修改模板名称');
       }
+      tpl.parameters = validated.parameters;
+      tpl.instances = validated.instances;
+      tpl.indexField = validated.indexField || tpl.indexField || 'id';
       clearTemplateStructureError(tpl);
+      const instCount = Array.isArray(tpl.instances) ? tpl.instances.length : 0;
+      const indexField = tpl.indexField || 'id';
+      if (Array.isArray(tpl.instances)) {
+        tpl.instances.forEach((inst) => {
+          if (!inst) return;
+          if (!inst.payload) inst.payload = {};
+          inst.payload.index = computeExpectedIndexValue(tpl, inst, indexField);
+        });
+      }
+      if (currentTemplateIndex === tableModeTemplateIndex) {
+        if (instCount === 0) {
+          currentInstanceIndex = -1;
+        } else if (currentInstanceIndex < 0 || currentInstanceIndex >= instCount) {
+          currentInstanceIndex = Math.max(0, instCount - 1);
+        }
+      }
+      if (currentEditMode === MODE_TABLE && luckysheetLoadedTemplateUid === tpl.__uid) {
+        renderTableModeView();
+      }
       return true;
     } catch (err) {
       const msg = err && err.message ? err.message : '表格格式错误';
@@ -4271,7 +4133,7 @@ DataEntityRuntimeTester 使用说明
   }
 
   function sanitizeCSharpMemberName(name, fallback) {
-    return sanitizeCSharpIdentifier(name, fallback, 'Member', false);
+    return sanitizeCSharpIdentifier(name, fallback, 'Member', true);
   }
 
   function refreshParamTypeOptions() {
