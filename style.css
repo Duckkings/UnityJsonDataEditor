@@ -56,6 +56,24 @@ body.dark .toolbar button.primary {
   color: #fff;
 }
 
+.invalid-name {
+  color: #d14343;
+}
+
+body.dark .invalid-name {
+  color: #ff6b6b;
+}
+
+input.invalid-name {
+  border-color: #d14343;
+  color: #d14343;
+}
+
+body.dark input.invalid-name {
+  border-color: #ff6b6b;
+  color: #ff6b6b;
+}
+
 /* 定义行高缩放变量默认值 */
 :root {
   --row-scale: 1;

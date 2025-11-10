@@ -53,6 +53,36 @@
   const renameTemplateBtn = $("renameTemplate");
   const renameInstanceBtn = $("renameInstance");
 
+  const NUMERIC_NAME_PATTERN = /^\d+$/;
+
+  function isPureNumericName(name) {
+    return NUMERIC_NAME_PATTERN.test(String(name || "").trim());
+  }
+
+  function setInvalidNameVisual(element, invalid) {
+    if (!element) return;
+    if (invalid) {
+      element.classList.add('invalid-name');
+    } else {
+      element.classList.remove('invalid-name');
+    }
+  }
+
+  function updateTemplateNameInputValidity() {
+    if (!templateNameInput) return;
+    setInvalidNameVisual(templateNameInput, isPureNumericName(templateNameInput.value));
+  }
+
+  function updateInstanceNameInputValidity() {
+    if (!instanceNameInput) return;
+    setInvalidNameVisual(instanceNameInput, isPureNumericName(instanceNameInput.value));
+  }
+
+  function updateParamNameInputValidity() {
+    if (!paramNameInput) return;
+    setInvalidNameVisual(paramNameInput, isPureNumericName(paramNameInput.value));
+  }
+
   // 面板元素，用于点击空白处取消选中
   const templatePanelEl = document.querySelector('.templates');
   const instancePanelEl = document.querySelector('.instances');
@@ -1032,6 +1062,8 @@
         showMessage(`${tpl.name}模版的index清空`, 'warn');
       }
       tpl.__uid = existing.__uid;
+      tpl.__persistedName = existing.__persistedName ?? existing.name;
+      tpl.__pendingDeleteFileName = existing.__pendingDeleteFileName ?? null;
       templates[existingIdx] = tpl;
       if (currentTemplateIndex === existingIdx) {
         currentInstanceIndex = tpl.instances.length > 0 ? 0 : -1;
@@ -1039,6 +1071,8 @@
       return existingIdx;
     }
     ensureTemplateUid(tpl);
+    tpl.__persistedName = null;
+    tpl.__pendingDeleteFileName = null;
     templates.push(tpl);
     return templates.length - 1;
   }
@@ -1157,6 +1191,15 @@
   }
   if (regenerateCsBtn) {
     regenerateCsBtn.addEventListener("click", regenerateCSharpStructures);
+  }
+  if (templateNameInput) {
+    templateNameInput.addEventListener('input', updateTemplateNameInputValidity);
+  }
+  if (instanceNameInput) {
+    instanceNameInput.addEventListener('input', updateInstanceNameInputValidity);
+  }
+  if (paramNameInput) {
+    paramNameInput.addEventListener('input', updateParamNameInputValidity);
   }
   if (renameTemplateBtn) {
     renameTemplateBtn.addEventListener('click', () => {
@@ -1748,6 +1791,16 @@
   /**
    * 保证工作目录下有 csharpDate 和 dataEntity 文件夹，并检测现有文件是否合法
    */
+  const IGNORED_FILE_SUFFIXES = [".meta"];
+  const IGNORED_FILE_NAMES = [".ds_store", "thumbs.db"];
+
+  function shouldIgnoreFileEntry(entryName) {
+    if (!entryName) return false;
+    const lower = entryName.toLowerCase();
+    if (IGNORED_FILE_NAMES.includes(lower)) return true;
+    return IGNORED_FILE_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+  }
+
   async function ensureSubFolders() {
     csharpHandle = await directoryHandle.getDirectoryHandle("csharpDate", { create: true });
     dataEntityHandle = await directoryHandle.getDirectoryHandle("dataEntity", { create: true });
@@ -1759,6 +1812,9 @@
     }
     // 检查文件类型
     for await (const entry of csharpHandle.values()) {
+      if (entry.kind === "file" && shouldIgnoreFileEntry(entry.name)) {
+        continue;
+      }
       if (entry.kind === "file" && !entry.name.toLowerCase().endsWith(".cs")) {
         showMessage(`csharpDate 文件夹内仅允许 .cs 文件：${entry.name}`);
         throw new Error("Invalid file in csharpDate");
@@ -1774,6 +1830,9 @@
       }
     }
     for await (const entry of dataEntityHandle.values()) {
+      if (entry.kind === "file" && shouldIgnoreFileEntry(entry.name)) {
+        continue;
+      }
       if (entry.kind === "file" && !entry.name.toLowerCase().endsWith(".json")) {
         showMessage(`dataEntity 文件夹内仅允许 .json 文件：${entry.name}`);
         throw new Error("Invalid file in dataEntity");
@@ -2764,7 +2823,7 @@ public class DataEntityRuntimeTester : MonoBehaviour
         }
         catch (Exception ex)
         {
-            Debug.LogError($\"[DataEntityRuntimeTester] {ex.Message}\\\n{ex}\");
+            Debug.LogError($\"[DataEntityRuntimeTester] {ex.Message}\\n{ex}\");
         }
     }
 
@@ -2979,6 +3038,9 @@ DataEntityRuntimeTester 使用说明
               instances: obj.instances,
               indexField: obj.indexField || 'id',
             };
+            const persistedBaseName = (entry.name || '').replace(/\.json$/i, '');
+            template.__persistedName = persistedBaseName || template.name;
+            template.__pendingDeleteFileName = null;
             normalizeTemplateParameterIndexes(template);
             if (isEnumTemplate(template) && Array.isArray(template.parameters)) {
               template.parameters = template.parameters.map((param) => {
@@ -3003,6 +3065,8 @@ DataEntityRuntimeTester 使用说明
         ensureEnumParamNaming(cachedEnum);
         if (!Array.isArray(cachedEnum.parameters)) cachedEnum.parameters = [];
         if (!Array.isArray(cachedEnum.instances)) cachedEnum.instances = [];
+        cachedEnum.__persistedName = null;
+        cachedEnum.__pendingDeleteFileName = null;
         ensureTemplateUid(cachedEnum);
         templates.push(cachedEnum);
       }
@@ -3021,7 +3085,16 @@ DataEntityRuntimeTester 使用说明
    * 新建模板
    */
   function newTemplate() {
-    const name = templateNameInput.value.trim() || `模板${templates.length + 1}`;
+    const rawName = templateNameInput.value.trim();
+    if (rawName && isPureNumericName(rawName)) {
+      showMessage('模板名称不能为纯数字');
+      return;
+    }
+    const name = rawName || `模板${templates.length + 1}`;
+    if (isPureNumericName(name)) {
+      showMessage('模板名称不能为纯数字');
+      return;
+    }
     if (templates.some((t) => t.name === name)) {
       alert("模板名称已存在");
       return;
@@ -3037,12 +3110,16 @@ DataEntityRuntimeTester 使用说明
       instances: [instance],
       indexField: 'id',
     };
+    template.__persistedName = null;
+    template.__pendingDeleteFileName = null;
     ensureTemplateUid(template);
     templates.push(template);
     currentTemplateIndex = templates.length - 1;
     currentInstanceIndex = 0;
     refreshTemplates();
     updateIndexTemplateOptions();
+    updateTemplateNameInputValidity();
+    updateInstanceNameInputValidity();
     showMessage(`已创建新模板：${name}`);
   }
 
@@ -3056,6 +3133,12 @@ DataEntityRuntimeTester 使用说明
     const targetName = (newName || "").trim();
     if (!targetName) {
       templateNameInput.value = tpl.name;
+      return;
+    }
+    if (isPureNumericName(targetName)) {
+      alert('模板名称不能为纯数字');
+      templateNameInput.value = tpl.name;
+      updateTemplateNameInputValidity();
       return;
     }
     if (!isEnumTemplate(tpl) && targetName === 'enum') {
@@ -3077,15 +3160,22 @@ DataEntityRuntimeTester 使用说明
       templateNameInput.value = tpl.name;
       return;
     }
+    const persistedName = tpl.__persistedName || null;
     tpl.name = targetName;
     tpl.instances.forEach((inst) => {
       if (inst && inst.payload) {
         inst.payload.template = targetName;
       }
     });
+    if (persistedName && persistedName !== targetName) {
+      tpl.__pendingDeleteFileName = `${persistedName}.json`;
+    } else if (persistedName && persistedName === targetName) {
+      tpl.__pendingDeleteFileName = null;
+    }
     templateNameInput.value = targetName;
     refreshTemplates();
     updateIndexTemplateOptions();
+    updateTemplateNameInputValidity();
     showMessage(`已重命名模板：${targetName}`);
   }
 
@@ -3098,7 +3188,16 @@ DataEntityRuntimeTester 使用说明
       return;
     }
     const tpl = templates[currentTemplateIndex];
-    const name = instanceNameInput.value.trim() || `实例${tpl.instances.length}`;
+    const rawName = instanceNameInput.value.trim();
+    if (rawName && isPureNumericName(rawName)) {
+      showMessage('实例名称不能为纯数字');
+      return;
+    }
+    const name = rawName || `实例${tpl.instances.length}`;
+    if (isPureNumericName(name)) {
+      showMessage('实例名称不能为纯数字');
+      return;
+    }
     const nextId = tpl.instances.length > 0 ? Math.max(...tpl.instances.map((i) => i.id)) + 1 : 0;
     const inst = {
       id: nextId,
@@ -3118,6 +3217,7 @@ DataEntityRuntimeTester 使用说明
     currentInstanceIndex = tpl.instances.length - 1;
     refreshInstances();
     refreshParams();
+    updateInstanceNameInputValidity();
     showMessage(`已创建新实例：${name}`);
   }
 
@@ -3129,10 +3229,23 @@ DataEntityRuntimeTester 使用说明
     if (!newName) return;
     const tpl = templates[currentTemplateIndex];
     const inst = tpl.instances[currentInstanceIndex];
-    inst.name = newName;
-    inst.payload.name = newName;
+    const trimmed = String(newName || '').trim();
+    if (!trimmed) {
+      instanceNameInput.value = inst.name;
+      return;
+    }
+    if (isPureNumericName(trimmed)) {
+      showMessage('实例名称不能为纯数字');
+      instanceNameInput.value = inst.name;
+      updateInstanceNameInputValidity();
+      return;
+    }
+    inst.name = trimmed;
+    inst.payload.name = trimmed;
     refreshInstances();
     refreshParams();
+    instanceNameInput.value = inst.name;
+    updateInstanceNameInputValidity();
   }
 
   /**
@@ -3221,6 +3334,10 @@ DataEntityRuntimeTester 使用说明
       return;
     }
     const tpl = templates[currentTemplateIndex];
+    if (!isEnumTemplate(tpl) && name && isPureNumericName(name)) {
+      showMessage('参数名称不能为纯数字');
+      return;
+    }
     let type = paramTypeSelect.value;
     if (isEnumTemplate(tpl)) {
       type = 'string';
@@ -3257,6 +3374,10 @@ DataEntityRuntimeTester 使用说明
     if (editingParamIndex >= 0) {
       const currentTpl = templates[currentTemplateIndex];
       const effectiveName = isEnumTemplate(currentTpl) ? String(editingParamIndex) : name;
+      if (!isEnumTemplate(currentTpl) && isPureNumericName(effectiveName)) {
+        showMessage('参数名称不能为纯数字');
+        return;
+      }
       updateParamAtIndex(editingParamIndex, effectiveName, type, indexObj);
       editingParamIndex = -1;
       selectedParams.clear();
@@ -3302,6 +3423,10 @@ DataEntityRuntimeTester 使用说明
     const tpl = templates[currentTemplateIndex];
     const param = tpl.parameters[index];
     if (!param) return;
+    if (!isEnumTemplate(tpl) && isPureNumericName(newName)) {
+      showMessage('参数名称不能为纯数字');
+      return;
+    }
     // 检查重名
     if (!isEnumTemplate(tpl) && tpl.parameters.some((p, i) => p.name === newName && i !== index)) {
       alert("参数名称已存在");
@@ -3672,6 +3797,7 @@ DataEntityRuntimeTester 使用说明
       }
       const nameSpan = document.createElement('span');
       nameSpan.textContent = tpl.name;
+      setInvalidNameVisual(nameSpan, isPureNumericName(tpl.name));
       li.appendChild(nameSpan);
       if (exportSelectionMode) {
         const counts = getTemplateExportCounts(tpl);
@@ -3768,6 +3894,8 @@ DataEntityRuntimeTester 使用说明
     } else {
       templateNameInput.value = "";
     }
+    updateTemplateNameInputValidity();
+    updateInstanceNameInputValidity();
     refreshInstances();
     refreshParams();
     // 应用模板搜索过滤
@@ -3850,6 +3978,7 @@ DataEntityRuntimeTester 使用说明
       }
       const nameSpan = document.createElement('span');
       nameSpan.textContent = `${inst.id}: ${inst.name}`;
+      setInvalidNameVisual(nameSpan, isPureNumericName(inst.name));
       li.appendChild(nameSpan);
       li.addEventListener('click', (e) => {
         if (e.ctrlKey) {
@@ -3906,6 +4035,7 @@ DataEntityRuntimeTester 使用说明
         instanceNameInput.value = (currentTemplateIndex >= 0 && currentInstanceIndex >= 0)
           ? templates[currentTemplateIndex].instances[currentInstanceIndex].name
           : '';
+        updateInstanceNameInputValidity();
         // 切换实例时清除参数选择
         selectedParams.clear();
         editingParamIndex = -1;
@@ -3920,6 +4050,7 @@ DataEntityRuntimeTester 使用说明
     });
     // 应用实例搜索过滤
     filterList(instanceListEl, searchInstancesInput.value);
+    updateInstanceNameInputValidity();
   }
 
   /**
@@ -3931,7 +4062,10 @@ DataEntityRuntimeTester 使用说明
     updateParamNameInputEnabledState();
     refreshParamTypeOptions();
     updateIndexTemplateOptions();
-    if (currentTemplateIndex < 0 || currentInstanceIndex < 0) return;
+    if (currentTemplateIndex < 0 || currentInstanceIndex < 0) {
+      updateParamNameInputValidity();
+      return;
+    }
     const tpl = templates[currentTemplateIndex];
     const inst = tpl.instances[currentInstanceIndex];
     const isEnumTpl = isEnumTemplate(tpl);
@@ -4008,6 +4142,7 @@ DataEntityRuntimeTester 使用说明
         item.classList.add('param-item');
         const label = document.createElement('label');
         label.textContent = key;
+        setInvalidNameVisual(label, isPureNumericName(key));
         item.appendChild(label);
         if (selectedParams.has(idx)) item.classList.add('active');
         const inputEl = document.createElement('input');
@@ -4032,20 +4167,26 @@ DataEntityRuntimeTester 使用说明
           if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON')) return;
           if (e.ctrlKey) {
             if (selectedParams.has(idx)) selectedParams.delete(idx); else selectedParams.add(idx);
-            const arr = Array.from(selectedParams).sort((a,b)=>a-b);
-            editingParamIndex = arr.length > 0 ? arr[arr.length-1] : -1;
+            const arr = Array.from(selectedParams).sort((a, b) => a - b);
+            editingParamIndex = arr.length > 0 ? arr[arr.length - 1] : -1;
           } else if (e.shiftKey) {
             if (anchorParam === null) anchorParam = editingParamIndex >= 0 ? editingParamIndex : idx;
             const start = Math.min(anchorParam, idx);
             const end = Math.max(anchorParam, idx);
             selectedParams.clear();
             for (let i = start; i <= end; i++) selectedParams.add(i);
-            editingParamIndex = idx; anchorParam = idx;
+            editingParamIndex = idx;
+            anchorParam = idx;
           } else {
             if (selectedParams.has(idx) && selectedParams.size === 1) {
-              selectedParams.clear(); editingParamIndex = -1; anchorParam = null;
+              selectedParams.clear();
+              editingParamIndex = -1;
+              anchorParam = null;
             } else {
-              selectedParams.clear(); selectedParams.add(idx); editingParamIndex = idx; anchorParam = idx;
+              selectedParams.clear();
+              selectedParams.add(idx);
+              editingParamIndex = idx;
+              anchorParam = idx;
             }
           }
           refreshParams();
@@ -4055,6 +4196,7 @@ DataEntityRuntimeTester 使用说明
       });
       // 过滤（仅文本值可被过滤）
       filterList(paramListEl, searchParamsInput.value, true);
+      updateParamNameInputValidity();
       return;
     }
     // 自定义参数
@@ -4063,6 +4205,7 @@ DataEntityRuntimeTester 使用说明
       item.classList.add("param-item");
       const label = document.createElement('label');
       label.textContent = p.name;
+      setInvalidNameVisual(label, isPureNumericName(p.name));
       item.appendChild(label);
       if (selectedParams.has(idx)) item.classList.add('active');
       if (p.parameterIndexes) {
@@ -4385,6 +4528,7 @@ DataEntityRuntimeTester 使用说明
     });
     // 应用参数搜索过滤
     filterList(paramListEl, searchParamsInput.value, true);
+    updateParamNameInputValidity();
   }
 
   /**
@@ -4445,6 +4589,7 @@ DataEntityRuntimeTester 使用说明
       // 没有选中，重置输入
       paramNameInput.value = '';
       paramTypeSelect.value = 'string';
+      updateParamNameInputValidity();
       if (!indexTemplateSelect.disabled) {
         indexTemplateSelect.value = '';
         updateIndexParamOptions();
@@ -4461,6 +4606,7 @@ DataEntityRuntimeTester 使用说明
     if (!p) return;
     editingParamIndex = idx;
     paramNameInput.value = p.name;
+    updateParamNameInputValidity();
     paramTypeSelect.value = p.type;
     if (isEnumTemplate(tpl)) {
       paramTypeSelect.value = 'string';
@@ -4559,6 +4705,8 @@ DataEntityRuntimeTester 使用说明
       const newTpl = JSON.parse(JSON.stringify(srcTpl));
       newTpl.name = newName;
       delete newTpl.__uid;
+      newTpl.__persistedName = null;
+      newTpl.__pendingDeleteFileName = null;
       // 更新实例中的 template 字段和 id
       newTpl.instances.forEach((inst, idx) => {
         inst.id = idx;
@@ -4859,7 +5007,6 @@ DataEntityRuntimeTester 使用说明
       const templateDecisions = new Map();
       const csCache = new Map();
       let enumTemplateSaved = false;
-      let shouldUpdateDataRef = false;
       const pendingStructureDecision = [];
 
       for (const tpl of templates) {
@@ -4888,9 +5035,6 @@ DataEntityRuntimeTester 使用说明
           showMessage('已取消保存');
           return;
         }
-        if (answer === 'replace') {
-          shouldUpdateDataRef = true;
-        }
         for (const tpl of pendingStructureDecision) {
           templateDecisions.set(tpl.__uid, {
             decision: answer === 'replace' ? 'replace' : 'jsonOnly',
@@ -4908,34 +5052,17 @@ DataEntityRuntimeTester 使用说明
           continue;
         }
         const json = JSON.stringify({ name: tpl.name, indexField: tpl.indexField || 'id', parameters: tpl.parameters, instances: tpl.instances }, null, 2);
-        await writeTextFile(dataEntityHandle, `${tpl.name}.json`, json);
+        const jsonFileName = `${tpl.name}.json`;
+        await writeTextFile(dataEntityHandle, jsonFileName, json);
+        if (tpl.__pendingDeleteFileName && tpl.__pendingDeleteFileName !== jsonFileName) {
+          await deleteDataEntityFileIfExists(tpl.__pendingDeleteFileName);
+        }
+        tpl.__persistedName = tpl.name;
+        tpl.__pendingDeleteFileName = null;
         const meta = templateDecisions.get(tpl.__uid);
         if (meta && meta.decision === 'replace') {
           const content = csCache.get(tpl.__uid) || generateCSContent(tpl);
           await writeTextFile(csharpHandle, `${tpl.name}.cs`, content);
-        }
-      }
-
-      if (shouldUpdateDataRef) {
-        if (templates.some(t => Array.isArray(t.parameters) && t.parameters.some(p => p && p.parameterIndexes))) {
-          const dataRefContent = [
-            'using System;',
-            'using System.Collections.Generic;',
-            'using Newtonsoft.Json;',
-            '',
-            '[Serializable]',
-            'public class DataRef',
-            '{',
-            '    public string template;',
-            '    public string by;',
-            '    public string value;',
-            '',
-            '    [JsonIgnore]',
-            '    public object instance;',
-            '}',
-            ''
-          ].join('\n');
-          await writeTextFile(csharpHandle, 'DataRef.cs', dataRefContent);
         }
       }
 
@@ -4975,27 +5102,6 @@ DataEntityRuntimeTester 使用说明
         if (isEnumTemplate(tpl)) continue;
         const content = generateCSContent(tpl);
         await writeTextFile(csharpHandle, `${tpl.name}.cs`, content);
-        updatedAny = true;
-      }
-      if (templates.some(t => Array.isArray(t.parameters) && t.parameters.some(p => p && p.parameterIndexes))) {
-        const dataRefContent = [
-          'using System;',
-          'using System.Collections.Generic;',
-          'using Newtonsoft.Json;',
-          '',
-          '[Serializable]',
-          'public class DataRef',
-          '{',
-          '    public string template;',
-          '    public string by;',
-          '    public string value;',
-          '',
-          '    [JsonIgnore]',
-          '    public object instance;',
-          '}',
-          ''
-        ].join('\n');
-        await writeTextFile(csharpHandle, 'DataRef.cs', dataRefContent);
         updatedAny = true;
       }
       const enumTpl = getEnumTemplate();
@@ -5102,7 +5208,7 @@ DataEntityRuntimeTester 使用说明
       if (pp) idxType = mapToCSharpType(pp.type);
     }
     lines.push(`    public ${idxType} index;`);
-    // 索引参数使用可复用的全局类型 DataRef（在保存时生成 DataRef.cs）
+    // 索引参数使用可复用的全局类型 DataRef（由 modelCsharpe.cs 提供）
     tpl.parameters.forEach((p) => {
       if (!p) return;
       if (p.parameterIndexes) {
