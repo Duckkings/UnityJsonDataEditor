@@ -20,6 +20,7 @@
         <button id="cancelExportCsv" style="display:none">退出选择</button>
         <button id="importCsv">从CSV导入</button>
         <button id="toggleDark">夜间模式</button>
+        <button id="toggleTableMode">表格模式</button>
         <button id="helpBtn">操作指南</button>
         <button id="viewLogs">查看日志</button>
         <input id="paramWidth" type="range" min="1" max="3" step="0.1" value="1" title="调整参数栏比例" />
@@ -30,7 +31,7 @@
         <div id="message" class="message" style="display:none"></div>
       </header>
       <!-- 主内容区域：三列布局 -->
-      <main class="container">
+      <main id="classicLayout" class="container">
         <!-- 模板列表 -->
         <section class="panel templates">
           <div class="panel-header">
@@ -79,6 +80,27 @@
           <div id="paramList" class="param-list"></div>
         </section>
       </main>
+      <div id="tableModeContainer" class="table-mode" style="display:none">
+        <aside class="table-mode-sidebar">
+          <div class="table-mode-sidebar-title">模板</div>
+          <ul id="tableModeTemplateList" class="table-mode-template-list"></ul>
+        </aside>
+        <section class="table-mode-main">
+          <div class="table-mode-toolbar">
+            <button id="tableModeAddColumn" class="primary">新增列</button>
+            <span class="table-mode-hint">新增列时请填写参数名与类型（例如：string、int 或 list等）。</span>
+          </div>
+          <div class="table-mode-grid" id="tableModeGrid">
+            <table id="tableModeTable">
+              <thead>
+                <tr id="tableModeHeaderRow"></tr>
+                <tr id="tableModeTypeRow"></tr>
+              </thead>
+              <tbody id="tableModeBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
     </div>
     <div id="logOverlay" class="log-overlay" style="display:none">
       <div class="log-dialog">
