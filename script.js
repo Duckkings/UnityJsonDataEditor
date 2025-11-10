@@ -53,6 +53,36 @@
   const renameTemplateBtn = $("renameTemplate");
   const renameInstanceBtn = $("renameInstance");
 
+  const NUMERIC_NAME_PATTERN = /^\d+$/;
+
+  function isPureNumericName(name) {
+    return NUMERIC_NAME_PATTERN.test(String(name || "").trim());
+  }
+
+  function setInvalidNameVisual(element, invalid) {
+    if (!element) return;
+    if (invalid) {
+      element.classList.add('invalid-name');
+    } else {
+      element.classList.remove('invalid-name');
+    }
+  }
+
+  function updateTemplateNameInputValidity() {
+    if (!templateNameInput) return;
+    setInvalidNameVisual(templateNameInput, isPureNumericName(templateNameInput.value));
+  }
+
+  function updateInstanceNameInputValidity() {
+    if (!instanceNameInput) return;
+    setInvalidNameVisual(instanceNameInput, isPureNumericName(instanceNameInput.value));
+  }
+
+  function updateParamNameInputValidity() {
+    if (!paramNameInput) return;
+    setInvalidNameVisual(paramNameInput, isPureNumericName(paramNameInput.value));
+  }
+
   // 面板元素，用于点击空白处取消选中
   const templatePanelEl = document.querySelector('.templates');
   const instancePanelEl = document.querySelector('.instances');
@@ -73,6 +103,15 @@
   const logListEl = $("logList");
   const closeLogBtn = $("closeLog");
   const clearLogsBtn = $("clearLogs");
+  const toggleTableModeBtn = $("toggleTableMode");
+  const classicLayout = $("classicLayout");
+  const tableModeContainer = $("tableModeContainer");
+  const tableModeTemplateList = $("tableModeTemplateList");
+  const tableModeAddColumnBtn = $("tableModeAddColumn");
+  const tableModeHeaderRow = $("tableModeHeaderRow");
+  const tableModeTypeRow = $("tableModeTypeRow");
+  const tableModeBody = $("tableModeBody");
+  const tableModeGrid = $("tableModeGrid");
 
   // 行高调整滑块
   const rowHeightSlider = $("rowHeight");
@@ -88,6 +127,14 @@
     isDragging: false,
     type: null,
     indices: new Set(),
+  };
+
+  let tableModeActive = false;
+  let tableColumnIdCounter = 0;
+  let tableModeState = {
+    templateIndex: -1,
+    columns: [],
+    rows: [],
   };
 
   function addLogEntry(level, message, extra) {
@@ -427,6 +474,462 @@
     }
     if (value == null) return '';
     return String(value);
+  }
+
+  function generateTableColumnKey() {
+    tableColumnIdCounter += 1;
+    return `col_${tableColumnIdCounter}`;
+  }
+
+  function cloneTableModeState() {
+    return {
+      templateIndex: tableModeState.templateIndex,
+      columns: tableModeState.columns.map((col) => ({ ...col })),
+      rows: tableModeState.rows.map((row) => row.slice()),
+    };
+  }
+
+  function serializeParameterTypeForTable(param) {
+    if (!param) return 'string';
+    if (param.parameterIndexes && param.parameterIndexes.template && param.parameterIndexes.param) {
+      const idxField = param.parameterIndexes.indexField ? `/${param.parameterIndexes.indexField}` : '';
+      return `${param.type}/${param.parameterIndexes.template}/${param.parameterIndexes.param}${idxField}`;
+    }
+    return param.type || 'string';
+  }
+
+  function buildTableStateForTemplate(tpl, templateIndex) {
+    if (!tpl) {
+      return { templateIndex: templateIndex ?? -1, columns: [], rows: [] };
+    }
+    const indexMeta = resolveIndexFieldMeta(tpl);
+    const columns = [
+      { key: 'template', name: 'template', type: 'string', allowNameEdit: false, allowTypeEdit: false, allowDataEdit: false, reserved: true },
+      { key: 'id', name: 'id', type: 'int', allowNameEdit: false, allowTypeEdit: false, allowDataEdit: false, reserved: true },
+      { key: 'index', name: 'index', type: `${indexMeta.field}/${indexMeta.type}`, allowNameEdit: false, allowTypeEdit: false, allowDataEdit: false, reserved: true },
+      { key: 'name', name: 'name', type: 'string', allowNameEdit: false, allowTypeEdit: false, allowDataEdit: true, reserved: true },
+    ];
+    (tpl.parameters || []).forEach((param, idx) => {
+      if (!param) return;
+      columns.push({
+        key: param.__tableKey || `param_${idx}_${param.name || generateTableColumnKey()}`,
+        name: param.name || `param_${idx}`,
+        type: serializeParameterTypeForTable(param),
+        allowNameEdit: true,
+        allowTypeEdit: true,
+        allowDataEdit: true,
+        reserved: false,
+      });
+    });
+    const rows = [];
+    const instList = Array.isArray(tpl.instances) ? tpl.instances.slice() : [];
+    instList.sort((a, b) => {
+      const idA = getNumericInstanceId(a);
+      const idB = getNumericInstanceId(b);
+      const bothNumeric = Number.isFinite(idA) && Number.isFinite(idB);
+      if (bothNumeric) return idA - idB;
+      if (Number.isFinite(idA)) return -1;
+      if (Number.isFinite(idB)) return 1;
+      const strA = String(a && a.id != null ? a.id : '');
+      const strB = String(b && b.id != null ? b.id : '');
+      return strA.localeCompare(strB, 'zh-Hans-CN');
+    });
+    instList.forEach((inst) => {
+      const row = [];
+      row.push(tpl.name || '');
+      row.push(inst && inst.id != null ? String(inst.id) : '');
+      row.push(
+        formatIndexCell(
+          indexMeta.field,
+          indexMeta.type,
+          computeExpectedIndexValue(tpl, inst, indexMeta.field)
+        )
+      );
+      row.push(inst && inst.name != null ? String(inst.name) : '');
+      (tpl.parameters || []).forEach((param) => {
+        if (!param) return;
+        const payload = inst && inst.payload ? inst.payload : {};
+        row.push(serializeValueForCsv(param, payload[param.name]));
+      });
+      rows.push(row);
+    });
+    return { templateIndex: templateIndex ?? -1, columns, rows };
+  }
+
+  function renderTableModeTemplateList() {
+    if (!tableModeTemplateList || !tableModeActive) return;
+    tableModeTemplateList.innerHTML = '';
+    if (!templates.length) {
+      const li = document.createElement('li');
+      li.textContent = '暂无模板';
+      li.className = 'table-mode-empty';
+      tableModeTemplateList.appendChild(li);
+      return;
+    }
+    templates.forEach((tpl, idx) => {
+      const li = document.createElement('li');
+      li.textContent = tpl.name;
+      setInvalidNameVisual(li, isPureNumericName(tpl.name));
+      if (idx === tableModeState.templateIndex) {
+        li.classList.add('active');
+      }
+      li.addEventListener('click', () => {
+        switchTableModeTemplate(idx);
+      });
+      tableModeTemplateList.appendChild(li);
+    });
+  }
+
+  function clearTableValidationMarkers() {
+    if (!tableModeContainer) return;
+    tableModeContainer.querySelectorAll('.table-error').forEach((el) => el.classList.remove('table-error'));
+  }
+
+  function markTableColumnError(columnIndex) {
+    if (columnIndex == null || columnIndex < 0) return;
+    const headerCell = tableModeHeaderRow && tableModeHeaderRow.children[columnIndex];
+    const typeCell = tableModeTypeRow && tableModeTypeRow.children[columnIndex];
+    if (headerCell) headerCell.classList.add('table-error');
+    if (typeCell) typeCell.classList.add('table-error');
+    if (tableModeBody) {
+      Array.from(tableModeBody.rows).forEach((row) => {
+        const cell = row.children[columnIndex];
+        if (cell) cell.classList.add('table-error');
+      });
+    }
+    if (headerCell) {
+      headerCell.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+  }
+
+  function renderTableFromState(state) {
+    if (!tableModeContainer) return;
+    tableModeState = {
+      templateIndex: state.templateIndex,
+      columns: state.columns.map((col) => ({ ...col })),
+      rows: state.rows.map((row) => row.slice()),
+    };
+    clearTableValidationMarkers();
+    if (tableModeHeaderRow) tableModeHeaderRow.innerHTML = '';
+    if (tableModeTypeRow) tableModeTypeRow.innerHTML = '';
+    if (tableModeBody) tableModeBody.innerHTML = '';
+    if (!tableModeActive) return;
+    if (!tableModeHeaderRow || !tableModeTypeRow || !tableModeBody) return;
+    if (!tableModeState.columns.length) {
+      if (tableModeGrid) {
+        tableModeGrid.innerHTML = '';
+        const empty = document.createElement('div');
+        empty.className = 'table-mode-empty';
+        empty.textContent = '没有可显示的列';
+        tableModeGrid.appendChild(empty);
+      }
+      return;
+    }
+    if (tableModeGrid) {
+      tableModeGrid.innerHTML = '';
+      const table = document.createElement('table');
+      table.id = 'tableModeTable';
+      const thead = document.createElement('thead');
+      thead.appendChild(tableModeHeaderRow);
+      thead.appendChild(tableModeTypeRow);
+      table.appendChild(thead);
+      table.appendChild(tableModeBody);
+      tableModeGrid.appendChild(table);
+    }
+    tableModeState.columns.forEach((col, colIndex) => {
+      const header = document.createElement('th');
+      header.dataset.columnKey = col.key;
+      header.dataset.columnIndex = String(colIndex);
+      header.dataset.reserved = col.reserved ? '1' : '0';
+      if (col.allowNameEdit) {
+        const input = document.createElement('input');
+        input.value = col.name;
+        input.placeholder = '参数名';
+        input.addEventListener('input', () => {
+          tableModeState.columns[colIndex].name = input.value;
+          if (isPureNumericName(input.value)) {
+            input.classList.add('invalid-name');
+          } else {
+            input.classList.remove('invalid-name');
+          }
+        });
+        input.addEventListener('keydown', (evt) => evt.stopPropagation());
+        if (isPureNumericName(col.name)) {
+          input.classList.add('invalid-name');
+        }
+        header.appendChild(input);
+      } else {
+        header.textContent = col.name;
+      }
+      tableModeHeaderRow.appendChild(header);
+
+      const typeCell = document.createElement('th');
+      if (col.allowTypeEdit) {
+        const input = document.createElement('input');
+        input.value = col.type || '';
+        input.placeholder = '类型';
+        input.addEventListener('input', () => {
+          tableModeState.columns[colIndex].type = input.value;
+        });
+        input.addEventListener('keydown', (evt) => evt.stopPropagation());
+        typeCell.appendChild(input);
+      } else {
+        typeCell.textContent = col.type || '';
+      }
+      tableModeTypeRow.appendChild(typeCell);
+    });
+    if (!tableModeState.rows.length) {
+      const emptyRow = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = tableModeState.columns.length;
+      cell.className = 'table-mode-empty';
+      cell.textContent = '该模板暂无实例数据';
+      emptyRow.appendChild(cell);
+      tableModeBody.appendChild(emptyRow);
+      return;
+    }
+    tableModeState.rows.forEach((rowValues, rowIndex) => {
+      const rowEl = document.createElement('tr');
+      tableModeState.columns.forEach((col, colIndex) => {
+        const cell = document.createElement('td');
+        const input = document.createElement('input');
+        input.value = rowValues[colIndex] ?? '';
+        if (!col.allowDataEdit) {
+          input.readOnly = true;
+        } else {
+          input.addEventListener('input', () => {
+            tableModeState.rows[rowIndex][colIndex] = input.value;
+          });
+        }
+        input.addEventListener('keydown', (evt) => evt.stopPropagation());
+        cell.appendChild(input);
+        rowEl.appendChild(cell);
+      });
+      tableModeBody.appendChild(rowEl);
+    });
+  }
+
+  function handleTableCommitError(err) {
+    const message = err && err.message ? String(err.message) : '';
+    let columnIndex = null;
+    const matchIndex = message.match(/第\s*(\d+)\s*列/);
+    if (matchIndex) {
+      const parsed = Number(matchIndex[1]);
+      if (Number.isFinite(parsed)) {
+        columnIndex = parsed - 1;
+      }
+    }
+    if (columnIndex == null) {
+      const candidates = [];
+      tableModeState.columns.forEach((col, idx) => {
+        if (!col || !col.name) return;
+        if (message.includes(col.name)) {
+          candidates.push({ idx, weight: col.name.length });
+        }
+      });
+      if (candidates.length > 0) {
+        candidates.sort((a, b) => b.weight - a.weight);
+        columnIndex = candidates[0].idx;
+      }
+    }
+    if (columnIndex != null) {
+      markTableColumnError(columnIndex);
+    }
+  }
+
+  function collectTableHeadersAndTypes() {
+    const headers = [];
+    const types = [];
+    tableModeState.columns.forEach((col) => {
+      if (!col) return;
+      const name = col.name != null ? String(col.name).trim() : '';
+      headers.push(name);
+      if (col.reserved) {
+        types.push(col.type || (col.name === 'template' || col.name === 'name' ? 'string' : 'int'));
+      } else {
+        types.push(col.type != null ? String(col.type).trim() : '');
+      }
+    });
+    return { headers, types };
+  }
+
+  function commitCurrentTableEdits(rebuildAfterCommit = true) {
+    if (!tableModeActive) return true;
+    if (tableModeState.templateIndex == null || tableModeState.templateIndex < 0) return true;
+    if (!tableModeState.columns.length) return true;
+    clearTableValidationMarkers();
+    try {
+      const { headers, types } = collectTableHeadersAndTypes();
+      const numericIndex = tableModeState.columns.findIndex((col, idx) => {
+        if (!col || col.reserved) return false;
+        return isPureNumericName(headers[idx]);
+      });
+      if (numericIndex >= 0) {
+        throw new Error(`第${numericIndex + 1}列列名不能为纯数字：${headers[numericIndex] || '(空)'}`);
+      }
+      const csvRows = [headers, types];
+      tableModeState.rows.forEach((row) => {
+        csvRows.push(row.map((cell) => (cell == null ? '' : String(cell))));
+      });
+      const csvText = rowsToCsv(csvRows);
+      const parsedRows = parseCsvText(csvText);
+      const tpl = buildTemplateFromCsv(parsedRows);
+      const templateIndex = tableModeState.templateIndex;
+      const existing = templates[templateIndex];
+      if (existing) {
+        tpl.__uid = existing.__uid;
+        enforceImportedIndexField(tpl);
+        templates[templateIndex] = tpl;
+        if (currentTemplateIndex === templateIndex) {
+          if (tpl.instances.length > 0) {
+            const bounded = Math.min(Math.max(currentInstanceIndex, 0), tpl.instances.length - 1);
+            currentInstanceIndex = Number.isFinite(bounded) ? bounded : 0;
+          } else {
+            currentInstanceIndex = -1;
+          }
+          refreshInstances();
+          refreshParams();
+        }
+        refreshTemplates();
+        if (rebuildAfterCommit) {
+          const refreshed = buildTableStateForTemplate(tpl, templateIndex);
+          renderTableFromState(refreshed);
+        }
+      }
+      return true;
+    } catch (err) {
+      handleTableCommitError(err);
+      showMessage(`表格数据格式错误：${err && err.message ? err.message : err}`, 'warn');
+      return false;
+    }
+  }
+
+  function switchTableModeTemplate(nextIndex) {
+    if (!tableModeActive) return;
+    if (nextIndex == null || nextIndex < 0 || nextIndex >= templates.length) return;
+    if (tableModeState.templateIndex === nextIndex) return;
+    if (!commitCurrentTableEdits()) {
+      return;
+    }
+    const tpl = templates[nextIndex];
+    currentTemplateIndex = nextIndex;
+    selectedTemplates.clear();
+    selectedTemplates.add(nextIndex);
+    selectedInstances.clear();
+    selectedParams.clear();
+    editingParamIndex = -1;
+    currentInstanceIndex = tpl && tpl.instances && tpl.instances.length > 0 ? 0 : -1;
+    const state = buildTableStateForTemplate(tpl, nextIndex);
+    renderTableFromState(state);
+    renderTableModeTemplateList();
+  }
+
+  function enterTableMode() {
+    if (tableModeActive) return;
+    if (!templates.length) {
+      showMessage('暂无模板可供表格编辑', 'warn');
+      return;
+    }
+    tableModeActive = true;
+    document.body.classList.add('table-mode-active');
+    if (toggleTableModeBtn) {
+      toggleTableModeBtn.textContent = '返回三栏模式';
+    }
+    const targetIndex = currentTemplateIndex >= 0 ? currentTemplateIndex : 0;
+    currentTemplateIndex = targetIndex;
+    selectedTemplates.clear();
+    selectedTemplates.add(targetIndex);
+    selectedInstances.clear();
+    selectedParams.clear();
+    editingParamIndex = -1;
+    const tpl = templates[targetIndex];
+    currentInstanceIndex = tpl && tpl.instances && tpl.instances.length > 0 ? 0 : -1;
+    const state = buildTableStateForTemplate(tpl, targetIndex);
+    renderTableFromState(state);
+    renderTableModeTemplateList();
+  }
+
+  function exitTableMode() {
+    if (!tableModeActive) return;
+    if (!commitCurrentTableEdits(false)) {
+      return;
+    }
+    tableModeActive = false;
+    document.body.classList.remove('table-mode-active');
+    if (toggleTableModeBtn) {
+      toggleTableModeBtn.textContent = '表格模式';
+    }
+    tableModeState = { templateIndex: -1, columns: [], rows: [] };
+    clearTableValidationMarkers();
+    if (tableModeTemplateList) {
+      tableModeTemplateList.innerHTML = '';
+    }
+    if (tableModeGrid) {
+      tableModeGrid.innerHTML = '';
+    }
+    if (tableModeHeaderRow) tableModeHeaderRow.innerHTML = '';
+    if (tableModeTypeRow) tableModeTypeRow.innerHTML = '';
+    if (tableModeBody) tableModeBody.innerHTML = '';
+    refreshTemplates();
+    refreshInstances();
+    refreshParams();
+  }
+
+  function addTableModeColumn() {
+    if (!tableModeActive) {
+      showMessage('请先进入表格模式', 'warn');
+      return;
+    }
+    if (tableModeState.templateIndex == null || tableModeState.templateIndex < 0) {
+      showMessage('请选择要编辑的模板', 'warn');
+      return;
+    }
+    const nameInput = prompt('请输入新参数列名称');
+    if (nameInput == null) return;
+    const trimmedName = String(nameInput).trim();
+    if (!trimmedName) {
+      showMessage('列名不能为空', 'warn');
+      return;
+    }
+    if (['template', 'id', 'index', 'name'].includes(trimmedName)) {
+      showMessage('该列名称为保留字段，无法使用', 'warn');
+      return;
+    }
+    if (isPureNumericName(trimmedName)) {
+      showMessage('参数名不能为纯数字', 'warn');
+      return;
+    }
+    if (tableModeState.columns.some((col) => col && String(col.name || '').trim() === trimmedName)) {
+      showMessage('列名重复', 'warn');
+      return;
+    }
+    const typeInput = prompt('请输入参数类型（例如：string、int、float、bool、list、object 等）', 'string');
+    if (typeInput == null) return;
+    const trimmedType = String(typeInput).trim();
+    if (!trimmedType) {
+      showMessage('类型不能为空', 'warn');
+      return;
+    }
+    const workingState = cloneTableModeState();
+    workingState.columns.push({
+      key: generateTableColumnKey(),
+      name: trimmedName,
+      type: trimmedType,
+      allowNameEdit: true,
+      allowTypeEdit: true,
+      allowDataEdit: true,
+      reserved: false,
+    });
+    if (!workingState.rows.length) {
+      workingState.rows = [];
+    } else {
+      workingState.rows = workingState.rows.map((row) => {
+        const next = row.slice();
+        next.push('');
+        return next;
+      });
+    }
+    renderTableFromState(workingState);
   }
 
   function resolveIndexFieldMeta(tpl) {
@@ -1139,6 +1642,18 @@
   if (importCsvBtn) {
     importCsvBtn.addEventListener('click', importFromCsv);
   }
+  if (toggleTableModeBtn) {
+    toggleTableModeBtn.addEventListener('click', () => {
+      if (tableModeActive) {
+        exitTableMode();
+      } else {
+        enterTableMode();
+      }
+    });
+  }
+  if (tableModeAddColumnBtn) {
+    tableModeAddColumnBtn.addEventListener('click', addTableModeColumn);
+  }
   if (viewLogsBtn) {
     viewLogsBtn.addEventListener('click', openLogOverlay);
   }
@@ -1157,6 +1672,15 @@
   }
   if (regenerateCsBtn) {
     regenerateCsBtn.addEventListener("click", regenerateCSharpStructures);
+  }
+  if (templateNameInput) {
+    templateNameInput.addEventListener('input', updateTemplateNameInputValidity);
+  }
+  if (instanceNameInput) {
+    instanceNameInput.addEventListener('input', updateInstanceNameInputValidity);
+  }
+  if (paramNameInput) {
+    paramNameInput.addEventListener('input', updateParamNameInputValidity);
   }
   if (renameTemplateBtn) {
     renameTemplateBtn.addEventListener('click', () => {
@@ -1543,6 +2067,7 @@
 
   // 全局快捷键：复制、粘贴、删除
   document.addEventListener('keydown', (e) => {
+    if (tableModeActive) return;
     // 避免在输入框中触发
     const tag = e.target.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
@@ -1748,6 +2273,16 @@
   /**
    * 保证工作目录下有 csharpDate 和 dataEntity 文件夹，并检测现有文件是否合法
    */
+  const IGNORED_FILE_SUFFIXES = [".meta"];
+  const IGNORED_FILE_NAMES = [".ds_store", "thumbs.db"];
+
+  function shouldIgnoreFileEntry(entryName) {
+    if (!entryName) return false;
+    const lower = entryName.toLowerCase();
+    if (IGNORED_FILE_NAMES.includes(lower)) return true;
+    return IGNORED_FILE_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+  }
+
   async function ensureSubFolders() {
     csharpHandle = await directoryHandle.getDirectoryHandle("csharpDate", { create: true });
     dataEntityHandle = await directoryHandle.getDirectoryHandle("dataEntity", { create: true });
@@ -1759,6 +2294,9 @@
     }
     // 检查文件类型
     for await (const entry of csharpHandle.values()) {
+      if (entry.kind === "file" && shouldIgnoreFileEntry(entry.name)) {
+        continue;
+      }
       if (entry.kind === "file" && !entry.name.toLowerCase().endsWith(".cs")) {
         showMessage(`csharpDate 文件夹内仅允许 .cs 文件：${entry.name}`);
         throw new Error("Invalid file in csharpDate");
@@ -1774,6 +2312,9 @@
       }
     }
     for await (const entry of dataEntityHandle.values()) {
+      if (entry.kind === "file" && shouldIgnoreFileEntry(entry.name)) {
+        continue;
+      }
       if (entry.kind === "file" && !entry.name.toLowerCase().endsWith(".json")) {
         showMessage(`dataEntity 文件夹内仅允许 .json 文件：${entry.name}`);
         throw new Error("Invalid file in dataEntity");
@@ -2764,7 +3305,7 @@ public class DataEntityRuntimeTester : MonoBehaviour
         }
         catch (Exception ex)
         {
-            Debug.LogError($\"[DataEntityRuntimeTester] {ex.Message}\\\n{ex}\");
+            Debug.LogError($\"[DataEntityRuntimeTester] {ex.Message}\\n{ex}\");
         }
     }
 
@@ -3021,7 +3562,16 @@ DataEntityRuntimeTester 使用说明
    * 新建模板
    */
   function newTemplate() {
-    const name = templateNameInput.value.trim() || `模板${templates.length + 1}`;
+    const rawName = templateNameInput.value.trim();
+    if (rawName && isPureNumericName(rawName)) {
+      showMessage('模板名称不能为纯数字');
+      return;
+    }
+    const name = rawName || `模板${templates.length + 1}`;
+    if (isPureNumericName(name)) {
+      showMessage('模板名称不能为纯数字');
+      return;
+    }
     if (templates.some((t) => t.name === name)) {
       alert("模板名称已存在");
       return;
@@ -3043,6 +3593,8 @@ DataEntityRuntimeTester 使用说明
     currentInstanceIndex = 0;
     refreshTemplates();
     updateIndexTemplateOptions();
+    updateTemplateNameInputValidity();
+    updateInstanceNameInputValidity();
     showMessage(`已创建新模板：${name}`);
   }
 
@@ -3056,6 +3608,12 @@ DataEntityRuntimeTester 使用说明
     const targetName = (newName || "").trim();
     if (!targetName) {
       templateNameInput.value = tpl.name;
+      return;
+    }
+    if (isPureNumericName(targetName)) {
+      alert('模板名称不能为纯数字');
+      templateNameInput.value = tpl.name;
+      updateTemplateNameInputValidity();
       return;
     }
     if (!isEnumTemplate(tpl) && targetName === 'enum') {
@@ -3086,6 +3644,7 @@ DataEntityRuntimeTester 使用说明
     templateNameInput.value = targetName;
     refreshTemplates();
     updateIndexTemplateOptions();
+    updateTemplateNameInputValidity();
     showMessage(`已重命名模板：${targetName}`);
   }
 
@@ -3098,7 +3657,16 @@ DataEntityRuntimeTester 使用说明
       return;
     }
     const tpl = templates[currentTemplateIndex];
-    const name = instanceNameInput.value.trim() || `实例${tpl.instances.length}`;
+    const rawName = instanceNameInput.value.trim();
+    if (rawName && isPureNumericName(rawName)) {
+      showMessage('实例名称不能为纯数字');
+      return;
+    }
+    const name = rawName || `实例${tpl.instances.length}`;
+    if (isPureNumericName(name)) {
+      showMessage('实例名称不能为纯数字');
+      return;
+    }
     const nextId = tpl.instances.length > 0 ? Math.max(...tpl.instances.map((i) => i.id)) + 1 : 0;
     const inst = {
       id: nextId,
@@ -3118,6 +3686,7 @@ DataEntityRuntimeTester 使用说明
     currentInstanceIndex = tpl.instances.length - 1;
     refreshInstances();
     refreshParams();
+    updateInstanceNameInputValidity();
     showMessage(`已创建新实例：${name}`);
   }
 
@@ -3129,10 +3698,23 @@ DataEntityRuntimeTester 使用说明
     if (!newName) return;
     const tpl = templates[currentTemplateIndex];
     const inst = tpl.instances[currentInstanceIndex];
-    inst.name = newName;
-    inst.payload.name = newName;
+    const trimmed = String(newName || '').trim();
+    if (!trimmed) {
+      instanceNameInput.value = inst.name;
+      return;
+    }
+    if (isPureNumericName(trimmed)) {
+      showMessage('实例名称不能为纯数字');
+      instanceNameInput.value = inst.name;
+      updateInstanceNameInputValidity();
+      return;
+    }
+    inst.name = trimmed;
+    inst.payload.name = trimmed;
     refreshInstances();
     refreshParams();
+    instanceNameInput.value = inst.name;
+    updateInstanceNameInputValidity();
   }
 
   /**
@@ -3221,6 +3803,10 @@ DataEntityRuntimeTester 使用说明
       return;
     }
     const tpl = templates[currentTemplateIndex];
+    if (!isEnumTemplate(tpl) && name && isPureNumericName(name)) {
+      showMessage('参数名称不能为纯数字');
+      return;
+    }
     let type = paramTypeSelect.value;
     if (isEnumTemplate(tpl)) {
       type = 'string';
@@ -3257,6 +3843,10 @@ DataEntityRuntimeTester 使用说明
     if (editingParamIndex >= 0) {
       const currentTpl = templates[currentTemplateIndex];
       const effectiveName = isEnumTemplate(currentTpl) ? String(editingParamIndex) : name;
+      if (!isEnumTemplate(currentTpl) && isPureNumericName(effectiveName)) {
+        showMessage('参数名称不能为纯数字');
+        return;
+      }
       updateParamAtIndex(editingParamIndex, effectiveName, type, indexObj);
       editingParamIndex = -1;
       selectedParams.clear();
@@ -3302,6 +3892,10 @@ DataEntityRuntimeTester 使用说明
     const tpl = templates[currentTemplateIndex];
     const param = tpl.parameters[index];
     if (!param) return;
+    if (!isEnumTemplate(tpl) && isPureNumericName(newName)) {
+      showMessage('参数名称不能为纯数字');
+      return;
+    }
     // 检查重名
     if (!isEnumTemplate(tpl) && tpl.parameters.some((p, i) => p.name === newName && i !== index)) {
       alert("参数名称已存在");
@@ -3672,6 +4266,7 @@ DataEntityRuntimeTester 使用说明
       }
       const nameSpan = document.createElement('span');
       nameSpan.textContent = tpl.name;
+      setInvalidNameVisual(nameSpan, isPureNumericName(tpl.name));
       li.appendChild(nameSpan);
       if (exportSelectionMode) {
         const counts = getTemplateExportCounts(tpl);
@@ -3768,10 +4363,18 @@ DataEntityRuntimeTester 使用说明
     } else {
       templateNameInput.value = "";
     }
+    updateTemplateNameInputValidity();
+    updateInstanceNameInputValidity();
     refreshInstances();
     refreshParams();
     // 应用模板搜索过滤
     filterList(templateListEl, searchTemplatesInput.value);
+    if (tableModeActive) {
+      renderTableModeTemplateList();
+      if (!templates.length) {
+        renderTableFromState({ templateIndex: -1, columns: [], rows: [] });
+      }
+    }
   }
 
   /**
@@ -3850,6 +4453,7 @@ DataEntityRuntimeTester 使用说明
       }
       const nameSpan = document.createElement('span');
       nameSpan.textContent = `${inst.id}: ${inst.name}`;
+      setInvalidNameVisual(nameSpan, isPureNumericName(inst.name));
       li.appendChild(nameSpan);
       li.addEventListener('click', (e) => {
         if (e.ctrlKey) {
@@ -3906,6 +4510,7 @@ DataEntityRuntimeTester 使用说明
         instanceNameInput.value = (currentTemplateIndex >= 0 && currentInstanceIndex >= 0)
           ? templates[currentTemplateIndex].instances[currentInstanceIndex].name
           : '';
+        updateInstanceNameInputValidity();
         // 切换实例时清除参数选择
         selectedParams.clear();
         editingParamIndex = -1;
@@ -3920,6 +4525,7 @@ DataEntityRuntimeTester 使用说明
     });
     // 应用实例搜索过滤
     filterList(instanceListEl, searchInstancesInput.value);
+    updateInstanceNameInputValidity();
   }
 
   /**
@@ -3931,7 +4537,10 @@ DataEntityRuntimeTester 使用说明
     updateParamNameInputEnabledState();
     refreshParamTypeOptions();
     updateIndexTemplateOptions();
-    if (currentTemplateIndex < 0 || currentInstanceIndex < 0) return;
+    if (currentTemplateIndex < 0 || currentInstanceIndex < 0) {
+      updateParamNameInputValidity();
+      return;
+    }
     const tpl = templates[currentTemplateIndex];
     const inst = tpl.instances[currentInstanceIndex];
     const isEnumTpl = isEnumTemplate(tpl);
@@ -4008,6 +4617,7 @@ DataEntityRuntimeTester 使用说明
         item.classList.add('param-item');
         const label = document.createElement('label');
         label.textContent = key;
+        setInvalidNameVisual(label, isPureNumericName(key));
         item.appendChild(label);
         if (selectedParams.has(idx)) item.classList.add('active');
         const inputEl = document.createElement('input');
@@ -4032,20 +4642,26 @@ DataEntityRuntimeTester 使用说明
           if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON')) return;
           if (e.ctrlKey) {
             if (selectedParams.has(idx)) selectedParams.delete(idx); else selectedParams.add(idx);
-            const arr = Array.from(selectedParams).sort((a,b)=>a-b);
-            editingParamIndex = arr.length > 0 ? arr[arr.length-1] : -1;
+            const arr = Array.from(selectedParams).sort((a, b) => a - b);
+            editingParamIndex = arr.length > 0 ? arr[arr.length - 1] : -1;
           } else if (e.shiftKey) {
             if (anchorParam === null) anchorParam = editingParamIndex >= 0 ? editingParamIndex : idx;
             const start = Math.min(anchorParam, idx);
             const end = Math.max(anchorParam, idx);
             selectedParams.clear();
             for (let i = start; i <= end; i++) selectedParams.add(i);
-            editingParamIndex = idx; anchorParam = idx;
+            editingParamIndex = idx;
+            anchorParam = idx;
           } else {
             if (selectedParams.has(idx) && selectedParams.size === 1) {
-              selectedParams.clear(); editingParamIndex = -1; anchorParam = null;
+              selectedParams.clear();
+              editingParamIndex = -1;
+              anchorParam = null;
             } else {
-              selectedParams.clear(); selectedParams.add(idx); editingParamIndex = idx; anchorParam = idx;
+              selectedParams.clear();
+              selectedParams.add(idx);
+              editingParamIndex = idx;
+              anchorParam = idx;
             }
           }
           refreshParams();
@@ -4055,6 +4671,7 @@ DataEntityRuntimeTester 使用说明
       });
       // 过滤（仅文本值可被过滤）
       filterList(paramListEl, searchParamsInput.value, true);
+      updateParamNameInputValidity();
       return;
     }
     // 自定义参数
@@ -4063,6 +4680,7 @@ DataEntityRuntimeTester 使用说明
       item.classList.add("param-item");
       const label = document.createElement('label');
       label.textContent = p.name;
+      setInvalidNameVisual(label, isPureNumericName(p.name));
       item.appendChild(label);
       if (selectedParams.has(idx)) item.classList.add('active');
       if (p.parameterIndexes) {
@@ -4385,6 +5003,7 @@ DataEntityRuntimeTester 使用说明
     });
     // 应用参数搜索过滤
     filterList(paramListEl, searchParamsInput.value, true);
+    updateParamNameInputValidity();
   }
 
   /**
@@ -4445,6 +5064,7 @@ DataEntityRuntimeTester 使用说明
       // 没有选中，重置输入
       paramNameInput.value = '';
       paramTypeSelect.value = 'string';
+      updateParamNameInputValidity();
       if (!indexTemplateSelect.disabled) {
         indexTemplateSelect.value = '';
         updateIndexParamOptions();
@@ -4461,6 +5081,7 @@ DataEntityRuntimeTester 使用说明
     if (!p) return;
     editingParamIndex = idx;
     paramNameInput.value = p.name;
+    updateParamNameInputValidity();
     paramTypeSelect.value = p.type;
     if (isEnumTemplate(tpl)) {
       paramTypeSelect.value = 'string';
@@ -4852,6 +5473,12 @@ DataEntityRuntimeTester 使用说明
       alert("请先选择工作目录");
       return;
     }
+    if (tableModeActive) {
+      if (!commitCurrentTableEdits()) {
+        showMessage('请先修正表格模式中的错误后再保存', 'warn');
+        return;
+      }
+    }
     try {
       if (!csharpHandle || !dataEntityHandle) {
         await ensureSubFolders();
@@ -4859,7 +5486,6 @@ DataEntityRuntimeTester 使用说明
       const templateDecisions = new Map();
       const csCache = new Map();
       let enumTemplateSaved = false;
-      let shouldUpdateDataRef = false;
       const pendingStructureDecision = [];
 
       for (const tpl of templates) {
@@ -4888,9 +5514,6 @@ DataEntityRuntimeTester 使用说明
           showMessage('已取消保存');
           return;
         }
-        if (answer === 'replace') {
-          shouldUpdateDataRef = true;
-        }
         for (const tpl of pendingStructureDecision) {
           templateDecisions.set(tpl.__uid, {
             decision: answer === 'replace' ? 'replace' : 'jsonOnly',
@@ -4913,29 +5536,6 @@ DataEntityRuntimeTester 使用说明
         if (meta && meta.decision === 'replace') {
           const content = csCache.get(tpl.__uid) || generateCSContent(tpl);
           await writeTextFile(csharpHandle, `${tpl.name}.cs`, content);
-        }
-      }
-
-      if (shouldUpdateDataRef) {
-        if (templates.some(t => Array.isArray(t.parameters) && t.parameters.some(p => p && p.parameterIndexes))) {
-          const dataRefContent = [
-            'using System;',
-            'using System.Collections.Generic;',
-            'using Newtonsoft.Json;',
-            '',
-            '[Serializable]',
-            'public class DataRef',
-            '{',
-            '    public string template;',
-            '    public string by;',
-            '    public string value;',
-            '',
-            '    [JsonIgnore]',
-            '    public object instance;',
-            '}',
-            ''
-          ].join('\n');
-          await writeTextFile(csharpHandle, 'DataRef.cs', dataRefContent);
         }
       }
 
@@ -4975,27 +5575,6 @@ DataEntityRuntimeTester 使用说明
         if (isEnumTemplate(tpl)) continue;
         const content = generateCSContent(tpl);
         await writeTextFile(csharpHandle, `${tpl.name}.cs`, content);
-        updatedAny = true;
-      }
-      if (templates.some(t => Array.isArray(t.parameters) && t.parameters.some(p => p && p.parameterIndexes))) {
-        const dataRefContent = [
-          'using System;',
-          'using System.Collections.Generic;',
-          'using Newtonsoft.Json;',
-          '',
-          '[Serializable]',
-          'public class DataRef',
-          '{',
-          '    public string template;',
-          '    public string by;',
-          '    public string value;',
-          '',
-          '    [JsonIgnore]',
-          '    public object instance;',
-          '}',
-          ''
-        ].join('\n');
-        await writeTextFile(csharpHandle, 'DataRef.cs', dataRefContent);
         updatedAny = true;
       }
       const enumTpl = getEnumTemplate();
@@ -5102,7 +5681,7 @@ DataEntityRuntimeTester 使用说明
       if (pp) idxType = mapToCSharpType(pp.type);
     }
     lines.push(`    public ${idxType} index;`);
-    // 索引参数使用可复用的全局类型 DataRef（在保存时生成 DataRef.cs）
+    // 索引参数使用可复用的全局类型 DataRef（由 modelCsharpe.cs 提供）
     tpl.parameters.forEach((p) => {
       if (!p) return;
       if (p.parameterIndexes) {
