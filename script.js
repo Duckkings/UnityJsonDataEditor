@@ -1535,6 +1535,8 @@
         showMessage(`${tpl.name}模版的index清空`, 'warn');
       }
       tpl.__uid = existing.__uid;
+      tpl.__persistedName = existing.__persistedName ?? existing.name;
+      tpl.__pendingDeleteFileName = existing.__pendingDeleteFileName ?? null;
       templates[existingIdx] = tpl;
       if (currentTemplateIndex === existingIdx) {
         currentInstanceIndex = tpl.instances.length > 0 ? 0 : -1;
@@ -1542,6 +1544,8 @@
       return existingIdx;
     }
     ensureTemplateUid(tpl);
+    tpl.__persistedName = null;
+    tpl.__pendingDeleteFileName = null;
     templates.push(tpl);
     return templates.length - 1;
   }
@@ -3520,6 +3524,9 @@ DataEntityRuntimeTester 使用说明
               instances: obj.instances,
               indexField: obj.indexField || 'id',
             };
+            const persistedBaseName = (entry.name || '').replace(/\.json$/i, '');
+            template.__persistedName = persistedBaseName || template.name;
+            template.__pendingDeleteFileName = null;
             normalizeTemplateParameterIndexes(template);
             if (isEnumTemplate(template) && Array.isArray(template.parameters)) {
               template.parameters = template.parameters.map((param) => {
@@ -3544,6 +3551,8 @@ DataEntityRuntimeTester 使用说明
         ensureEnumParamNaming(cachedEnum);
         if (!Array.isArray(cachedEnum.parameters)) cachedEnum.parameters = [];
         if (!Array.isArray(cachedEnum.instances)) cachedEnum.instances = [];
+        cachedEnum.__persistedName = null;
+        cachedEnum.__pendingDeleteFileName = null;
         ensureTemplateUid(cachedEnum);
         templates.push(cachedEnum);
       }
@@ -3587,6 +3596,8 @@ DataEntityRuntimeTester 使用说明
       instances: [instance],
       indexField: 'id',
     };
+    template.__persistedName = null;
+    template.__pendingDeleteFileName = null;
     ensureTemplateUid(template);
     templates.push(template);
     currentTemplateIndex = templates.length - 1;
@@ -3635,12 +3646,18 @@ DataEntityRuntimeTester 使用说明
       templateNameInput.value = tpl.name;
       return;
     }
+    const persistedName = tpl.__persistedName || null;
     tpl.name = targetName;
     tpl.instances.forEach((inst) => {
       if (inst && inst.payload) {
         inst.payload.template = targetName;
       }
     });
+    if (persistedName && persistedName !== targetName) {
+      tpl.__pendingDeleteFileName = `${persistedName}.json`;
+    } else if (persistedName && persistedName === targetName) {
+      tpl.__pendingDeleteFileName = null;
+    }
     templateNameInput.value = targetName;
     refreshTemplates();
     updateIndexTemplateOptions();
@@ -5180,6 +5197,8 @@ DataEntityRuntimeTester 使用说明
       const newTpl = JSON.parse(JSON.stringify(srcTpl));
       newTpl.name = newName;
       delete newTpl.__uid;
+      newTpl.__persistedName = null;
+      newTpl.__pendingDeleteFileName = null;
       // 更新实例中的 template 字段和 id
       newTpl.instances.forEach((inst, idx) => {
         inst.id = idx;
@@ -5531,7 +5550,13 @@ DataEntityRuntimeTester 使用说明
           continue;
         }
         const json = JSON.stringify({ name: tpl.name, indexField: tpl.indexField || 'id', parameters: tpl.parameters, instances: tpl.instances }, null, 2);
-        await writeTextFile(dataEntityHandle, `${tpl.name}.json`, json);
+        const jsonFileName = `${tpl.name}.json`;
+        await writeTextFile(dataEntityHandle, jsonFileName, json);
+        if (tpl.__pendingDeleteFileName && tpl.__pendingDeleteFileName !== jsonFileName) {
+          await deleteDataEntityFileIfExists(tpl.__pendingDeleteFileName);
+        }
+        tpl.__persistedName = tpl.name;
+        tpl.__pendingDeleteFileName = null;
         const meta = templateDecisions.get(tpl.__uid);
         if (meta && meta.decision === 'replace') {
           const content = csCache.get(tpl.__uid) || generateCSContent(tpl);
