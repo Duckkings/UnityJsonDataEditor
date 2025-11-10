@@ -15,6 +15,7 @@
         <span id="currentDir" class="dir-label"></span>
         <button id="saveBtn">保存</button>
         <button id="regenerateCs">重新生成C#数据结构脚本</button>
+        <button id="toggleMode" data-mode="column">切换为表格模式</button>
         <button id="exportCsv">导出为CSV</button>
         <button id="confirmExportCsv" style="display:none">导出</button>
         <button id="cancelExportCsv" style="display:none">退出选择</button>
@@ -30,7 +31,7 @@
         <div id="message" class="message" style="display:none"></div>
       </header>
       <!-- 主内容区域：三列布局 -->
-      <main class="container">
+      <main class="container" id="columnModeContainer">
         <!-- 模板列表 -->
         <section class="panel templates">
           <div class="panel-header">
@@ -79,6 +80,25 @@
           <div id="paramList" class="param-list"></div>
         </section>
       </main>
+      <div id="tableModeContainer" class="table-mode" aria-hidden="true">
+        <div class="table-mode-layout">
+          <div id="tableModeTemplateSlot" class="table-mode-templates"></div>
+          <div class="table-mode-main">
+            <div class="table-mode-toolbar">
+              <div class="table-mode-title">表格模式</div>
+              <div class="table-mode-index">索引字段：<span id="tableModeIndexField"></span></div>
+            </div>
+            <div class="table-mode-table-wrapper">
+              <table id="tableModeTable" class="table-grid">
+                <thead id="tableModeTableHead"></thead>
+                <tbody id="tableModeTableBody"></tbody>
+              </table>
+              <div id="tableModeEmpty" class="table-mode-empty">暂无实例</div>
+            </div>
+            <div id="tableModeTabs" class="table-mode-tabs"></div>
+          </div>
+        </div>
+      </div>
     </div>
     <div id="logOverlay" class="log-overlay" style="display:none">
       <div class="log-dialog">
