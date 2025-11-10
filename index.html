@@ -4,7 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>数据表编辑器</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/css/plugins.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/css/pluginsCss.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/css/luckysheet.css" />
     <link rel="stylesheet" href="style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/js/plugin.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/luckysheet.umd.js" defer></script>
     <script src="script.js" defer></script>
   </head>
   <body class="dark">
@@ -14,6 +19,7 @@
         <button id="chooseDir">选择工作目录</button>
         <span id="currentDir" class="dir-label"></span>
         <button id="saveBtn">保存</button>
+        <button id="toggleEditMode" data-mode="classic">表格模式</button>
         <button id="regenerateCs">重新生成C#数据结构脚本</button>
         <button id="exportCsv">导出为CSV</button>
         <button id="confirmExportCsv" style="display:none">导出</button>
@@ -30,9 +36,10 @@
         <div id="message" class="message" style="display:none"></div>
       </header>
       <!-- 主内容区域：三列布局 -->
-      <main class="container">
-        <!-- 模板列表 -->
-        <section class="panel templates">
+      <div id="classicMode" class="mode-panel">
+        <main class="container">
+          <!-- 模板列表 -->
+          <section class="panel templates">
           <div class="panel-header">
             <input id="templateName" type="text" placeholder="模板名" />
             <button id="newTemplate" class="primary">新建模板</button>
@@ -41,8 +48,8 @@
           <div class="search-bar"><input id="searchTemplates" type="text" placeholder="搜索模板" /></div>
           <ul id="templateList" class="list"></ul>
         </section>
-        <!-- 数据实例 -->
-        <section class="panel instances">
+          <!-- 数据实例 -->
+          <section class="panel instances">
           <div class="panel-header">
             <input id="instanceName" type="text" placeholder="实例名" />
             <button id="newInstance" class="primary">新建实例</button>
@@ -56,8 +63,8 @@
           <div class="search-bar"><input id="searchInstances" type="text" placeholder="搜索实例" /></div>
           <ul id="instanceList" class="list"></ul>
         </section>
-        <!-- 参数编辑 -->
-        <section class="panel parameters">
+          <!-- 参数编辑 -->
+          <section class="panel parameters">
           <div class="panel-header">
             <input id="paramName" type="text" placeholder="参数名" />
             <select id="paramType">
@@ -77,8 +84,24 @@
           </div>
           <div class="search-bar"><input id="searchParams" type="text" placeholder="搜索参数" /></div>
           <div id="paramList" class="param-list"></div>
-        </section>
-      </main>
+          </section>
+        </main>
+      </div>
+      <div id="sheetMode" class="mode-panel">
+        <div class="sheet-mode-layout">
+          <aside class="sheet-template-column">
+            <div class="sheet-template-header">模板</div>
+            <ul id="sheetTemplateList" class="sheet-template-list"></ul>
+          </aside>
+          <section class="sheet-workspace">
+            <div id="sheetEmptyState" class="sheet-empty" style="display:none">
+              <p>请选择一个包含实例的模板以进入表格编辑模式。</p>
+            </div>
+            <div id="luckysheet" class="luckysheet-container" style="display:none"></div>
+            <div id="sheetInstanceTabs" class="sheet-instance-tabs"></div>
+          </section>
+        </div>
+      </div>
     </div>
     <div id="logOverlay" class="log-overlay" style="display:none">
       <div class="log-dialog">

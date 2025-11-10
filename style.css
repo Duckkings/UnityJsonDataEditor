@@ -56,6 +56,24 @@ body.dark .toolbar button.primary {
   color: #fff;
 }
 
+.invalid-name {
+  color: #d14343;
+}
+
+body.dark .invalid-name {
+  color: #ff6b6b;
+}
+
+input.invalid-name {
+  border-color: #d14343;
+  color: #d14343;
+}
+
+body.dark input.invalid-name {
+  border-color: #ff6b6b;
+  color: #ff6b6b;
+}
+
 /* 定义行高缩放变量默认值 */
 :root {
   --row-scale: 1;
@@ -182,6 +200,195 @@ body.dark .toolbar button.primary {
   font-size: 14px;
   border: 1px solid #ccc;
   border-radius: 3px;
+}
+
+/* 模式切换容器 */
+.mode-panel {
+  height: calc(100vh - 50px);
+}
+
+#sheetMode {
+  display: none;
+}
+
+body.sheet-mode #classicMode {
+  display: none;
+}
+
+body.sheet-mode #sheetMode {
+  display: block;
+}
+
+body.sheet-mode #sheetMode .sheet-mode-layout {
+  display: flex;
+  height: 100%;
+}
+
+body.sheet-mode .toolbar #templateName,
+body.sheet-mode .toolbar #newTemplate,
+body.sheet-mode .toolbar #renameTemplate,
+body.sheet-mode .toolbar #searchTemplates,
+body.sheet-mode .toolbar #instanceName,
+body.sheet-mode .toolbar #newInstance,
+body.sheet-mode .toolbar #renameInstance,
+body.sheet-mode .toolbar #copyInstance,
+body.sheet-mode .toolbar #pasteInstance,
+body.sheet-mode .toolbar #deleteInstance,
+body.sheet-mode .toolbar #searchInstances,
+body.sheet-mode .toolbar #paramName,
+body.sheet-mode .toolbar #paramType,
+body.sheet-mode .toolbar #newParam,
+body.sheet-mode .toolbar #indexTemplate,
+body.sheet-mode .toolbar #indexParam,
+body.sheet-mode .toolbar #searchParams,
+body.sheet-mode .toolbar #paramWidth,
+body.sheet-mode .toolbar #paramWidthLabel,
+body.sheet-mode .toolbar #rowHeight,
+body.sheet-mode .toolbar #rowHeightLabel {
+  display: none !important;
+}
+
+.sheet-template-column {
+  width: 180px;
+  border-right: 1px solid #e0e0e0;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+}
+
+.sheet-template-header {
+  padding: 10px;
+  font-weight: bold;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.sheet-template-list {
+  list-style: none;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.sheet-template-list li {
+  padding: 8px 12px;
+  border-bottom: 1px solid #f0f0f0;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.sheet-template-list li:hover {
+  background: #eef2ff;
+}
+
+.sheet-template-list li.active {
+  background: #d7e3ff;
+  color: #1f4fbf;
+  font-weight: 600;
+}
+
+.sheet-workspace {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+}
+
+.sheet-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #888;
+  font-size: 14px;
+  text-align: center;
+  padding: 24px;
+}
+
+.luckysheet-container {
+  flex: 1;
+  min-height: 0;
+}
+
+.sheet-instance-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px;
+  border-top: 1px solid #e0e0e0;
+  background: #f7f9fc;
+}
+
+.sheet-instance-tabs button {
+  padding: 6px 14px;
+  border: 1px solid #cfd8ff;
+  border-radius: 4px 4px 0 0;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  color: #3f4a6b;
+}
+
+.sheet-instance-tabs button.active {
+  background: #3f51b5;
+  color: #fff;
+  border-color: #3f51b5;
+}
+
+.sheet-instance-tabs button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.sheet-tabs-empty {
+  font-size: 13px;
+  color: #6b7280;
+  padding: 6px 0;
+}
+
+body.sheet-mode .toolbar #toggleEditMode {
+  background-color: #3f51b5;
+  color: #fff;
+}
+
+body.dark.sheet-mode .sheet-template-column,
+body.dark.sheet-mode .sheet-workspace {
+  background: #1f1f1f;
+}
+
+body.dark.sheet-mode .sheet-template-header {
+  border-bottom: 1px solid #333;
+}
+
+body.dark.sheet-mode .sheet-template-list li {
+  border-bottom: 1px solid #333;
+}
+
+body.dark.sheet-mode .sheet-template-list li:hover {
+  background: #2a3350;
+}
+
+body.dark.sheet-mode .sheet-template-list li.active {
+  background: #3f51b5;
+  color: #fff;
+}
+
+body.dark.sheet-mode .sheet-instance-tabs {
+  background: #1c1c1c;
+  border-top: 1px solid #333;
+}
+
+body.dark.sheet-mode .sheet-instance-tabs button {
+  background: #2a2a2a;
+  border-color: #3f3f3f;
+  color: #d0d0d0;
+}
+
+body.dark.sheet-mode .sheet-instance-tabs button.active {
+  background: #3f51b5;
+  border-color: #3f51b5;
+}
+
+body.dark.sheet-mode .sheet-empty {
+  color: #bbb;
 }
 body.dark .search-bar {
   border-bottom: 1px solid #444;
