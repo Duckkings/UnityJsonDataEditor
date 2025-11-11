@@ -3610,14 +3610,10 @@ DataEntityRuntimeLoader \u4f7f\u7528\u8bf4\u660e
 - \u5982\u679c\u8bf7\u6c42\u7684\u53c2\u6570\u7c7b\u578b\u4e0d\u5339\u914d\u4f1a\u629b\u51fa InvalidCastException\u3002
     `;
     await writeTextFile(modelStructHandle, 'DataEntityRuntimeLoaderGuide.txt', guideContent);
-    if (editorHandle) {
-      const testerContent = `
+    const testerRuntimeContent = `
 using System;
 using System.Collections.Generic;
 using UnityEngine;
-#if UNITY_EDITOR
-using UnityEditor;
-#endif
 
 public class DataEntityRuntimeTester : MonoBehaviour
 {
@@ -3647,7 +3643,7 @@ public class DataEntityRuntimeTester : MonoBehaviour
     private string parameterName = string.Empty;
 
     [SerializeField]
-    private string parameterType = \"string\";
+    private string parameterType = "string";
 
     [SerializeField]
     private string getParameter = string.Empty;
@@ -3668,13 +3664,13 @@ public class DataEntityRuntimeTester : MonoBehaviour
                     ExecuteGetValue();
                     break;
                 default:
-                    Debug.LogError(\"Unsupported operation\");
+                    Debug.LogError("Unsupported operation");
                     break;
             }
         }
         catch (Exception ex)
         {
-            Debug.LogError($\"[DataEntityRuntimeTester] {ex.Message}\\n{ex}\");
+            Debug.LogError($"[DataEntityRuntimeTester] {ex.Message}/n{ex}");
         }
     }
 
@@ -3682,27 +3678,27 @@ public class DataEntityRuntimeTester : MonoBehaviour
     {
         var path = string.IsNullOrWhiteSpace(dataDirectory) ? null : dataDirectory;
         DataEntityRuntimeLoader.Initialize(path);
-        Debug.Log(\"[DataEntityRuntimeTester] Initialize completed\");
+        Debug.Log("[DataEntityRuntimeTester] Initialize completed");
     }
 
     private void ExecuteReload()
     {
         DataEntityRuntimeLoader.Reload();
-        Debug.Log(\"[DataEntityRuntimeTester] Reload completed\");
+        Debug.Log("[DataEntityRuntimeTester] Reload completed");
     }
 
     private void ExecuteGetValue()
     {
         if (string.IsNullOrWhiteSpace(templateName) || string.IsNullOrWhiteSpace(parameterName))
         {
-            Debug.LogError(\"输入不合法\");
+            Debug.LogError("输入不合法");
             return;
         }
 
         var type = ResolveParameterType(parameterType);
         if (type == null)
         {
-            Debug.LogError(\"输入不合法\");
+            Debug.LogError("输入不合法");
             return;
         }
 
@@ -3720,8 +3716,8 @@ public class DataEntityRuntimeTester : MonoBehaviour
         }
 
         var identifier = !string.IsNullOrWhiteSpace(instance) ? instance : index;
-        var valueText = value == null ? \"<null>\" : value.ToString();
-        Debug.Log($\"{templateName}/{identifier ?? \"(null)\"}/{parameterName}/{valueText}\");
+        var valueText = value == null ? "<null>" : value.ToString();
+        Debug.Log($"{templateName}/{identifier ?? "(null)"}/{parameterName}/{valueText}");
     }
 
     private static Type ResolveParameterType(string typeName)
@@ -3750,29 +3746,35 @@ public class DataEntityRuntimeTester : MonoBehaviour
         }
     }
 
-    private static readonly Dictionary<string, Type> TypeMappings = new Dictionary<string, Type>(StringComparer.
-OrdinalIgnoreCase)
+    private static readonly Dictionary<string, Type> TypeMappings = new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase)
     {
-        { \"bool\", typeof(bool) },
-        { \"byte\", typeof(byte) },
-        { \"sbyte\", typeof(sbyte) },
-        { \"char\", typeof(char) },
-        { \"decimal\", typeof(decimal) },
-        { \"double\", typeof(double) },
-        { \"float\", typeof(float) },
-        { \"int\", typeof(int) },
-        { \"uint\", typeof(uint) },
-        { \"long\", typeof(long) },
-        { \"ulong\", typeof(ulong) },
-        { \"short\", typeof(short) },
-        { \"ushort\", typeof(ushort) },
-        { \"string\", typeof(string) },
-        { \"datetime\", typeof(DateTime) },
-        { \"guid\", typeof(Guid) },
+        { "bool", typeof(bool) },
+        { "byte", typeof(byte) },
+        { "sbyte", typeof(sbyte) },
+        { "char", typeof(char) },
+        { "decimal", typeof(decimal) },
+        { "double", typeof(double) },
+        { "float", typeof(float) },
+        { "int", typeof(int) },
+        { "uint", typeof(uint) },
+        { "long", typeof(long) },
+        { "ulong", typeof(ulong) },
+        { "short", typeof(short) },
+        { "ushort", typeof(ushort) },
+        { "string", typeof(string) },
+        { "datetime", typeof(DateTime) },
+        { "guid", typeof(Guid) },
     };
 }
 
+    `;
+    await writeTextFile(csharpHandle, 'DataEntityRuntimeTester.cs', testerRuntimeContent);
+    if (editorHandle) {
+      const testerEditorContent = `
 #if UNITY_EDITOR
+using UnityEditor;
+using UnityEngine;
+
 [CustomEditor(typeof(DataEntityRuntimeTester))]
 public class DataEntityRuntimeTesterEditor : Editor
 {
@@ -3787,14 +3789,14 @@ public class DataEntityRuntimeTesterEditor : Editor
 
     private void OnEnable()
     {
-        operation = serializedObject.FindProperty(\"operation\");
-        dataDirectory = serializedObject.FindProperty(\"dataDirectory\");
-        templateName = serializedObject.FindProperty(\"templateName\");
-        instanceName = serializedObject.FindProperty(\"instanceName\");
-        indexKey = serializedObject.FindProperty(\"indexKey\");
-        parameterName = serializedObject.FindProperty(\"parameterName\");
-        parameterType = serializedObject.FindProperty(\"parameterType\");
-        getParameter = serializedObject.FindProperty(\"getParameter\");
+        operation = serializedObject.FindProperty("operation");
+        dataDirectory = serializedObject.FindProperty("dataDirectory");
+        templateName = serializedObject.FindProperty("templateName");
+        instanceName = serializedObject.FindProperty("instanceName");
+        indexKey = serializedObject.FindProperty("indexKey");
+        parameterName = serializedObject.FindProperty("parameterName");
+        parameterType = serializedObject.FindProperty("parameterType");
+        getParameter = serializedObject.FindProperty("getParameter");
     }
 
     public override void OnInspectorGUI()
@@ -3805,24 +3807,24 @@ public class DataEntityRuntimeTesterEditor : Editor
         switch (op)
         {
             case DataEntityRuntimeTester.TestOperation.Initialize:
-                EditorGUILayout.HelpBox(\"调用 DataEntityRuntimeLoader.Initialize\", MessageType.Info);
-                EditorGUILayout.PropertyField(dataDirectory, new GUIContent(\"数据目录(可空)\"));
+                EditorGUILayout.HelpBox("调用 DataEntityRuntimeLoader.Initialize", MessageType.Info);
+                EditorGUILayout.PropertyField(dataDirectory, new GUIContent("数据目录(可空)"));
                 break;
             case DataEntityRuntimeTester.TestOperation.Reload:
-                EditorGUILayout.HelpBox(\"调用 DataEntityRuntimeLoader.Reload\", MessageType.Info);
+                EditorGUILayout.HelpBox("调用 DataEntityRuntimeLoader.Reload", MessageType.Info);
                 break;
             case DataEntityRuntimeTester.TestOperation.GetValue:
-                EditorGUILayout.HelpBox(\"读取数据并在控制台输出\", MessageType.Info);
-                EditorGUILayout.PropertyField(templateName, new GUIContent(\"模板名\"));
-                EditorGUILayout.PropertyField(instanceName, new GUIContent(\"实例名\"));
-                EditorGUILayout.PropertyField(indexKey, new GUIContent(\"索引字符\"));
-                EditorGUILayout.PropertyField(parameterName, new GUIContent(\"参数名\"));
-                EditorGUILayout.PropertyField(parameterType, new GUIContent(\"参数类型\"));
-                EditorGUILayout.PropertyField(getParameter, new GUIContent(\"索引获取参数(getParameter)\"));
+                EditorGUILayout.HelpBox("读取数据并在控制台输出", MessageType.Info);
+                EditorGUILayout.PropertyField(templateName, new GUIContent("模板名"));
+                EditorGUILayout.PropertyField(instanceName, new GUIContent("实例名"));
+                EditorGUILayout.PropertyField(indexKey, new GUIContent("索引字符"));
+                EditorGUILayout.PropertyField(parameterName, new GUIContent("参数名"));
+                EditorGUILayout.PropertyField(parameterType, new GUIContent("参数类型"));
+                EditorGUILayout.PropertyField(getParameter, new GUIContent("索引获取参数(getParameter)"));
                 break;
         }
         serializedObject.ApplyModifiedProperties();
-        if (GUILayout.Button(\"执行\"))
+        if (GUILayout.Button("执行"))
         {
             foreach (UnityEngine.Object target in targets)
             {
@@ -3837,14 +3839,15 @@ public class DataEntityRuntimeTesterEditor : Editor
 #endif
 
       `;
-      await writeTextFile(editorHandle, 'DataEntityRuntimeTester.cs', testerContent);
+      await writeTextFile(editorHandle, 'DataEntityRuntimeTesterEditor.cs', testerEditorContent);
       const testerGuideContent = `
 DataEntityRuntimeTester 使用说明
 ================================
 
 挂载脚本
-1. 将 DataEntityRuntimeTester.cs 挂载到需要测试的 GameObject。
-2. 在 Inspector 中使用自定义面板选择要执行的操作。
+1. 在 csharpDate 目录中找到 DataEntityRuntimeTester.cs 并挂载到需要测试的 GameObject。
+2. 确保 Editor 文件夹中的 DataEntityRuntimeTesterEditor.cs 保持在 Editor 目录下，以启用自定义 Inspector 面板。
+3. 在 Inspector 中使用生成的自定义面板选择要执行的操作。
 
 操作说明
 - Initialize：可选填写数据目录，为空时使用 dataEntity 目录。
