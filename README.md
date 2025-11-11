@@ -15,17 +15,7 @@ UnityJsonDataEditor is a browser-based content authoring tool designed for manag
 - **Productivity helpers** – keyboard shortcuts, dark/light theme toggle, adjustable parameter panel width, row height control, and contextual help dialog.
 
 ## Frontend Structure
-All runtime logic is now organised into dedicated script files under `js/`:
-
-| File | Responsibility |
-| --- | --- |
-| `js/state.js` | Application state initialisation, DOM lookups, reusable utility helpers, validation helpers, log rendering, and generic UI helpers. |
-| `js/data-management.js` | Core data manipulation: template/instance/parameter operations, clipboard handling, selection management, index maintenance, and permission helpers such as `verifyPermission()` and `chooseDirectory()`. |
-| `js/file-system.js` | Runtime artefact generation, file IO helpers, manifest maintenance, and template loading routines driven by the File System Access API. |
-| `js/export-import.js` | CSV export/import flows, enum regeneration, manifest reconciliation, and save orchestration (including bulk C# regeneration decisions). |
-| `js/events.js` | Event wiring for toolbar buttons, keyboard shortcuts, drag interactions, theme toggles, Luckysheet mode switching, auto-restoration of the previous working directory, and bootstrap logic. |
-
-Each file continues a single shared IIFE so that global state remains encapsulated while still giving a clear separation by responsibility.
+All runtime logic lives in `script.js`, following the original immediately invoked function expression (IIFE) that scopes shared state and helper utilities. Responsibilities remain grouped by region within the file (state initialisation, data management, file access, CSV workflows, and UI events) with descriptive comment banners to simplify navigation.
 
 ## Runtime Workflow
 1. On load, the app restores dark mode, registers event handlers, and attempts to reopen the previously authorised working directory if stored in IndexedDB.
@@ -48,8 +38,8 @@ Each file continues a single shared IIFE so that global state remains encapsulat
 - Permission recovery uses IndexedDB to cache directory handles; failure scenarios surface user-friendly messages and console traces for diagnosis.
 
 ## Development Tips
-- Scripts are loaded in dependency order via `defer`, mirroring the original monolithic flow while enabling modular maintenance.
-- When editing or extending functionality, place shared helpers in `js/state.js`, data/domain logic in `js/data-management.js` or `js/file-system.js`, and surface UI hooks in `js/events.js`.
+- `script.js` is referenced with `defer` so it executes after Luckysheet assets load while still running before DOMContentLoaded handlers fire.
+- When editing or extending functionality, follow the existing section headers inside `script.js`: shared utilities live near the top, data/domain logic in the middle, file access helpers around the save/load region, and UI wiring near the bottom.
 - Luckysheet integration expects the CDN resources referenced in `index.html`; update the versions in one place if necessary.
 
 ---
@@ -71,17 +61,7 @@ UnityJsonDataEditor 是一款基于浏览器的数据编辑工具，用于管理
 - **效率工具**：键盘快捷键、深浅色主题切换、参数栏宽度和行高调节、帮助面板等。
 
 ## 前端结构
-所有运行时代码拆分到 `js/` 目录下的多个脚本：
-
-| 文件 | 职责说明 |
-| --- | --- |
-| `js/state.js` | 初始化应用状态、DOM 查询、通用工具方法、校验逻辑、日志渲染以及通用 UI 帮助函数。 |
-| `js/data-management.js` | 模板/实例/参数的核心增删改查、剪贴板支持、选择集管理、索引维护以及 `verifyPermission()`、`chooseDirectory()` 等权限相关工具。 |
-| `js/file-system.js` | 运行时代码生成、文件读写封装、清单维护，以及基于 File System Access API 的模板加载流程。 |
-| `js/export-import.js` | CSV 导出导入、枚举再生成、保存流程以及批量 C# 覆盖决策。 |
-| `js/events.js` | 工具栏按钮、快捷键、拖拽交互、主题切换、Luckysheet 模式切换、工作目录自动恢复等事件绑定与启动逻辑。 |
-
-脚本依次延续同一个 IIFE，从而保持全局状态封装，同时在物理文件层面实现清晰的职责划分，便于后续维护与扩展。
+全部运行时代码集中在 `script.js` 中，通过一个 IIFE 封装共享状态和工具方法。文件内部按区域划分功能块（状态初始化、数据管理、文件系统、CSV 流程和界面事件），并配有注释标题以方便定位和维护。
 
 ## 运行流程
 1. 页面加载后默认启用夜间模式、注册所有事件处理器，并尝试从 IndexedDB 恢复上一次授权的工作目录。
@@ -104,6 +84,6 @@ UnityJsonDataEditor 是一款基于浏览器的数据编辑工具，用于管理
 - 通过 IndexedDB 缓存目录句柄并在失败时显示友好的提示，同时在控制台输出详细错误方便排查。
 
 ## 开发建议
-- 依赖顺序通过 `defer` 标签保证，延续原有执行流程，同时实现模块化代码组织。
-- 公共工具建议放在 `js/state.js`，领域逻辑放在 `js/data-management.js` 或 `js/file-system.js`，界面事件在 `js/events.js` 中统一绑定。
+- 通过 `defer` 引入 `script.js`，先加载 Luckysheet 依赖，再在 DOMContentLoaded 之前执行核心逻辑。
+- 修改或扩展功能时，可依照 `script.js` 内的注释分区：前半部分是通用工具与校验，中段是数据和文件逻辑，保存/加载附近是文件系统工具，末尾集中处理界面事件与绑定。
 - Luckysheet 依赖 `index.html` 中的 CDN 资源，如需升级版本，可在该处集中修改。
