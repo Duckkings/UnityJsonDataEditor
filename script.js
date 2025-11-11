@@ -39,6 +39,8 @@
   let sheetRenderedInstanceIndex = -1;
   let sheetRenderedInstanceCount = 0;
   let sheetRenderedParameterSignature = '';
+  let sheetRenderedTemplatesFingerprint = '';
+  const sheetRenderedSheetIds = new Map();
   let sheetModeDirty = false;
   let luckysheetInitialized = false;
   const sheetTemplateValidation = new Map();
@@ -142,7 +144,12 @@
     );
   }
 
-  function buildLuckysheetSheetFromRows(rows, sheetName) {
+  function buildLuckysheetSheetFromRows(rows, sheetName, options = {}) {
+    const {
+      index: sheetIndex = 0,
+      order = 0,
+      status = 0,
+    } = options || {};
     const celldata = [];
     const header = rows[0] || [];
     const columnlen = {};
@@ -167,14 +174,53 @@
     });
     return {
       name: sheetName || '实例',
-      order: 0,
-      index: 0,
-      status: 1,
+      order,
+      index: sheetIndex,
+      status,
       celldata,
       row: Math.max(rows.length, 20),
       column: Math.max(header.length, 1),
       config: { columnlen },
     };
+  }
+
+  function activateLuckysheetSheet(sheetId) {
+    if (!sheetId || !window.luckysheet) return false;
+    const api = window.luckysheet;
+    const directMethods = ['setSheetActive', 'setSheetActivate', 'changeSheet'];
+    for (let i = 0; i < directMethods.length; i += 1) {
+      const method = api[directMethods[i]];
+      if (typeof method === 'function') {
+        try {
+          method.call(api, sheetId);
+          return true;
+        } catch (err) {
+          console.warn(`Failed to call luckysheet.${directMethods[i]}:`, err);
+        }
+      }
+    }
+    const workbook = typeof api.getluckysheetfile === 'function' ? api.getluckysheetfile() : null;
+    if (Array.isArray(workbook)) {
+      const idx = workbook.findIndex((sheet) => {
+        if (!sheet) return false;
+        return sheet.index === sheetId || sheet.id === sheetId || sheet.sheetId === sheetId;
+      });
+      if (idx >= 0) {
+        const indexMethods = ['setSheetActiveByIndex', 'setSheetActivateByIndex', 'changeSheetByIndex'];
+        for (let i = 0; i < indexMethods.length; i += 1) {
+          const fn = api[indexMethods[i]];
+          if (typeof fn === 'function') {
+            try {
+              fn.call(api, idx);
+              return true;
+            } catch (err) {
+              console.warn(`Failed to call luckysheet.${indexMethods[i]}:`, err);
+            }
+          }
+        }
+      }
+    }
+    return false;
   }
 
   function getLuckysheetCell(sheet, row, column) {
@@ -345,6 +391,22 @@
     return JSON.stringify({ params, indexField: tpl.indexField || 'id' });
   }
 
+  function computeSheetTemplatesFingerprint() {
+    const items = templates.map((tpl, idx) => {
+      if (!tpl) return null;
+      ensureTemplateUid(tpl);
+      const instances = Array.isArray(tpl.instances) ? tpl.instances : [];
+      return {
+        uid: tpl.__uid,
+        index: idx,
+        count: instances.length,
+        signature: getTemplateParameterSignature(tpl),
+        name: tpl.name || '',
+      };
+    });
+    return JSON.stringify(items);
+  }
+
   function commitActiveSheetEdits() {
     if (!isSheetModeActive()) {
       sheetModeDirty = false;
@@ -363,12 +425,20 @@
       sheetModeDirty = false;
       return { ok: true };
     }
+    const sheetId = sheetRenderedSheetIds.get(sheetRenderedTemplateIndex) || tpl.__uid;
+    if (!sheetId) {
+      sheetModeDirty = false;
+      return { ok: true };
+    }
     const workbook = window.luckysheet.getluckysheetfile();
     if (!Array.isArray(workbook) || workbook.length === 0) {
       sheetModeDirty = false;
       return { ok: true };
     }
-    const sheet = workbook[0];
+    const sheet = workbook.find((item) => {
+      if (!item) return false;
+      return item.index === sheetId || item.id === sheetId || item.sheetId === sheetId;
+    }) || workbook.find((item) => Number(item?.status) === 1) || workbook[0];
     const mergedRows = collectLuckysheetRows(sheet);
     const currentRows = buildCsvRowsForTemplate(tpl, tpl.instances || []);
     if (!sheetModeDirty && areSheetRowsEqual(mergedRows, currentRows)) {
@@ -411,6 +481,7 @@
       refreshTemplates();
       refreshInstances();
       refreshParams();
+      sheetRenderedTemplatesFingerprint = computeSheetTemplatesFingerprint();
       return { ok: true };
     } catch (err) {
       console.error(err);
@@ -496,15 +567,10 @@
       return;
     }
     if (sheetActiveTemplateIndex < 0 || sheetActiveTemplateIndex >= templates.length) {
-      if (luckysheetInitialized && window.luckysheet?.destroy) {
-        window.luckysheet.destroy();
-      }
-      luckysheetInitialized = false;
       sheetRenderedTemplateIndex = -1;
       sheetRenderedInstanceIndex = -1;
       sheetRenderedInstanceCount = 0;
       sheetRenderedParameterSignature = '';
-      sheetModeDirty = false;
       if (sheetEmptyStateEl) {
         sheetEmptyStateEl.style.display = 'flex';
         const msg = sheetEmptyStateEl.querySelector('p');
@@ -517,16 +583,108 @@
     }
     const tpl = templates[sheetActiveTemplateIndex];
     const instList = Array.isArray(tpl.instances) ? tpl.instances : [];
-    if (instList.length === 0) {
-      if (luckysheetInitialized && window.luckysheet?.destroy) {
-        window.luckysheet.destroy();
+    const fingerprint = computeSheetTemplatesFingerprint();
+    const needsRebuild = !luckysheetInitialized || sheetRenderedTemplatesFingerprint !== fingerprint;
+    if (needsRebuild) {
+      const workbookSheets = [];
+      sheetRenderedSheetIds.clear();
+      let activeSheetPrepared = false;
+      templates.forEach((template, idx) => {
+        if (!template) return;
+        ensureTemplateUid(template);
+        const instances = Array.isArray(template.instances) ? template.instances : [];
+        if (instances.length === 0) return;
+        const sheetId = template.__uid;
+        const rows = buildCsvRowsForTemplate(template, instances);
+        const sheetName = template?.name || `模板${idx + 1}`;
+        const status = idx === sheetActiveTemplateIndex && instList.length > 0 ? 1 : 0;
+        if (status === 1) {
+          activeSheetPrepared = true;
+        }
+        const sheetData = buildLuckysheetSheetFromRows(rows, sheetName, {
+          index: sheetId,
+          order: workbookSheets.length,
+          status,
+        });
+        workbookSheets.push(sheetData);
+        sheetRenderedSheetIds.set(idx, sheetId);
+      });
+      if (workbookSheets.length === 0) {
+        if (window.luckysheet?.destroy && luckysheetInitialized) {
+          window.luckysheet.destroy();
+        }
+        luckysheetInitialized = false;
+        sheetModeDirty = false;
+        sheetRenderedTemplatesFingerprint = fingerprint;
+      } else {
+        if (!activeSheetPrepared) {
+          workbookSheets[0].status = 1;
+        }
+        if (window.luckysheet?.destroy && luckysheetInitialized) {
+          window.luckysheet.destroy();
+        }
+        const hook = {
+          cellUpdateBefore(row, column) {
+            if (column === 0) {
+              showMessage('模板列由系统维护，无法修改', 'warn');
+              return false;
+            }
+            if (column === 1) {
+              showMessage('ID 列由系统维护，无法修改', 'warn');
+              return false;
+            }
+            if (column === 2) {
+              showMessage('索引列由系统维护，无法修改', 'warn');
+              return false;
+            }
+            if ((row === 0 || row === 1) && column === 3) {
+              showMessage('保留字段不可编辑', 'warn');
+              return false;
+            }
+            return true;
+          },
+          cellUpdate() {
+            sheetModeDirty = true;
+          },
+        };
+        window.luckysheet?.create({
+          container: 'luckysheet',
+          data: workbookSheets,
+          showtoolbar: false,
+          showsheetbar: false,
+          showinfobar: false,
+          lang: 'zh',
+          hook,
+        });
+        luckysheetInitialized = true;
+        sheetModeDirty = false;
+        sheetRenderedTemplatesFingerprint = fingerprint;
       }
-      luckysheetInitialized = false;
+    }
+    if (!luckysheetInitialized || sheetRenderedSheetIds.size === 0) {
+      sheetRenderedTemplateIndex = -1;
+      sheetRenderedInstanceIndex = -1;
+      sheetRenderedInstanceCount = 0;
+      sheetRenderedParameterSignature = '';
+      if (sheetEmptyStateEl) {
+        sheetEmptyStateEl.style.display = 'flex';
+        const msg = sheetEmptyStateEl.querySelector('p');
+        if (msg) {
+          if (templates.length === 0) {
+            msg.textContent = '暂无模板，无法进入表格编辑模式。';
+          } else {
+            msg.textContent = '请选择一个包含实例的模板以进入表格编辑模式。';
+          }
+        }
+      }
+      luckysheetContainer.style.display = 'none';
+      return;
+    }
+    if (instList.length === 0 || !sheetRenderedSheetIds.has(sheetActiveTemplateIndex)) {
       sheetRenderedTemplateIndex = sheetActiveTemplateIndex;
       sheetRenderedInstanceIndex = -1;
       sheetRenderedInstanceCount = 0;
       sheetRenderedParameterSignature = '';
-      sheetModeDirty = false;
       if (sheetEmptyStateEl) {
         sheetEmptyStateEl.style.display = 'flex';
         const msg = sheetEmptyStateEl.querySelector('p');
@@ -537,50 +695,23 @@
       luckysheetContainer.style.display = 'none';
       return;
     }
-    const rows = buildCsvRowsForTemplate(tpl, instList);
-    const sheet = buildLuckysheetSheetFromRows(rows, tpl?.name || `模板${sheetActiveTemplateIndex + 1}`);
-    if (window.luckysheet?.destroy && luckysheetInitialized) {
-      window.luckysheet.destroy();
+    const activeSheetId = sheetRenderedSheetIds.get(sheetActiveTemplateIndex);
+    if (!needsRebuild) {
+      const activated = activateLuckysheetSheet(activeSheetId);
+      if (!activated) {
+        if (window.luckysheet?.destroy && luckysheetInitialized) {
+          window.luckysheet.destroy();
+        }
+        luckysheetInitialized = false;
+        sheetRenderedTemplatesFingerprint = '';
+        renderLuckysheetForActiveInstance();
+        return;
+      }
     }
-    const hook = {
-      cellUpdateBefore(row, column) {
-        if (column === 0) {
-          showMessage('模板列由系统维护，无法修改', 'warn');
-          return false;
-        }
-        if (column === 1) {
-          showMessage('ID 列由系统维护，无法修改', 'warn');
-          return false;
-        }
-        if (column === 2) {
-          showMessage('索引列由系统维护，无法修改', 'warn');
-          return false;
-        }
-        if ((row === 0 || row === 1) && column === 3) {
-          showMessage('保留字段不可编辑', 'warn');
-          return false;
-        }
-        return true;
-      },
-      cellUpdate() {
-        sheetModeDirty = true;
-      },
-    };
-    window.luckysheet?.create({
-      container: 'luckysheet',
-      data: [sheet],
-      showtoolbar: false,
-      showsheetbar: false,
-      showinfobar: false,
-      lang: 'zh',
-      hook,
-    });
-    luckysheetInitialized = true;
     sheetRenderedTemplateIndex = sheetActiveTemplateIndex;
     sheetRenderedInstanceIndex = -1;
     sheetRenderedInstanceCount = instList.length;
     sheetRenderedParameterSignature = getTemplateParameterSignature(tpl);
-    sheetModeDirty = false;
     luckysheetContainer.style.display = 'block';
     if (sheetEmptyStateEl) sheetEmptyStateEl.style.display = 'none';
   }
@@ -604,6 +735,8 @@
     sheetRenderedInstanceIndex = -1;
     sheetRenderedInstanceCount = 0;
     sheetRenderedParameterSignature = '';
+    sheetRenderedTemplatesFingerprint = '';
+    sheetRenderedSheetIds.clear();
     if (luckysheetContainer) luckysheetContainer.style.display = 'none';
     if (sheetEmptyStateEl) sheetEmptyStateEl.style.display = 'none';
   }
