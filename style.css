@@ -144,7 +144,7 @@ body.table-mode #columnModeContainer {
 }
 
 body.table-mode #tableModeContainer {
-  display: block !important;
+  display: flex !important;
 }
 
 /* 使用 flex 比例控制三栏宽度 */

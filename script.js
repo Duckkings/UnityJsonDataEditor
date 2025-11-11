@@ -1508,6 +1508,12 @@
     });
   }
 
+  window.addEventListener('resize', () => {
+    if (currentEditMode === MODE_TABLE) {
+      scheduleLuckysheetResize();
+    }
+  });
+
   // 参数栏宽度调节
   paramWidthSlider.addEventListener("input", () => {
     const val = parseFloat(paramWidthSlider.value);
@@ -1904,6 +1910,41 @@
     return true;
   }
 
+  function getLuckysheetViewportSize() {
+    if (!luckysheetWrapper) {
+      return {
+        width: Math.max(window.innerWidth || 0, 480),
+        height: Math.max(window.innerHeight || 0, 320),
+      };
+    }
+    const rect = luckysheetWrapper.getBoundingClientRect();
+    const width = Math.max(Math.floor(rect.width || luckysheetWrapper.clientWidth || 0), 480);
+    const height = Math.max(Math.floor(rect.height || luckysheetWrapper.clientHeight || 0), 320);
+    return { width, height };
+  }
+
+  function scheduleLuckysheetResize() {
+    if (!ensureLuckysheetReady()) return;
+    requestAnimationFrame(() => {
+      if (currentEditMode !== MODE_TABLE) return;
+      const viewport = getLuckysheetViewportSize();
+      if (luckysheetEl) {
+        luckysheetEl.style.width = `${viewport.width}px`;
+        luckysheetEl.style.height = `${viewport.height}px`;
+      }
+      const sheetRoot = luckysheetEl ? luckysheetEl.querySelector('.luckysheet') : null;
+      if (sheetRoot) {
+        sheetRoot.style.width = `${viewport.width}px`;
+        sheetRoot.style.height = `${viewport.height}px`;
+      }
+      try {
+        window.luckysheet.resize();
+      } catch (err) {
+        console.warn('Luckysheet resize failed', err);
+      }
+    });
+  }
+
   function renderLuckysheetForTemplate(tpl) {
     if (!luckysheetWrapper || !luckysheetEl) return;
     if (!tpl) {
@@ -1929,11 +1970,21 @@
     const dataset = buildLuckysheetSheetData(displayRows);
     destroyLuckysheet();
     hideLuckysheetPlaceholder();
+    const viewport = getLuckysheetViewportSize();
+    if (luckysheetEl) {
+      luckysheetEl.style.width = `${viewport.width}px`;
+      luckysheetEl.style.height = `${viewport.height}px`;
+    }
     try {
       window.luckysheet.create({
         container: 'luckysheet',
         lang: 'zh',
         showinfobar: false,
+        fullscreen: false,
+        allowEdit: true,
+        allowCopy: true,
+        width: viewport.width,
+        height: viewport.height,
         data: [
           {
             name: tpl.name || 'Sheet1',
@@ -1949,6 +2000,7 @@
         },
       });
       luckysheetLoadedTemplateUid = tpl.__uid || null;
+      scheduleLuckysheetResize();
     } catch (err) {
       console.error('初始化 Luckysheet 失败', err);
       showLuckysheetPlaceholder('表格加载失败');
