@@ -15,6 +15,9 @@
   const pendingCsRemovals = new Set();
   const IGNORED_FILE_SUFFIXES = Object.freeze([".meta"]);
   const IGNORED_FILE_NAMES = new Set([".ds_store", "thumbs.db"]);
+  const DB_NAME = 'json-editor';
+  const DB_STORE = 'handles';
+  const ENUM_CACHE_PREFIX = 'enumCache:';
   let directoryHandle = null;
   let csharpHandle = null;
   let dataEntityHandle = null;
@@ -2681,9 +2684,6 @@
   }
 
   // 持久化：使用 IndexedDB 保存最近一次的工作目录句柄
-  const DB_NAME = 'json-editor';
-  const DB_STORE = 'handles';
-  const ENUM_CACHE_PREFIX = 'enumCache:';
   function openDB() {
     return new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, 1);
