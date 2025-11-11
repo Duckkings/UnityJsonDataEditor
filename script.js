@@ -88,6 +88,11 @@
 
   function updateParamNameInputValidity() {
     if (!paramNameInput) return;
+    const tpl = templates[currentTemplateIndex];
+    if (tpl && isEnumTemplate(tpl)) {
+      setInvalidNameVisual(paramNameInput, false);
+      return;
+    }
     setInvalidNameVisual(paramNameInput, isPureNumericName(paramNameInput.value));
   }
 
@@ -4099,10 +4104,16 @@ DataEntityRuntimeTester 使用说明
   }
 
   function sanitizeCSharpMemberName(name, fallback) {
-    const base = (name || '').split(/[^A-Za-z0-9]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join('');
-    let result = base || fallback || 'Member';
-    result = result.replace(/[^A-Za-z0-9_]/g, '_');
-    if (/^[0-9]/.test(result)) {
+    let result = (name == null ? '' : String(name)).trim();
+    if (!result) {
+      result = fallback || 'Member';
+    }
+    result = result.replace(/[\s]+/g, '_');
+    result = result.replace(/[^\p{L}\p{Nd}_]/gu, '_');
+    if (!result) {
+      result = fallback || 'Member';
+    }
+    if (/^[\p{Nd}]/u.test(result)) {
       result = `_${result}`;
     }
     return result || 'Member';
@@ -4594,20 +4605,27 @@ DataEntityRuntimeTester 使用说明
         item.classList.add('param-item');
         const label = document.createElement('label');
         label.textContent = key;
-        setInvalidNameVisual(label, isPureNumericName(key));
         item.appendChild(label);
         if (selectedParams.has(idx)) item.classList.add('active');
         const inputEl = document.createElement('input');
         inputEl.type = 'text';
         inputEl.style.flex = '1';
         inputEl.value = inst.payload && inst.payload[key] != null ? String(inst.payload[key]) : '';
+        const updateEnumValueValidity = () => {
+          setInvalidNameVisual(inputEl, isPureNumericName(inputEl.value));
+        };
+        updateEnumValueValidity();
         // 防止点击输入框触发父级选择逻辑，打断编辑
         inputEl.addEventListener('mousedown', (e) => e.stopPropagation());
         inputEl.addEventListener('click', (e) => e.stopPropagation());
         inputEl.addEventListener('keydown', (e) => e.stopPropagation());
+        inputEl.addEventListener('input', () => {
+          updateEnumValueValidity();
+        });
         inputEl.addEventListener('change', () => {
           if (!inst.payload) inst.payload = {};
           inst.payload[key] = inputEl.value;
+          updateEnumValueValidity();
         });
         item.appendChild(inputEl);
         const del = document.createElement('button');
