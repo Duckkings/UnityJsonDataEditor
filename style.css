@@ -275,6 +275,16 @@ body.sheet-mode .toolbar #rowHeightLabel {
   font-size: 14px;
 }
 
+.sheet-template-list li.invalid {
+  background: #ffecec;
+  color: #c53030;
+}
+
+.sheet-template-list li.invalid.active {
+  background: #fdd5d5;
+  color: #a62020;
+}
+
 .sheet-template-list li:hover {
   background: #eef2ff;
 }
@@ -360,6 +370,16 @@ body.dark.sheet-mode .sheet-template-header {
 
 body.dark.sheet-mode .sheet-template-list li {
   border-bottom: 1px solid #333;
+}
+
+body.dark.sheet-mode .sheet-template-list li.invalid {
+  background: rgba(179, 45, 45, 0.3);
+  color: #ff9393;
+}
+
+body.dark.sheet-mode .sheet-template-list li.invalid.active {
+  background: rgba(179, 45, 45, 0.5);
+  color: #ffb3b3;
 }
 
 body.dark.sheet-mode .sheet-template-list li:hover {
