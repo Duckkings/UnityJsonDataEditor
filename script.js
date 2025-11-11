@@ -4120,11 +4120,21 @@ DataEntityRuntimeTester 使用说明
       showMessage("该参数已存在");
       return;
     }
-    const param = { name, type, index: isEnumParamType ? null : indexObj };
+    const indexBinding = !isEnumParamType && indexObj
+      ? {
+          template: indexObj.template || '',
+          param: indexObj.param || '',
+          indexField: indexObj.indexField || '',
+        }
+      : null;
+    const param = { name, type };
+    if (indexBinding) {
+      param.parameterIndexes = indexBinding;
+    }
     tpl.parameters.push(param);
     tpl.instances.forEach((inst) => {
-      if (indexObj) {
-        inst.payload[name] = { template: indexObj.template, by: indexObj.param, value: '' };
+      if (indexBinding) {
+        inst.payload[name] = { template: indexBinding.template, by: indexBinding.param, value: '' };
       } else {
         inst.payload[name] = getDefaultValueForType(type);
       }
@@ -5825,6 +5835,7 @@ DataEntityRuntimeTester 使用说明
 
       for (const tpl of templates) {
         ensureTemplateUid(tpl);
+        normalizeTemplateParameterIndexes(tpl);
         if (isEnumTemplate(tpl)) {
           await saveEnumTemplateCache(tpl);
           enumTemplateSaved = true;
