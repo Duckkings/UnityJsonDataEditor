@@ -3670,7 +3670,7 @@ public class DataEntityRuntimeTester : MonoBehaviour
         }
         catch (Exception ex)
         {
-            Debug.LogError($"[DataEntityRuntimeTester] {ex.Message}\n{ex}");
+            Debug.LogError($"[DataEntityRuntimeTester] {ex.Message}/n{ex}");
         }
     }
 
