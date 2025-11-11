@@ -170,6 +170,14 @@
     indices: new Set(),
   };
 
+  let tableModeActive = false;
+  let tableColumnIdCounter = 0;
+  let tableModeState = {
+    templateIndex: -1,
+    columns: [],
+    rows: [],
+  };
+
   function addLogEntry(level, message, extra) {
     const entry = {
       id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
@@ -507,6 +515,462 @@
     }
     if (value == null) return '';
     return String(value);
+  }
+
+  function generateTableColumnKey() {
+    tableColumnIdCounter += 1;
+    return `col_${tableColumnIdCounter}`;
+  }
+
+  function cloneTableModeState() {
+    return {
+      templateIndex: tableModeState.templateIndex,
+      columns: tableModeState.columns.map((col) => ({ ...col })),
+      rows: tableModeState.rows.map((row) => row.slice()),
+    };
+  }
+
+  function serializeParameterTypeForTable(param) {
+    if (!param) return 'string';
+    if (param.parameterIndexes && param.parameterIndexes.template && param.parameterIndexes.param) {
+      const idxField = param.parameterIndexes.indexField ? `/${param.parameterIndexes.indexField}` : '';
+      return `${param.type}/${param.parameterIndexes.template}/${param.parameterIndexes.param}${idxField}`;
+    }
+    return param.type || 'string';
+  }
+
+  function buildTableStateForTemplate(tpl, templateIndex) {
+    if (!tpl) {
+      return { templateIndex: templateIndex ?? -1, columns: [], rows: [] };
+    }
+    const indexMeta = resolveIndexFieldMeta(tpl);
+    const columns = [
+      { key: 'template', name: 'template', type: 'string', allowNameEdit: false, allowTypeEdit: false, allowDataEdit: false, reserved: true },
+      { key: 'id', name: 'id', type: 'int', allowNameEdit: false, allowTypeEdit: false, allowDataEdit: false, reserved: true },
+      { key: 'index', name: 'index', type: `${indexMeta.field}/${indexMeta.type}`, allowNameEdit: false, allowTypeEdit: false, allowDataEdit: false, reserved: true },
+      { key: 'name', name: 'name', type: 'string', allowNameEdit: false, allowTypeEdit: false, allowDataEdit: true, reserved: true },
+    ];
+    (tpl.parameters || []).forEach((param, idx) => {
+      if (!param) return;
+      columns.push({
+        key: param.__tableKey || `param_${idx}_${param.name || generateTableColumnKey()}`,
+        name: param.name || `param_${idx}`,
+        type: serializeParameterTypeForTable(param),
+        allowNameEdit: true,
+        allowTypeEdit: true,
+        allowDataEdit: true,
+        reserved: false,
+      });
+    });
+    const rows = [];
+    const instList = Array.isArray(tpl.instances) ? tpl.instances.slice() : [];
+    instList.sort((a, b) => {
+      const idA = getNumericInstanceId(a);
+      const idB = getNumericInstanceId(b);
+      const bothNumeric = Number.isFinite(idA) && Number.isFinite(idB);
+      if (bothNumeric) return idA - idB;
+      if (Number.isFinite(idA)) return -1;
+      if (Number.isFinite(idB)) return 1;
+      const strA = String(a && a.id != null ? a.id : '');
+      const strB = String(b && b.id != null ? b.id : '');
+      return strA.localeCompare(strB, 'zh-Hans-CN');
+    });
+    instList.forEach((inst) => {
+      const row = [];
+      row.push(tpl.name || '');
+      row.push(inst && inst.id != null ? String(inst.id) : '');
+      row.push(
+        formatIndexCell(
+          indexMeta.field,
+          indexMeta.type,
+          computeExpectedIndexValue(tpl, inst, indexMeta.field)
+        )
+      );
+      row.push(inst && inst.name != null ? String(inst.name) : '');
+      (tpl.parameters || []).forEach((param) => {
+        if (!param) return;
+        const payload = inst && inst.payload ? inst.payload : {};
+        row.push(serializeValueForCsv(param, payload[param.name]));
+      });
+      rows.push(row);
+    });
+    return { templateIndex: templateIndex ?? -1, columns, rows };
+  }
+
+  function renderTableModeTemplateList() {
+    if (!tableModeTemplateList || !tableModeActive) return;
+    tableModeTemplateList.innerHTML = '';
+    if (!templates.length) {
+      const li = document.createElement('li');
+      li.textContent = '暂无模板';
+      li.className = 'table-mode-empty';
+      tableModeTemplateList.appendChild(li);
+      return;
+    }
+    templates.forEach((tpl, idx) => {
+      const li = document.createElement('li');
+      li.textContent = tpl.name;
+      setInvalidNameVisual(li, isPureNumericName(tpl.name));
+      if (idx === tableModeState.templateIndex) {
+        li.classList.add('active');
+      }
+      li.addEventListener('click', () => {
+        switchTableModeTemplate(idx);
+      });
+      tableModeTemplateList.appendChild(li);
+    });
+  }
+
+  function clearTableValidationMarkers() {
+    if (!tableModeContainer) return;
+    tableModeContainer.querySelectorAll('.table-error').forEach((el) => el.classList.remove('table-error'));
+  }
+
+  function markTableColumnError(columnIndex) {
+    if (columnIndex == null || columnIndex < 0) return;
+    const headerCell = tableModeHeaderRow && tableModeHeaderRow.children[columnIndex];
+    const typeCell = tableModeTypeRow && tableModeTypeRow.children[columnIndex];
+    if (headerCell) headerCell.classList.add('table-error');
+    if (typeCell) typeCell.classList.add('table-error');
+    if (tableModeBody) {
+      Array.from(tableModeBody.rows).forEach((row) => {
+        const cell = row.children[columnIndex];
+        if (cell) cell.classList.add('table-error');
+      });
+    }
+    if (headerCell) {
+      headerCell.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+  }
+
+  function renderTableFromState(state) {
+    if (!tableModeContainer) return;
+    tableModeState = {
+      templateIndex: state.templateIndex,
+      columns: state.columns.map((col) => ({ ...col })),
+      rows: state.rows.map((row) => row.slice()),
+    };
+    clearTableValidationMarkers();
+    if (tableModeHeaderRow) tableModeHeaderRow.innerHTML = '';
+    if (tableModeTypeRow) tableModeTypeRow.innerHTML = '';
+    if (tableModeBody) tableModeBody.innerHTML = '';
+    if (!tableModeActive) return;
+    if (!tableModeHeaderRow || !tableModeTypeRow || !tableModeBody) return;
+    if (!tableModeState.columns.length) {
+      if (tableModeGrid) {
+        tableModeGrid.innerHTML = '';
+        const empty = document.createElement('div');
+        empty.className = 'table-mode-empty';
+        empty.textContent = '没有可显示的列';
+        tableModeGrid.appendChild(empty);
+      }
+      return;
+    }
+    if (tableModeGrid) {
+      tableModeGrid.innerHTML = '';
+      const table = document.createElement('table');
+      table.id = 'tableModeTable';
+      const thead = document.createElement('thead');
+      thead.appendChild(tableModeHeaderRow);
+      thead.appendChild(tableModeTypeRow);
+      table.appendChild(thead);
+      table.appendChild(tableModeBody);
+      tableModeGrid.appendChild(table);
+    }
+    tableModeState.columns.forEach((col, colIndex) => {
+      const header = document.createElement('th');
+      header.dataset.columnKey = col.key;
+      header.dataset.columnIndex = String(colIndex);
+      header.dataset.reserved = col.reserved ? '1' : '0';
+      if (col.allowNameEdit) {
+        const input = document.createElement('input');
+        input.value = col.name;
+        input.placeholder = '参数名';
+        input.addEventListener('input', () => {
+          tableModeState.columns[colIndex].name = input.value;
+          if (isPureNumericName(input.value)) {
+            input.classList.add('invalid-name');
+          } else {
+            input.classList.remove('invalid-name');
+          }
+        });
+        input.addEventListener('keydown', (evt) => evt.stopPropagation());
+        if (isPureNumericName(col.name)) {
+          input.classList.add('invalid-name');
+        }
+        header.appendChild(input);
+      } else {
+        header.textContent = col.name;
+      }
+      tableModeHeaderRow.appendChild(header);
+
+      const typeCell = document.createElement('th');
+      if (col.allowTypeEdit) {
+        const input = document.createElement('input');
+        input.value = col.type || '';
+        input.placeholder = '类型';
+        input.addEventListener('input', () => {
+          tableModeState.columns[colIndex].type = input.value;
+        });
+        input.addEventListener('keydown', (evt) => evt.stopPropagation());
+        typeCell.appendChild(input);
+      } else {
+        typeCell.textContent = col.type || '';
+      }
+      tableModeTypeRow.appendChild(typeCell);
+    });
+    if (!tableModeState.rows.length) {
+      const emptyRow = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = tableModeState.columns.length;
+      cell.className = 'table-mode-empty';
+      cell.textContent = '该模板暂无实例数据';
+      emptyRow.appendChild(cell);
+      tableModeBody.appendChild(emptyRow);
+      return;
+    }
+    tableModeState.rows.forEach((rowValues, rowIndex) => {
+      const rowEl = document.createElement('tr');
+      tableModeState.columns.forEach((col, colIndex) => {
+        const cell = document.createElement('td');
+        const input = document.createElement('input');
+        input.value = rowValues[colIndex] ?? '';
+        if (!col.allowDataEdit) {
+          input.readOnly = true;
+        } else {
+          input.addEventListener('input', () => {
+            tableModeState.rows[rowIndex][colIndex] = input.value;
+          });
+        }
+        input.addEventListener('keydown', (evt) => evt.stopPropagation());
+        cell.appendChild(input);
+        rowEl.appendChild(cell);
+      });
+      tableModeBody.appendChild(rowEl);
+    });
+  }
+
+  function handleTableCommitError(err) {
+    const message = err && err.message ? String(err.message) : '';
+    let columnIndex = null;
+    const matchIndex = message.match(/第\s*(\d+)\s*列/);
+    if (matchIndex) {
+      const parsed = Number(matchIndex[1]);
+      if (Number.isFinite(parsed)) {
+        columnIndex = parsed - 1;
+      }
+    }
+    if (columnIndex == null) {
+      const candidates = [];
+      tableModeState.columns.forEach((col, idx) => {
+        if (!col || !col.name) return;
+        if (message.includes(col.name)) {
+          candidates.push({ idx, weight: col.name.length });
+        }
+      });
+      if (candidates.length > 0) {
+        candidates.sort((a, b) => b.weight - a.weight);
+        columnIndex = candidates[0].idx;
+      }
+    }
+    if (columnIndex != null) {
+      markTableColumnError(columnIndex);
+    }
+  }
+
+  function collectTableHeadersAndTypes() {
+    const headers = [];
+    const types = [];
+    tableModeState.columns.forEach((col) => {
+      if (!col) return;
+      const name = col.name != null ? String(col.name).trim() : '';
+      headers.push(name);
+      if (col.reserved) {
+        types.push(col.type || (col.name === 'template' || col.name === 'name' ? 'string' : 'int'));
+      } else {
+        types.push(col.type != null ? String(col.type).trim() : '');
+      }
+    });
+    return { headers, types };
+  }
+
+  function commitCurrentTableEdits(rebuildAfterCommit = true) {
+    if (!tableModeActive) return true;
+    if (tableModeState.templateIndex == null || tableModeState.templateIndex < 0) return true;
+    if (!tableModeState.columns.length) return true;
+    clearTableValidationMarkers();
+    try {
+      const { headers, types } = collectTableHeadersAndTypes();
+      const numericIndex = tableModeState.columns.findIndex((col, idx) => {
+        if (!col || col.reserved) return false;
+        return isPureNumericName(headers[idx]);
+      });
+      if (numericIndex >= 0) {
+        throw new Error(`第${numericIndex + 1}列列名不能为纯数字：${headers[numericIndex] || '(空)'}`);
+      }
+      const csvRows = [headers, types];
+      tableModeState.rows.forEach((row) => {
+        csvRows.push(row.map((cell) => (cell == null ? '' : String(cell))));
+      });
+      const csvText = rowsToCsv(csvRows);
+      const parsedRows = parseCsvText(csvText);
+      const tpl = buildTemplateFromCsv(parsedRows);
+      const templateIndex = tableModeState.templateIndex;
+      const existing = templates[templateIndex];
+      if (existing) {
+        tpl.__uid = existing.__uid;
+        enforceImportedIndexField(tpl);
+        templates[templateIndex] = tpl;
+        if (currentTemplateIndex === templateIndex) {
+          if (tpl.instances.length > 0) {
+            const bounded = Math.min(Math.max(currentInstanceIndex, 0), tpl.instances.length - 1);
+            currentInstanceIndex = Number.isFinite(bounded) ? bounded : 0;
+          } else {
+            currentInstanceIndex = -1;
+          }
+          refreshInstances();
+          refreshParams();
+        }
+        refreshTemplates();
+        if (rebuildAfterCommit) {
+          const refreshed = buildTableStateForTemplate(tpl, templateIndex);
+          renderTableFromState(refreshed);
+        }
+      }
+      return true;
+    } catch (err) {
+      handleTableCommitError(err);
+      showMessage(`表格数据格式错误：${err && err.message ? err.message : err}`, 'warn');
+      return false;
+    }
+  }
+
+  function switchTableModeTemplate(nextIndex) {
+    if (!tableModeActive) return;
+    if (nextIndex == null || nextIndex < 0 || nextIndex >= templates.length) return;
+    if (tableModeState.templateIndex === nextIndex) return;
+    if (!commitCurrentTableEdits()) {
+      return;
+    }
+    const tpl = templates[nextIndex];
+    currentTemplateIndex = nextIndex;
+    selectedTemplates.clear();
+    selectedTemplates.add(nextIndex);
+    selectedInstances.clear();
+    selectedParams.clear();
+    editingParamIndex = -1;
+    currentInstanceIndex = tpl && tpl.instances && tpl.instances.length > 0 ? 0 : -1;
+    const state = buildTableStateForTemplate(tpl, nextIndex);
+    renderTableFromState(state);
+    renderTableModeTemplateList();
+  }
+
+  function enterTableMode() {
+    if (tableModeActive) return;
+    if (!templates.length) {
+      showMessage('暂无模板可供表格编辑', 'warn');
+      return;
+    }
+    tableModeActive = true;
+    document.body.classList.add('table-mode-active');
+    if (toggleTableModeBtn) {
+      toggleTableModeBtn.textContent = '返回三栏模式';
+    }
+    const targetIndex = currentTemplateIndex >= 0 ? currentTemplateIndex : 0;
+    currentTemplateIndex = targetIndex;
+    selectedTemplates.clear();
+    selectedTemplates.add(targetIndex);
+    selectedInstances.clear();
+    selectedParams.clear();
+    editingParamIndex = -1;
+    const tpl = templates[targetIndex];
+    currentInstanceIndex = tpl && tpl.instances && tpl.instances.length > 0 ? 0 : -1;
+    const state = buildTableStateForTemplate(tpl, targetIndex);
+    renderTableFromState(state);
+    renderTableModeTemplateList();
+  }
+
+  function exitTableMode() {
+    if (!tableModeActive) return;
+    if (!commitCurrentTableEdits(false)) {
+      return;
+    }
+    tableModeActive = false;
+    document.body.classList.remove('table-mode-active');
+    if (toggleTableModeBtn) {
+      toggleTableModeBtn.textContent = '表格模式';
+    }
+    tableModeState = { templateIndex: -1, columns: [], rows: [] };
+    clearTableValidationMarkers();
+    if (tableModeTemplateList) {
+      tableModeTemplateList.innerHTML = '';
+    }
+    if (tableModeGrid) {
+      tableModeGrid.innerHTML = '';
+    }
+    if (tableModeHeaderRow) tableModeHeaderRow.innerHTML = '';
+    if (tableModeTypeRow) tableModeTypeRow.innerHTML = '';
+    if (tableModeBody) tableModeBody.innerHTML = '';
+    refreshTemplates();
+    refreshInstances();
+    refreshParams();
+  }
+
+  function addTableModeColumn() {
+    if (!tableModeActive) {
+      showMessage('请先进入表格模式', 'warn');
+      return;
+    }
+    if (tableModeState.templateIndex == null || tableModeState.templateIndex < 0) {
+      showMessage('请选择要编辑的模板', 'warn');
+      return;
+    }
+    const nameInput = prompt('请输入新参数列名称');
+    if (nameInput == null) return;
+    const trimmedName = String(nameInput).trim();
+    if (!trimmedName) {
+      showMessage('列名不能为空', 'warn');
+      return;
+    }
+    if (['template', 'id', 'index', 'name'].includes(trimmedName)) {
+      showMessage('该列名称为保留字段，无法使用', 'warn');
+      return;
+    }
+    if (isPureNumericName(trimmedName)) {
+      showMessage('参数名不能为纯数字', 'warn');
+      return;
+    }
+    if (tableModeState.columns.some((col) => col && String(col.name || '').trim() === trimmedName)) {
+      showMessage('列名重复', 'warn');
+      return;
+    }
+    const typeInput = prompt('请输入参数类型（例如：string、int、float、bool、list、object 等）', 'string');
+    if (typeInput == null) return;
+    const trimmedType = String(typeInput).trim();
+    if (!trimmedType) {
+      showMessage('类型不能为空', 'warn');
+      return;
+    }
+    const workingState = cloneTableModeState();
+    workingState.columns.push({
+      key: generateTableColumnKey(),
+      name: trimmedName,
+      type: trimmedType,
+      allowNameEdit: true,
+      allowTypeEdit: true,
+      allowDataEdit: true,
+      reserved: false,
+    });
+    if (!workingState.rows.length) {
+      workingState.rows = [];
+    } else {
+      workingState.rows = workingState.rows.map((row) => {
+        const next = row.slice();
+        next.push('');
+        return next;
+      });
+    }
+    renderTableFromState(workingState);
   }
 
   function resolveIndexFieldMeta(tpl) {
@@ -1273,6 +1737,18 @@
   if (importCsvBtn) {
     importCsvBtn.addEventListener('click', importFromCsv);
   }
+  if (toggleTableModeBtn) {
+    toggleTableModeBtn.addEventListener('click', () => {
+      if (tableModeActive) {
+        exitTableMode();
+      } else {
+        enterTableMode();
+      }
+    });
+  }
+  if (tableModeAddColumnBtn) {
+    tableModeAddColumnBtn.addEventListener('click', addTableModeColumn);
+  }
   if (viewLogsBtn) {
     viewLogsBtn.addEventListener('click', openLogOverlay);
   }
@@ -1720,6 +2196,7 @@
 
   // 全局快捷键：复制、粘贴、删除
   document.addEventListener('keydown', (e) => {
+    if (tableModeActive) return;
     // 避免在输入框中触发
     const tag = e.target.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
@@ -4567,6 +5044,12 @@ DataEntityRuntimeTester 使用说明
     refreshParams();
     // 应用模板搜索过滤
     filterList(templateListEl, searchTemplatesInput.value);
+    if (tableModeActive) {
+      renderTableModeTemplateList();
+      if (!templates.length) {
+        renderTableFromState({ templateIndex: -1, columns: [], rows: [] });
+      }
+    }
   }
 
   /**
