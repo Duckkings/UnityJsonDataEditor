@@ -9,8 +9,6 @@
   const MODE_TABLE = 'table';
   let currentEditMode = MODE_COLUMN;
   let tableModeTemplateIndex = -1;
-  let templatePanelOriginalParent = null;
-  let templatePanelOriginalNextSibling = null;
   const tableModeInvalidTemplates = new Set();
   const tableModeValidationErrors = new Map();
   const pendingJsonRemovals = new Set();
@@ -147,19 +145,14 @@
   const toggleModeBtn = $("toggleMode");
   const columnModeContainer = $("columnModeContainer");
   const tableModeContainer = $("tableModeContainer");
-  const tableModeTemplateSlot = $("tableModeTemplateSlot");
+  const tableModeTabsEl = $("tableModeTabs");
   const tableModeEmptyEl = $("tableModeEmpty");
   const tableModeIndexFieldEl = $("tableModeIndexField");
   const luckysheetWrapper = $("luckysheetWrapper");
   const luckysheetEl = $("luckysheet");
-  const TABLE_LOCKED_ROWS = 2;
+  const TABLE_LOCKED_ROWS = 3;
   const TABLE_READONLY_COLUMNS = new Set([0, 1, 2]);
   let luckysheetLoadedTemplateUid = null;
-
-  if (templatePanelEl) {
-    templatePanelOriginalParent = templatePanelEl.parentElement;
-    templatePanelOriginalNextSibling = templatePanelEl.nextElementSibling;
-  }
 
   // 行高调整滑块
   const rowHeightSlider = $("rowHeight");
@@ -1804,18 +1797,24 @@
     const targetRows = Math.max(rows.length, 20);
     const data = Array.from({ length: targetRows }, () => Array.from({ length: targetCols }, () => null));
     rows.forEach((row, rIdx) => {
-      row.forEach((cell, cIdx) => {
-        if (rIdx >= targetRows || cIdx >= targetCols) return;
-        const value = cell == null ? '' : String(cell);
-        if (!value) return;
-        const cellData = { v: value, m: value };
+      if (rIdx >= targetRows) return;
+      for (let cIdx = 0; cIdx < targetCols; cIdx += 1) {
+        const value = row && cIdx < row.length ? row[cIdx] : '';
+        const text = value == null ? '' : String(value);
+        const cellData = {};
+        if (text) {
+          cellData.v = text;
+          cellData.m = text;
+        }
         if (rIdx === 0 || rIdx === 1) {
           cellData.bg = rIdx === 0 ? '#f2f2f2' : '#fafafa';
           cellData.fc = '#333333';
           if (rIdx === 0) cellData.bl = 1;
         }
-        data[rIdx][cIdx] = cellData;
-      });
+        if (text || rIdx === 0 || rIdx === 1) {
+          data[rIdx][cIdx] = cellData;
+        }
+      }
     });
     return { data, rowCount: targetRows, columnCount: targetCols };
   }
@@ -1879,7 +1878,17 @@
       }
       return normalized;
     });
-    return trimLuckysheetMatrix(rows);
+    const trimmed = trimLuckysheetMatrix(rows);
+    if (trimmed.length >= 3) {
+      const lockedRow = trimmed[2];
+      const isLockedRow = Array.isArray(lockedRow)
+        ? lockedRow.every((cell) => String(cell || '').trim() === '')
+        : true;
+      if (isLockedRow) {
+        trimmed.splice(2, 1);
+      }
+    }
+    return trimmed;
   }
 
   function canEditLuckysheetRange(range) {
@@ -1899,7 +1908,9 @@
     if (!luckysheetWrapper || !luckysheetEl) return;
     if (!tpl) {
       destroyLuckysheet();
-      showLuckysheetPlaceholder('请选择模板');
+      luckysheetLoadedTemplateUid = null;
+      const hasTemplates = templates.length > 0;
+      showLuckysheetPlaceholder(hasTemplates ? '请选择模板' : '暂无模板');
       return;
     }
     if (!ensureLuckysheetReady()) {
@@ -1907,8 +1918,15 @@
       return;
     }
     ensureTemplateUid(tpl);
-    const rows = buildCsvRowsForTemplate(tpl, tpl.instances || []);
-    const dataset = buildLuckysheetSheetData(rows);
+    const baseRows = buildCsvRowsForTemplate(tpl, tpl.instances || []);
+    const displayRows = baseRows.map((row) => row.slice());
+    const blankWidth = Math.max(
+      displayRows.reduce((max, row) => Math.max(max, row.length), 0),
+      4
+    );
+    const lockedRow = Array.from({ length: blankWidth }, () => '');
+    displayRows.splice(2, 0, lockedRow);
+    const dataset = buildLuckysheetSheetData(displayRows);
     destroyLuckysheet();
     hideLuckysheetPlaceholder();
     try {
@@ -1937,6 +1955,90 @@
     }
   }
 
+  function renderTableModeTabs() {
+    if (!tableModeTabsEl) return;
+    tableModeTabsEl.innerHTML = '';
+    if (templates.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'table-mode-tabs-empty';
+      empty.textContent = '暂无模板';
+      tableModeTabsEl.appendChild(empty);
+      return;
+    }
+    let activeTabEl = null;
+    templates.forEach((tpl, idx) => {
+      ensureTemplateUid(tpl);
+      const tabBtn = document.createElement('button');
+      tabBtn.type = 'button';
+      tabBtn.className = 'table-mode-tab';
+      tabBtn.textContent = tpl.name || `模板${idx + 1}`;
+      const invalidTemplateName = isPureNumericName(tpl.name);
+      const enumNumericIssue = hasEnumNumericIssues(tpl);
+      if (idx === currentTemplateIndex) {
+        tabBtn.classList.add('active');
+        activeTabEl = tabBtn;
+      }
+      if (invalidTemplateName || enumNumericIssue) {
+        tabBtn.classList.add('invalid-name');
+      }
+      if (tableModeInvalidTemplates.has(tpl.__uid)) {
+        tabBtn.classList.add('invalid-structure');
+      }
+      const tooltipParts = [];
+      if (invalidTemplateName) {
+        tooltipParts.push('模板名称不能为纯数字');
+      }
+      if (enumNumericIssue) {
+        tooltipParts.push('枚举名称或成员不能为纯数字');
+      }
+      if (tableModeInvalidTemplates.has(tpl.__uid)) {
+        const msg = tableModeValidationErrors.get(tpl.__uid) || '表格格式校验失败';
+        tooltipParts.push(msg);
+      }
+      if (tooltipParts.length > 0) {
+        tabBtn.title = tooltipParts.join('；');
+      }
+      tabBtn.addEventListener('click', () => {
+        if (idx === currentTemplateIndex) {
+          lastSelectedCategory = 'template';
+          return;
+        }
+        if (!syncLuckysheetBackToTemplate()) {
+          return;
+        }
+        selectedTemplates.clear();
+        selectedTemplates.add(idx);
+        currentTemplateIndex = idx;
+        tableModeTemplateIndex = idx;
+        templateNameInput.value = tpl.name || '';
+        updateTemplateNameInputValidity();
+        const instances = Array.isArray(tpl.instances) ? tpl.instances : [];
+        currentInstanceIndex = instances.length > 0 ? 0 : -1;
+        selectedInstances.clear();
+        selectedParams.clear();
+        editingParamIndex = -1;
+        anchorTemplate = idx;
+        anchorInstance = null;
+        anchorParam = null;
+        renderTableModeView();
+        refreshInstances();
+        refreshParams();
+        updateIndexTemplateOptions();
+        lastSelectedCategory = 'template';
+      });
+      tableModeTabsEl.appendChild(tabBtn);
+    });
+    if (activeTabEl) {
+      requestAnimationFrame(() => {
+        if (!tableModeTabsEl) return;
+        const visibleWidth = tableModeTabsEl.clientWidth;
+        if (visibleWidth <= 0) return;
+        const scrollTarget = activeTabEl.offsetLeft - Math.max(0, (visibleWidth - activeTabEl.offsetWidth) / 2);
+        tableModeTabsEl.scrollLeft = Math.max(scrollTarget, 0);
+      });
+    }
+  }
+
   function renderTableModeView() {
     if (currentEditMode !== MODE_TABLE) return;
     const tpl = currentTemplateIndex >= 0 ? templates[currentTemplateIndex] : null;
@@ -1945,23 +2047,22 @@
       tableModeIndexFieldEl.textContent = tpl ? (tpl.indexField || 'id') : '';
     }
     renderLuckysheetForTemplate(tpl || null);
+    renderTableModeTabs();
   }
 
   function switchToTableMode() {
     if (currentEditMode === MODE_TABLE) return;
-    if (!templatePanelEl || !tableModeTemplateSlot) {
+    if (!tableModeContainer || !luckysheetWrapper || !luckysheetEl) {
       showMessage('表格模式初始化失败', 'warn');
       return;
     }
     document.body.classList.add('table-mode');
-    if (tableModeContainer) tableModeContainer.setAttribute('aria-hidden', 'false');
+    tableModeContainer.setAttribute('aria-hidden', 'false');
     currentEditMode = MODE_TABLE;
     if (toggleModeBtn) {
       toggleModeBtn.textContent = '切换为三栏模式';
       toggleModeBtn.dataset.mode = MODE_TABLE;
     }
-    tableModeTemplateSlot.innerHTML = '';
-    tableModeTemplateSlot.appendChild(templatePanelEl);
     if (templates.length > 0 && currentTemplateIndex < 0) {
       currentTemplateIndex = 0;
     }
@@ -1979,22 +2080,18 @@
     if (currentEditMode !== MODE_TABLE) return;
     syncLuckysheetBackToTemplate();
     document.body.classList.remove('table-mode');
-    if (tableModeContainer) tableModeContainer.setAttribute('aria-hidden', 'true');
+    if (tableModeContainer) {
+      tableModeContainer.setAttribute('aria-hidden', 'true');
+    }
     if (toggleModeBtn) {
       toggleModeBtn.textContent = '切换为表格模式';
       toggleModeBtn.dataset.mode = MODE_COLUMN;
     }
     destroyLuckysheet();
     showLuckysheetPlaceholder('暂无数据');
-    if (templatePanelEl && templatePanelOriginalParent) {
-      if (templatePanelOriginalNextSibling && templatePanelOriginalNextSibling.parentElement === templatePanelOriginalParent) {
-        templatePanelOriginalParent.insertBefore(templatePanelEl, templatePanelOriginalNextSibling);
-      } else {
-        templatePanelOriginalParent.appendChild(templatePanelEl);
-      }
-    }
     currentEditMode = MODE_COLUMN;
     tableModeTemplateIndex = -1;
+    renderTableModeTabs();
     refreshTemplates();
     refreshInstances();
     refreshParams();
