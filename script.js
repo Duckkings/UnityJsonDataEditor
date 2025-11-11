@@ -44,6 +44,14 @@
   let sheetModeDirty = false;
   let luckysheetInitialized = false;
   const sheetTemplateValidation = new Map();
+  const createDefaultCompareValueState = () => ({
+    active: false,
+    templateUid: null,
+    type: 'normal',
+    params: [],
+    keys: [],
+  });
+  let compareValueState = createDefaultCompareValueState();
 
   // DOM 元素获取
   const $ = (id) => document.getElementById(id);
@@ -913,6 +921,7 @@
   const searchTemplatesInput = $("searchTemplates");
   const searchInstancesInput = $("searchInstances");
   const searchParamsInput = $("searchParams");
+  const toggleCompareValuesBtn = $("toggleCompareValues");
 
   // 拖拽选择状态
   const dragSelect = {
@@ -1987,6 +1996,10 @@
   $("pasteInstance").addEventListener("click", pasteInstance);
   $("deleteInstance").addEventListener("click", deleteInstance);
   $("newParam").addEventListener("click", newParam);
+  if (toggleCompareValuesBtn) {
+    toggleCompareValuesBtn.addEventListener('click', handleToggleCompareValues);
+    updateCompareButtonState();
+  }
   if (exportCsvBtn) {
     exportCsvBtn.addEventListener('click', beginExportSelection);
   }
@@ -4782,17 +4795,179 @@ DataEntityRuntimeTester 使用说明
     return Array.from(selectedInstances).sort((a, b) => a - b);
   }
 
+  function updateCompareButtonState() {
+    if (!toggleCompareValuesBtn) return;
+    const isActive = !!compareValueState.active;
+    toggleCompareValuesBtn.classList.toggle('active', isActive);
+    toggleCompareValuesBtn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+  }
+
+  function deactivateCompareValues(options = {}) {
+    const force = Boolean(options.force);
+    if (!compareValueState.active && !force) return;
+    compareValueState = createDefaultCompareValueState();
+    updateCompareButtonState();
+  }
+
+  function buildCompareValueSnapshot() {
+    if (currentTemplateIndex < 0) {
+      showMessage('请先选择模板', 'warn');
+      return null;
+    }
+    const tpl = templates[currentTemplateIndex];
+    if (!tpl) return null;
+    ensureTemplateUid(tpl);
+    if (isEnumTemplate(tpl)) {
+      if (currentInstanceIndex < 0) {
+        showMessage('请先选择一个实例', 'warn');
+        return null;
+      }
+      const indices = Array.from(selectedParams).sort((a, b) => a - b);
+      if (indices.length === 0) {
+        showMessage('请选择要对比的参数', 'warn');
+        return null;
+      }
+      const inst = tpl.instances[currentInstanceIndex];
+      if (!inst) return null;
+      const keys = getEnumParamKeysForInstance(tpl, inst);
+      const selectedKeys = indices
+        .map((idx) => keys[idx])
+        .filter((key) => key != null);
+      if (selectedKeys.length === 0) {
+        showMessage('未找到可对比的参数', 'warn');
+        return null;
+      }
+      return {
+        active: true,
+        templateUid: tpl.__uid,
+        type: 'enum',
+        params: [],
+        keys: selectedKeys,
+      };
+    }
+    const indices = Array.from(selectedParams).sort((a, b) => a - b);
+    if (indices.length === 0) {
+      showMessage('请选择要对比的参数', 'warn');
+      return null;
+    }
+    const params = indices
+      .map((idx) => tpl.parameters[idx])
+      .filter((param) => param && param.name)
+      .map((param) => ({
+        name: param.name,
+        type: param.type,
+        parameterIndexes: param.parameterIndexes
+          ? {
+              template: param.parameterIndexes.template || '',
+              param: param.parameterIndexes.param || '',
+            }
+          : null,
+      }));
+    if (params.length === 0) {
+      showMessage('未找到可对比的参数', 'warn');
+      return null;
+    }
+    return {
+      active: true,
+      templateUid: tpl.__uid,
+      type: 'normal',
+      params,
+      keys: [],
+    };
+  }
+
+  function formatCompareDisplayValue(value, meta) {
+    let result = value;
+    if (meta && meta.parameterIndexes && result && typeof result === 'object' && !Array.isArray(result) && 'value' in result) {
+      result = result.value;
+    }
+    if (Array.isArray(result)) {
+      if (result.length === 0) return '（空）';
+      const joined = result
+        .map((item) => (item == null ? '' : String(item)))
+        .join(', ');
+      return joined.trim() ? joined : '（空）';
+    }
+    if (result === null || result === undefined) return '（空）';
+    if (typeof result === 'string') {
+      return result.length === 0 ? '（空）' : result;
+    }
+    if (typeof result === 'boolean') {
+      return result ? 'true' : 'false';
+    }
+    if (typeof result === 'number') {
+      return Number.isFinite(result) ? String(result) : '（空）';
+    }
+    if (typeof result === 'object') {
+      try {
+        const str = JSON.stringify(result);
+        return str && str !== '{}' ? str : '（空）';
+      } catch (err) {
+        return String(result);
+      }
+    }
+    return String(result);
+  }
+
+  function buildInstanceCompareText(tpl, inst) {
+    if (!compareValueState.active || !tpl || compareValueState.templateUid !== tpl.__uid) return '';
+    if (!inst || !inst.payload) return '';
+    if (compareValueState.type === 'enum') {
+      const keys = Array.isArray(compareValueState.keys) ? compareValueState.keys : [];
+      if (keys.length === 0) return '';
+      const parts = keys
+        .map((key) => {
+          const raw = inst.payload ? inst.payload[key] : undefined;
+          const formatted = formatCompareDisplayValue(raw);
+          return `${key}: ${formatted}`;
+        })
+        .filter((text) => text && text.length > 0);
+      return parts.join(' | ');
+    }
+    const params = Array.isArray(compareValueState.params) ? compareValueState.params : [];
+    if (params.length === 0) return '';
+    const parts = params
+      .map((meta) => {
+        if (!meta || !meta.name) return '';
+        const raw = inst.payload ? inst.payload[meta.name] : undefined;
+        const formatted = formatCompareDisplayValue(raw, meta);
+        return `${meta.name}: ${formatted}`;
+      })
+      .filter((text) => text && text.length > 0);
+    return parts.join(' | ');
+  }
+
+  function handleToggleCompareValues() {
+    if (!compareValueState.active) {
+      const snapshot = buildCompareValueSnapshot();
+      if (!snapshot) return;
+      compareValueState = snapshot;
+      updateCompareButtonState();
+      refreshInstances();
+      return;
+    }
+    compareValueState = createDefaultCompareValueState();
+    updateCompareButtonState();
+    refreshInstances();
+  }
+
   /**
    * 刷新实例列表
    */
   function refreshInstances() {
     instanceListEl.innerHTML = "";
     if (currentTemplateIndex < 0) {
+      if (compareValueState.active) {
+        deactivateCompareValues({ force: true });
+      }
       lastDuplicateIndexInfo = null;
       return;
     }
     const tpl = templates[currentTemplateIndex];
     ensureTemplateUid(tpl);
+    if (compareValueState.active && compareValueState.templateUid && compareValueState.templateUid !== tpl.__uid) {
+      deactivateCompareValues({ force: true });
+    }
     const duplicateInfo = collectDuplicateIndexInfo(tpl);
     lastDuplicateIndexInfo = { uid: tpl.__uid, info: duplicateInfo };
     const duplicatesByIndex = duplicateInfo.byIndex;
@@ -4853,6 +5028,13 @@ DataEntityRuntimeTester 使用说明
       nameSpan.textContent = `${inst.id}: ${inst.name}`;
       setInvalidNameVisual(nameSpan, isPureNumericName(inst.name));
       li.appendChild(nameSpan);
+      const compareText = buildInstanceCompareText(tpl, inst);
+      if (compareText) {
+        const compareSpan = document.createElement('span');
+        compareSpan.className = 'instance-compare-values';
+        compareSpan.textContent = ` ${compareText}`;
+        li.appendChild(compareSpan);
+      }
       li.addEventListener('click', (e) => {
         if (e.ctrlKey) {
           // Ctrl+点击：切换该实例选中状态
@@ -5459,6 +5641,7 @@ DataEntityRuntimeTester 使用说明
     const inst = tpl.instances[currentInstanceIndex];
     const param = tpl.parameters[paramIndex];
     if (!inst.payload) inst.payload = {};
+    let shouldRefreshInstances = compareValueState.active && compareValueState.templateUid === tpl.__uid;
     switch (param.type) {
       case "string":
         inst.payload[param.name] = inputEl.value;
@@ -5492,6 +5675,9 @@ DataEntityRuntimeTester 使用说明
     if (tpl.indexField === param.name) {
       const newIndexValue = computeExpectedIndexValue(tpl, inst, tpl.indexField);
       inst.payload.index = newIndexValue == null ? '' : String(newIndexValue);
+      shouldRefreshInstances = true;
+    }
+    if (shouldRefreshInstances) {
       refreshInstances();
     }
   }

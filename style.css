@@ -186,6 +186,16 @@ body.dark input.invalid-name {
   padding: 4px 8px;
 }
 
+.compare-toggle.active {
+  background-color: #4caf50;
+  color: #fff;
+}
+
+body.dark .compare-toggle.active {
+  background-color: #2e7d32;
+  color: #fff;
+}
+
 .actions {
   display: flex;
   gap: 4px;
@@ -510,6 +520,18 @@ body.dark .list li.export-partial {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.instance-compare-values {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  font-size: 12px;
+  color: #666;
+  white-space: nowrap;
+}
+
+body.dark .instance-compare-values {
+  color: #b5beca;
 }
 
 #instanceList li.duplicate-index > span {
