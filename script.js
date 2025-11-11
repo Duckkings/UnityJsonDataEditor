@@ -187,38 +187,41 @@
   function activateLuckysheetSheet(sheetId) {
     if (!sheetId || !window.luckysheet) return false;
     const api = window.luckysheet;
-    const directMethods = ['setSheetActive', 'setSheetActivate', 'changeSheet'];
-    for (let i = 0; i < directMethods.length; i += 1) {
-      const method = api[directMethods[i]];
-      if (typeof method === 'function') {
-        try {
-          method.call(api, sheetId);
-          return true;
-        } catch (err) {
-          console.warn(`Failed to call luckysheet.${directMethods[i]}:`, err);
-        }
-      }
-    }
     const workbook = typeof api.getluckysheetfile === 'function' ? api.getluckysheetfile() : null;
+    let targetIndex = -1;
     if (Array.isArray(workbook)) {
-      const idx = workbook.findIndex((sheet) => {
+      targetIndex = workbook.findIndex((sheet) => {
         if (!sheet) return false;
         return sheet.index === sheetId || sheet.id === sheetId || sheet.sheetId === sheetId;
       });
-      if (idx >= 0) {
-        const indexMethods = ['setSheetActiveByIndex', 'setSheetActivateByIndex', 'changeSheetByIndex'];
-        for (let i = 0; i < indexMethods.length; i += 1) {
-          const fn = api[indexMethods[i]];
-          if (typeof fn === 'function') {
-            try {
-              fn.call(api, idx);
-              return true;
-            } catch (err) {
-              console.warn(`Failed to call luckysheet.${indexMethods[i]}:`, err);
-            }
-          }
+    }
+    const tryCall = (methodName, value) => {
+      const method = api[methodName];
+      if (typeof method !== 'function') return false;
+      try {
+        method.call(api, value);
+        return true;
+      } catch (err) {
+        console.warn(`Failed to call luckysheet.${methodName}:`, err);
+        return false;
+      }
+    };
+    if (targetIndex >= 0) {
+      const orderMethods = ['setSheetActive', 'setSheetActivate', 'changeSheet', 'setSheetActiveByIndex', 'setSheetActivateByIndex', 'changeSheetByIndex'];
+      for (let i = 0; i < orderMethods.length; i += 1) {
+        if (tryCall(orderMethods[i], targetIndex)) {
+          return true;
         }
       }
+    }
+    const idMethods = ['setSheetActiveById', 'setSheetActivateById', 'changeSheetById'];
+    for (let i = 0; i < idMethods.length; i += 1) {
+      if (tryCall(idMethods[i], sheetId)) {
+        return true;
+      }
+    }
+    if (targetIndex >= 0) {
+      return tryCall('changeSheet', targetIndex);
     }
     return false;
   }
