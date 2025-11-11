@@ -59,6 +59,7 @@
   const indexTemplateSelect = $("indexTemplate");
   const indexParamSelect = $("indexParam");
   const INDEXABLE_PARAM_TYPES = new Set(["int", "long", "float", "string"]);
+  const RESERVED_INDEX_FIELDS = new Set(['template', 'id', 'name', 'index']);
   const templateListEl = $("templateList");
   const instanceListEl = $("instanceList");
   const paramListEl = $("paramList");
@@ -130,6 +131,114 @@
         sheetActiveInstanceIndex = 0;
       }
     }
+  }
+
+  function findTemplateByName(name) {
+    if (!name) return null;
+    return templates.find((tpl) => tpl && tpl.name === name) || null;
+  }
+
+  function doesTemplateHaveField(tpl, fieldName) {
+    if (!tpl || !fieldName) return false;
+    if (RESERVED_INDEX_FIELDS.has(fieldName)) return true;
+    const params = Array.isArray(tpl.parameters) ? tpl.parameters : [];
+    return params.some((p) => p && p.name === fieldName);
+  }
+
+  function getInstanceFieldValue(inst, fieldName, fallbackTemplateName = '') {
+    if (!inst || !fieldName) return '';
+    const payload = inst.payload || {};
+    switch (fieldName) {
+      case 'id':
+        return inst.id != null ? inst.id : payload.id;
+      case 'name':
+        return inst.name != null ? inst.name : payload.name;
+      case 'template':
+        return payload.template != null ? payload.template : fallbackTemplateName;
+      case 'index':
+        return payload.index != null ? payload.index : '';
+      default:
+        return payload[fieldName];
+    }
+  }
+
+  function doesTemplateContainValue(tpl, fieldName, value) {
+    if (!tpl || !fieldName) return false;
+    const normalized = value == null ? '' : String(value).trim();
+    if (normalized === '') return false;
+    const instList = Array.isArray(tpl.instances) ? tpl.instances : [];
+    for (const instance of instList) {
+      if (!instance) continue;
+      const candidate = getInstanceFieldValue(instance, fieldName, tpl.name);
+      if (candidate == null) continue;
+      if (String(candidate).trim() === normalized) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function evaluateInstanceIndexValidation(tpl, inst) {
+    const invalidParams = new Map();
+    if (!tpl || !inst) {
+      return { invalidParams, hasInvalid: false };
+    }
+    const params = Array.isArray(tpl.parameters) ? tpl.parameters : [];
+    params.forEach((param) => {
+      if (!param || !param.parameterIndexes) return;
+      const binding = inst.payload ? inst.payload[param.name] : undefined;
+      const targetTplName = (param.parameterIndexes.template || '').trim();
+      const targetParamName = (param.parameterIndexes.param || '').trim();
+      const targetTpl = findTemplateByName(targetTplName);
+      let reason = '';
+
+      if (!targetTplName) {
+        reason = '索引模板未设置';
+      } else if (!targetTpl) {
+        reason = `索引模板“${targetTplName}”不存在`;
+      } else if (isEnumTemplate(targetTpl)) {
+        reason = '索引目标不能是 enum 模板';
+      } else if (!targetParamName) {
+        reason = '索引字段未设置';
+      } else if (!doesTemplateHaveField(targetTpl, targetParamName)) {
+        reason = `模板“${targetTplName}”不存在字段“${targetParamName}”`;
+      } else if (!RESERVED_INDEX_FIELDS.has(targetParamName)) {
+        const targetParamDef = Array.isArray(targetTpl.parameters)
+          ? targetTpl.parameters.find((p) => p && p.name === targetParamName)
+          : null;
+        if (targetParamDef && !INDEXABLE_PARAM_TYPES.has(targetParamDef.type)) {
+          reason = `字段“${targetParamName}”类型不支持索引`;
+        }
+      }
+
+      if (!reason) {
+        let rawValue;
+        if (binding == null) {
+          reason = '索引值缺失';
+        } else if (typeof binding === 'object') {
+          rawValue = binding.value;
+        } else if (typeof binding === 'string' || typeof binding === 'number' || typeof binding === 'boolean') {
+          rawValue = binding;
+        } else {
+          reason = '索引值缺失';
+        }
+
+        if (!reason) {
+          const normalizedValue = rawValue == null ? '' : String(rawValue).trim();
+          if (normalizedValue === '') {
+            reason = '索引值为空';
+          } else if (!doesTemplateContainValue(targetTpl, targetParamName, normalizedValue)) {
+            reason = `在模板“${targetTplName}”中找不到值“${normalizedValue}”`;
+          }
+        }
+      }
+
+      if (reason) {
+        invalidParams.set(param.name, reason);
+      }
+    });
+
+    return { invalidParams, hasInvalid: invalidParams.size > 0 };
   }
 
   function buildLuckysheetCell(text, options = {}) {
@@ -4840,6 +4949,8 @@ DataEntityRuntimeTester 使用说明
    */
   function refreshParams() {
     paramListEl.innerHTML = "";
+    paramListEl.classList.remove('has-invalid-reference');
+    paramListEl.removeAttribute('title');
     updateParamTypeSelectEnabledState();
     updateParamNameInputEnabledState();
     refreshParamTypeOptions();
@@ -4850,6 +4961,20 @@ DataEntityRuntimeTester 使用说明
     }
     const tpl = templates[currentTemplateIndex];
     const inst = tpl.instances[currentInstanceIndex];
+    const indexValidation = evaluateInstanceIndexValidation(tpl, inst);
+    paramListEl.classList.toggle('has-invalid-reference', indexValidation.hasInvalid);
+    if (indexValidation.hasInvalid) {
+      const tooltip = Array.from(indexValidation.invalidParams.entries())
+        .map(([name, reason]) => `${name}: ${reason}`)
+        .join('\n');
+      if (tooltip) {
+        paramListEl.title = tooltip;
+      } else {
+        paramListEl.removeAttribute('title');
+      }
+    } else {
+      paramListEl.removeAttribute('title');
+    }
     const isEnumTpl = isEnumTemplate(tpl);
     if (isEnumTpl) {
       enforceEnumIndexField(tpl);
@@ -4997,6 +5122,11 @@ DataEntityRuntimeTester 使用说明
       setInvalidNameVisual(label, isPureNumericName(p.name));
       item.appendChild(label);
       if (selectedParams.has(idx)) item.classList.add('active');
+      const invalidReason = indexValidation.invalidParams.get(p.name);
+      if (invalidReason) {
+        item.classList.add('invalid-reference');
+        item.title = invalidReason;
+      }
       if (p.parameterIndexes) {
         const info = document.createElement('span');
         const idxField = p.parameterIndexes.indexField ? ` (${p.parameterIndexes.indexField})` : '';
