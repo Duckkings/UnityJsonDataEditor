@@ -37,8 +37,11 @@
   let sheetActiveInstanceIndex = -1;
   let sheetRenderedTemplateIndex = -1;
   let sheetRenderedInstanceIndex = -1;
+  let sheetRenderedInstanceCount = 0;
+  let sheetRenderedParameterSignature = '';
   let sheetModeDirty = false;
   let luckysheetInitialized = false;
+  const sheetTemplateValidation = new Map();
 
   // DOM 元素获取
   const $ = (id) => document.getElementById(id);
@@ -238,12 +241,116 @@
     return true;
   }
 
+  function markSheetTemplateValidation(tpl, isValid, message) {
+    if (!tpl) return;
+    ensureTemplateUid(tpl);
+    if (isValid) {
+      sheetTemplateValidation.delete(tpl.__uid);
+    } else {
+      sheetTemplateValidation.set(tpl.__uid, { message: message || '' });
+    }
+  }
+
+  function getLuckysheetUsedRange(sheet) {
+    let maxRow = 1;
+    let maxColumn = 3;
+    const checkCell = (row, column, cell) => {
+      const text = extractLuckysheetCellText(cell);
+      if (text !== '') {
+        if (row > maxRow) maxRow = row;
+        if (column > maxColumn) maxColumn = column;
+      }
+    };
+    if (Array.isArray(sheet?.data)) {
+      sheet.data.forEach((row, rIdx) => {
+        if (!Array.isArray(row)) return;
+        row.forEach((cell, cIdx) => {
+          if (cell == null) return;
+          checkCell(rIdx, cIdx, cell);
+        });
+      });
+    }
+    if (Array.isArray(sheet?.celldata)) {
+      sheet.celldata.forEach((item) => {
+        if (!item) return;
+        const cell = item.v != null ? item.v : item;
+        checkCell(item.r, item.c, cell);
+      });
+    }
+    return { maxRow: Math.max(maxRow, 1), maxColumn: Math.max(maxColumn, 3) };
+  }
+
+  function collectLuckysheetRows(sheet) {
+    const { maxRow, maxColumn } = getLuckysheetUsedRange(sheet);
+    const rows = [];
+    const columnCount = Math.max(maxColumn + 1, 4);
+    const rowCount = Math.max(maxRow + 1, 2);
+    for (let r = 0; r < rowCount; r += 1) {
+      const rowValues = [];
+      for (let c = 0; c < columnCount; c += 1) {
+        rowValues.push(readLuckysheetCell(sheet, r, c));
+      }
+      rows.push(rowValues);
+    }
+    return rows;
+  }
+
+  function normalizeSheetRowsForComparison(rows) {
+    if (!Array.isArray(rows)) return [];
+    const normalized = rows.map((row) => {
+      const list = Array.isArray(row)
+        ? row.map((cell) => String(cell ?? '').trim())
+        : [];
+      let lastIdx = list.length - 1;
+      while (lastIdx >= 0 && list[lastIdx] === '') {
+        lastIdx -= 1;
+      }
+      return list.slice(0, lastIdx + 1);
+    });
+    let lastRow = normalized.length - 1;
+    while (lastRow >= 0 && normalized[lastRow].every((cell) => cell === '')) {
+      lastRow -= 1;
+    }
+    return normalized.slice(0, lastRow + 1);
+  }
+
+  function areSheetRowsEqual(leftRows, rightRows) {
+    const left = normalizeSheetRowsForComparison(leftRows);
+    const right = normalizeSheetRowsForComparison(rightRows);
+    if (left.length !== right.length) return false;
+    for (let r = 0; r < left.length; r += 1) {
+      const rowA = left[r];
+      const rowB = right[r] || [];
+      if (rowA.length !== rowB.length) return false;
+      for (let c = 0; c < rowA.length; c += 1) {
+        if (rowA[c] !== (rowB[c] || '')) return false;
+      }
+    }
+    return true;
+  }
+
+  function getTemplateParameterSignature(tpl) {
+    if (!tpl) return '';
+    const params = (tpl.parameters || []).map((p) => {
+      if (!p) return null;
+      const indexes = p.parameterIndexes || {};
+      return {
+        name: p.name || '',
+        type: p.type || '',
+        template: indexes.template || '',
+        param: indexes.param || '',
+        indexField: indexes.indexField || '',
+      };
+    });
+    return JSON.stringify({ params, indexField: tpl.indexField || 'id' });
+  }
+
   function commitActiveSheetEdits() {
     if (!isSheetModeActive()) {
       sheetModeDirty = false;
       return { ok: true };
     }
-    if (sheetRenderedTemplateIndex < 0 || sheetRenderedInstanceIndex < 0) {
+    if (sheetRenderedTemplateIndex < 0) {
       sheetModeDirty = false;
       return { ok: true };
     }
@@ -256,64 +363,59 @@
       sheetModeDirty = false;
       return { ok: true };
     }
-    const instList = Array.isArray(tpl.instances) ? tpl.instances : [];
-    if (sheetRenderedInstanceIndex < 0 || sheetRenderedInstanceIndex >= instList.length) {
-      sheetModeDirty = false;
-      return { ok: true };
-    }
-    if (!sheetModeDirty) {
-      return { ok: true };
-    }
     const workbook = window.luckysheet.getluckysheetfile();
     if (!Array.isArray(workbook) || workbook.length === 0) {
       sheetModeDirty = false;
       return { ok: true };
     }
     const sheet = workbook[0];
-    const currentInstance = instList[sheetRenderedInstanceIndex];
-    const csvRows = buildCsvRowsForTemplate(tpl, [currentInstance || {}]);
-    const headers = csvRows[0] || [];
-    const types = csvRows[1] || new Array(headers.length).fill('');
-    const columnCount = headers.length;
-    const rowValues = [];
-    for (let col = 0; col < columnCount; col += 1) {
-      rowValues.push(readLuckysheetCell(sheet, 2, col));
+    const mergedRows = collectLuckysheetRows(sheet);
+    const currentRows = buildCsvRowsForTemplate(tpl, tpl.instances || []);
+    if (!sheetModeDirty && areSheetRowsEqual(mergedRows, currentRows)) {
+      markSheetTemplateValidation(tpl, true);
+      return { ok: true };
     }
-    const mergedRows = [headers, types, rowValues];
     try {
       const parsed = buildTemplateFromCsv(mergedRows, `${tpl.name || 'template'}.csv`);
-      if (!parsed || !Array.isArray(parsed.instances) || parsed.instances.length === 0) {
-        throw new Error('未读取到有效的数据行');
-      }
       if ((parsed.name || tpl.name) !== tpl.name) {
         throw new Error('表格模式不可修改模板名称');
-      }
-      if (!compareTemplateParameters(tpl.parameters, parsed.parameters)) {
-        throw new Error('表格模式不可修改参数结构');
       }
       const expectedIndexField = tpl.indexField || 'id';
       if ((parsed.indexField || 'id') !== expectedIndexField) {
         throw new Error('表格模式不可修改索引列定义');
       }
-      const updatedInstance = parsed.instances[0];
-      instList[sheetRenderedInstanceIndex] = {
-        id: updatedInstance.id,
-        name: updatedInstance.name,
-        payload: Object.assign({}, updatedInstance.payload),
-      };
+      const nextParameters = Array.isArray(parsed.parameters) ? parsed.parameters : [];
+      const nextInstances = Array.isArray(parsed.instances) ? parsed.instances : [];
+      tpl.parameters = nextParameters;
+      tpl.instances = nextInstances;
+      tpl.indexField = parsed.indexField || tpl.indexField || 'id';
       sheetModeDirty = false;
       currentTemplateIndex = sheetRenderedTemplateIndex;
-      currentInstanceIndex = sheetRenderedInstanceIndex;
+      if (tpl.instances.length > 0) {
+        if (currentInstanceIndex < 0) {
+          currentInstanceIndex = 0;
+        }
+        if (currentInstanceIndex >= tpl.instances.length) {
+          currentInstanceIndex = tpl.instances.length - 1;
+        }
+      } else {
+        currentInstanceIndex = -1;
+      }
       selectedInstances.clear();
       if (currentInstanceIndex >= 0) {
         selectedInstances.add(currentInstanceIndex);
       }
+      markSheetTemplateValidation(tpl, true);
+      sheetRenderedInstanceCount = tpl.instances.length;
+      sheetRenderedParameterSignature = getTemplateParameterSignature(tpl);
+      refreshTemplates();
       refreshInstances();
       refreshParams();
       return { ok: true };
     } catch (err) {
       console.error(err);
       showMessage(err && err.message ? `表格数据校验失败：${err.message}` : '表格数据校验失败', 'warn');
+      markSheetTemplateValidation(tpl, false, err && err.message ? err.message : '表格数据校验失败');
       return { ok: false, error: err };
     }
   }
@@ -323,8 +425,18 @@
     normalizeSheetSelection();
     sheetTemplateListEl.innerHTML = '';
     templates.forEach((tpl, idx) => {
+      ensureTemplateUid(tpl);
+      const validation = sheetTemplateValidation.get(tpl.__uid);
       const li = document.createElement('li');
-      li.className = idx === sheetActiveTemplateIndex ? 'active' : '';
+      const classes = [];
+      if (idx === sheetActiveTemplateIndex) classes.push('active');
+      if (validation) classes.push('invalid');
+      li.className = classes.join(' ');
+      if (validation && validation.message) {
+        li.title = validation.message;
+      } else {
+        li.removeAttribute('title');
+      }
       const label = document.createElement('span');
       label.textContent = tpl.name || `模板${idx + 1}`;
       setInvalidNameVisual(label, isPureNumericName(tpl.name));
@@ -332,14 +444,16 @@
       li.addEventListener('click', () => {
         if (idx === sheetActiveTemplateIndex) return;
         const result = commitActiveSheetEdits();
-        if (result && result.ok === false) return;
+        if (result && result.ok === false) {
+          updateSheetTemplateNav();
+          return;
+        }
         sheetActiveTemplateIndex = idx;
         currentTemplateIndex = idx;
         selectedTemplates.clear();
         selectedTemplates.add(idx);
         const instanceCount = Array.isArray(templates[idx]?.instances) ? templates[idx].instances.length : 0;
-        const fallbackIndex = sheetActiveInstanceIndex >= 0 ? sheetActiveInstanceIndex : 0;
-        currentInstanceIndex = instanceCount > 0 ? Math.min(fallbackIndex, instanceCount - 1) : -1;
+        currentInstanceIndex = instanceCount > 0 ? Math.min(Math.max(currentInstanceIndex, 0), instanceCount - 1) : -1;
         sheetActiveInstanceIndex = currentInstanceIndex;
         selectedInstances.clear();
         if (currentInstanceIndex >= 0) {
@@ -362,36 +476,16 @@
     sheetInstanceTabsEl.innerHTML = '';
     const tpl = sheetActiveTemplateIndex >= 0 ? templates[sheetActiveTemplateIndex] : null;
     const instList = tpl && Array.isArray(tpl.instances) ? tpl.instances : [];
-    if (!tpl || instList.length === 0) {
-      const info = document.createElement('div');
-      info.className = 'sheet-tabs-empty';
-      info.textContent = tpl ? '该模板还没有实例，请在三列模式下创建后再切换。' : '暂无模板，无法进入表格编辑。';
-      sheetInstanceTabsEl.appendChild(info);
-      return;
+    const info = document.createElement('div');
+    info.className = 'sheet-tabs-empty';
+    if (!tpl) {
+      info.textContent = '暂无模板，无法进入表格编辑。';
+    } else if (instList.length === 0) {
+      info.textContent = '该模板还没有实例，请在三列模式下创建后再切换。';
+    } else {
+      info.textContent = `当前模板共有 ${instList.length} 个实例，均已在表格中显示。`;
     }
-    instList.forEach((inst, idx) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.textContent = inst && inst.name ? inst.name : `实例${idx + 1}`;
-      if (idx === sheetActiveInstanceIndex) {
-        btn.classList.add('active');
-      }
-      btn.addEventListener('click', () => {
-        if (idx === sheetActiveInstanceIndex) return;
-        const result = commitActiveSheetEdits();
-        if (result && result.ok === false) return;
-        sheetActiveInstanceIndex = idx;
-        currentTemplateIndex = sheetActiveTemplateIndex;
-        currentInstanceIndex = idx;
-        selectedInstances.clear();
-        selectedInstances.add(idx);
-        refreshInstances();
-        refreshParams();
-        updateSheetInstanceTabs();
-        renderLuckysheetForActiveInstance();
-      });
-      sheetInstanceTabsEl.appendChild(btn);
-    });
+    sheetInstanceTabsEl.appendChild(info);
   }
 
   function renderLuckysheetForActiveInstance() {
@@ -408,6 +502,8 @@
       luckysheetInitialized = false;
       sheetRenderedTemplateIndex = -1;
       sheetRenderedInstanceIndex = -1;
+      sheetRenderedInstanceCount = 0;
+      sheetRenderedParameterSignature = '';
       sheetModeDirty = false;
       if (sheetEmptyStateEl) {
         sheetEmptyStateEl.style.display = 'flex';
@@ -421,13 +517,15 @@
     }
     const tpl = templates[sheetActiveTemplateIndex];
     const instList = Array.isArray(tpl.instances) ? tpl.instances : [];
-    if (instList.length === 0 || sheetActiveInstanceIndex < 0 || sheetActiveInstanceIndex >= instList.length) {
+    if (instList.length === 0) {
       if (luckysheetInitialized && window.luckysheet?.destroy) {
         window.luckysheet.destroy();
       }
       luckysheetInitialized = false;
       sheetRenderedTemplateIndex = sheetActiveTemplateIndex;
       sheetRenderedInstanceIndex = -1;
+      sheetRenderedInstanceCount = 0;
+      sheetRenderedParameterSignature = '';
       sheetModeDirty = false;
       if (sheetEmptyStateEl) {
         sheetEmptyStateEl.style.display = 'flex';
@@ -439,23 +537,27 @@
       luckysheetContainer.style.display = 'none';
       return;
     }
-    const inst = instList[sheetActiveInstanceIndex];
-    const rows = buildCsvRowsForTemplate(tpl, [inst]);
-    const header = rows[0] || [];
-    const types = rows[1] || new Array(header.length).fill('');
-    const dataRow = rows[2] || header.map(() => '');
-    const sheet = buildLuckysheetSheetFromRows([header, types, dataRow], inst?.name || `实例${sheetActiveInstanceIndex + 1}`);
+    const rows = buildCsvRowsForTemplate(tpl, instList);
+    const sheet = buildLuckysheetSheetFromRows(rows, tpl?.name || `模板${sheetActiveTemplateIndex + 1}`);
     if (window.luckysheet?.destroy && luckysheetInitialized) {
       window.luckysheet.destroy();
     }
     const hook = {
       cellUpdateBefore(row, column) {
-        if (row === 0 || row === 1) {
-          showMessage('表头与类型行不可编辑', 'warn');
-          return false;
-        }
         if (column === 0) {
           showMessage('模板列由系统维护，无法修改', 'warn');
+          return false;
+        }
+        if (column === 1) {
+          showMessage('ID 列由系统维护，无法修改', 'warn');
+          return false;
+        }
+        if (column === 2) {
+          showMessage('索引列由系统维护，无法修改', 'warn');
+          return false;
+        }
+        if ((row === 0 || row === 1) && column === 3) {
+          showMessage('保留字段不可编辑', 'warn');
           return false;
         }
         return true;
@@ -475,7 +577,9 @@
     });
     luckysheetInitialized = true;
     sheetRenderedTemplateIndex = sheetActiveTemplateIndex;
-    sheetRenderedInstanceIndex = sheetActiveInstanceIndex;
+    sheetRenderedInstanceIndex = -1;
+    sheetRenderedInstanceCount = instList.length;
+    sheetRenderedParameterSignature = getTemplateParameterSignature(tpl);
     sheetModeDirty = false;
     luckysheetContainer.style.display = 'block';
     if (sheetEmptyStateEl) sheetEmptyStateEl.style.display = 'none';
@@ -498,6 +602,8 @@
     sheetModeDirty = false;
     sheetRenderedTemplateIndex = -1;
     sheetRenderedInstanceIndex = -1;
+    sheetRenderedInstanceCount = 0;
+    sheetRenderedParameterSignature = '';
     if (luckysheetContainer) luckysheetContainer.style.display = 'none';
     if (sheetEmptyStateEl) sheetEmptyStateEl.style.display = 'none';
   }
@@ -511,6 +617,7 @@
     if (currentEditMode === EDIT_MODES.SHEET) {
       const result = commitActiveSheetEdits();
       if (result && result.ok === false) {
+        updateSheetTemplateNav();
         return;
       }
     }
@@ -962,8 +1069,37 @@
       `${indexMeta.field}/${indexMeta.type}`,
       'string',
     ];
+    const paramList = [];
+    const seenNames = new Set();
     (tpl.parameters || []).forEach((p) => {
-      if (!p) return;
+      if (!p || !p.name) return;
+      paramList.push(p);
+      seenNames.add(p.name);
+    });
+    if (isEnumTemplate(tpl)) {
+      const numericKeys = new Set();
+      (Array.isArray(instances) ? instances : []).forEach((inst) => {
+        const payload = inst && inst.payload ? inst.payload : {};
+        Object.keys(payload || {}).forEach((key) => {
+          if (/^\d+$/.test(key)) numericKeys.add(key);
+        });
+      });
+      Array.from(numericKeys)
+        .sort((a, b) => {
+          const na = Number(a);
+          const nb = Number(b);
+          if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) {
+            return na - nb;
+          }
+          return a.localeCompare(b, 'zh-Hans-CN');
+        })
+        .forEach((key) => {
+          if (seenNames.has(key)) return;
+          paramList.push({ name: key, type: 'string' });
+          seenNames.add(key);
+        });
+    }
+    paramList.forEach((p) => {
       headers.push(p.name);
       if (p.parameterIndexes && p.parameterIndexes.template && p.parameterIndexes.param) {
         const idxField = p.parameterIndexes.indexField || '';
@@ -986,7 +1122,7 @@
         ),
         inst && inst.name != null ? inst.name : '',
       ];
-      (tpl.parameters || []).forEach((p) => {
+      paramList.forEach((p) => {
         if (!p) return;
         row.push(serializeValueForCsv(p, payload[p.name]));
       });
@@ -4539,9 +4675,13 @@ DataEntityRuntimeTester 使用说明
       }
       updateSheetInstanceTabs();
       if (!sheetModeDirty && sheetActiveTemplateIndex === currentTemplateIndex) {
+        const tpl = templates[currentTemplateIndex];
+        const expectedCount = tpl?.instances?.length || 0;
+        const expectedSignature = getTemplateParameterSignature(tpl);
         if (
           sheetRenderedTemplateIndex !== sheetActiveTemplateIndex ||
-          sheetRenderedInstanceIndex !== sheetActiveInstanceIndex
+          sheetRenderedInstanceCount !== expectedCount ||
+          sheetRenderedParameterSignature !== expectedSignature
         ) {
           renderLuckysheetForActiveInstance();
         }
@@ -5498,6 +5638,9 @@ DataEntityRuntimeTester 使用说明
   async function saveAll() {
     const commitResult = commitActiveSheetEdits();
     if (commitResult && commitResult.ok === false) {
+      if (isSheetModeActive()) {
+        updateSheetTemplateNav();
+      }
       return;
     }
     if (!directoryHandle) {
