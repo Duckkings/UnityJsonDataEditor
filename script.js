@@ -1652,6 +1652,11 @@
   if (paramNameInput) {
     paramNameInput.addEventListener('input', updateParamNameInputValidity);
   }
+  if (paramTypeSelect) {
+    paramTypeSelect.addEventListener('change', () => {
+      updateIndexTemplateOptions();
+    });
+  }
   if (renameTemplateBtn) {
     renameTemplateBtn.addEventListener('click', () => {
       if (currentTemplateIndex < 0) { alert('请先选择一个模板'); return; }
@@ -3782,7 +3787,12 @@ DataEntityRuntimeTester 使用说明
       type = 'string';
     }
     let indexObj = null;
-    if (!indexTemplateSelect.disabled) {
+    const isEnumParamType = isEnumType(type);
+    if (isEnumParamType) {
+      indexTemplateSelect.value = '';
+      indexParamSelect.value = '';
+    }
+    if (!indexTemplateSelect.disabled && !isEnumParamType) {
       const idxTpl = indexTemplateSelect.value;
       const idxParam = indexParamSelect.value;
       if (idxTpl && idxParam) {
@@ -3841,7 +3851,7 @@ DataEntityRuntimeTester 使用说明
       showMessage("该参数已存在");
       return;
     }
-    const param = { name, type, index: indexObj };
+    const param = { name, type, index: isEnumParamType ? null : indexObj };
     tpl.parameters.push(param);
     tpl.instances.forEach((inst) => {
       if (indexObj) {
@@ -3871,9 +3881,12 @@ DataEntityRuntimeTester 使用说明
       alert("参数名称已存在");
       return;
     }
+    const enumTypeSelected = isEnumType(newType);
     if (isEnumTemplate(tpl)) {
       newType = 'string';
       newName = String(index);
+      newIndexObj = null;
+    } else if (enumTypeSelected) {
       newIndexObj = null;
     }
     // 索引目标不允许 enum
@@ -4179,6 +4192,26 @@ DataEntityRuntimeTester 使用说明
     if (shouldDisable) {
       paramTypeSelect.value = 'string';
     }
+  }
+
+  function applyIndexDisabledState(message) {
+    indexTemplateSelect.innerHTML = '';
+    const optTpl = document.createElement('option');
+    optTpl.value = '';
+    optTpl.textContent = message;
+    indexTemplateSelect.appendChild(optTpl);
+    indexTemplateSelect.value = '';
+    indexTemplateSelect.disabled = true;
+    indexTemplateSelect.dataset.disabledReason = message;
+
+    indexParamSelect.innerHTML = '';
+    const optParam = document.createElement('option');
+    optParam.value = '';
+    optParam.textContent = message;
+    indexParamSelect.appendChild(optParam);
+    indexParamSelect.value = '';
+    indexParamSelect.disabled = true;
+    indexParamSelect.dataset.disabledReason = message;
   }
 
   // enum 模板下禁用参数名输入框（参数名由顺位自动生成）
@@ -5068,6 +5101,7 @@ DataEntityRuntimeTester 使用说明
       }
       editingParamIndex = -1;
       $('newParam').textContent = '新建参数';
+      updateIndexTemplateOptions();
       return;
     }
     const idxs = Array.from(selectedParams);
@@ -5081,6 +5115,7 @@ DataEntityRuntimeTester 使用说明
     if (isEnumTemplate(tpl)) {
       paramTypeSelect.value = 'string';
     }
+    updateIndexTemplateOptions();
     // 设置索引下拉
     if (!indexTemplateSelect.disabled) {
       if (p.parameterIndexes) {
@@ -5325,25 +5360,20 @@ DataEntityRuntimeTester 使用说明
     const currentTpl = currentTemplateIndex >= 0 ? templates[currentTemplateIndex] : null;
     const previousValue = indexTemplateSelect.value;
     indexTemplateSelect.innerHTML = "";
-    if (currentTpl && isEnumTemplate(currentTpl)) {
-      const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = '枚举不支持索引';
-      indexTemplateSelect.appendChild(opt);
-      indexTemplateSelect.value = '';
-      indexTemplateSelect.disabled = true;
-      indexParamSelect.innerHTML = '';
-      const optParam = document.createElement('option');
-      optParam.value = '';
-      optParam.textContent = '枚举不支持索引';
-      indexParamSelect.appendChild(optParam);
-      indexParamSelect.value = '';
-      indexParamSelect.disabled = true;
+    const disableReason = (() => {
+      if (currentTpl && isEnumTemplate(currentTpl)) return '枚举不支持索引';
+      if (paramTypeSelect && isEnumType(paramTypeSelect.value)) return '枚举类型参数不支持索引';
+      return null;
+    })();
+    if (disableReason) {
+      applyIndexDisabledState(disableReason);
       return;
     }
 
     indexTemplateSelect.disabled = false;
     indexParamSelect.disabled = false;
+    delete indexTemplateSelect.dataset.disabledReason;
+    delete indexParamSelect.dataset.disabledReason;
 
     const opt0 = document.createElement('option');
     opt0.value = '';
@@ -5378,14 +5408,16 @@ DataEntityRuntimeTester 使用说明
       indexParamSelect.innerHTML = '';
       const opt = document.createElement('option');
       opt.value = '';
-      opt.textContent = '枚举不支持索引';
+      opt.textContent = indexTemplateSelect.dataset.disabledReason || '枚举不支持索引';
       indexParamSelect.appendChild(opt);
       indexParamSelect.value = '';
       indexParamSelect.disabled = true;
+      indexParamSelect.dataset.disabledReason = indexTemplateSelect.dataset.disabledReason || '';
       return;
     }
 
     indexParamSelect.disabled = false;
+    delete indexParamSelect.dataset.disabledReason;
     const tplName = indexTemplateSelect.value;
     indexParamSelect.innerHTML = "";
     if (!tplName) {
