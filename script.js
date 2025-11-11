@@ -13,6 +13,8 @@
   const tableModeValidationErrors = new Map();
   const pendingJsonRemovals = new Set();
   const pendingCsRemovals = new Set();
+  const IGNORED_FILE_SUFFIXES = Object.freeze([".meta"]);
+  const IGNORED_FILE_NAMES = new Set([".ds_store", "thumbs.db"]);
   let directoryHandle = null;
   let csharpHandle = null;
   let dataEntityHandle = null;
@@ -2851,13 +2853,10 @@
   /**
    * 保证工作目录下有 csharpDate 和 dataEntity 文件夹，并检测现有文件是否合法
    */
-  const IGNORED_FILE_SUFFIXES = [".meta"];
-  const IGNORED_FILE_NAMES = [".ds_store", "thumbs.db"];
-
   function shouldIgnoreFileEntry(entryName) {
     if (!entryName) return false;
     const lower = entryName.toLowerCase();
-    if (IGNORED_FILE_NAMES.includes(lower)) return true;
+    if (IGNORED_FILE_NAMES.has(lower)) return true;
     return IGNORED_FILE_SUFFIXES.some((suffix) => lower.endsWith(suffix));
   }
 
