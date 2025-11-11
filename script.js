@@ -5983,6 +5983,7 @@ DataEntityRuntimeTester 使用说明
     indexTemplateSelect.appendChild(opt0);
     // 不允许选择 enum 模板作为索引目标
     templates.forEach((tpl) => {
+      if (currentTpl && (tpl === currentTpl || tpl.name === currentTpl.name)) return;
       if (isEnumTemplate(tpl)) return;
       const opt = document.createElement('option');
       opt.value = tpl.name;
