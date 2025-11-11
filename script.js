@@ -2825,7 +2825,13 @@
    */
   async function chooseDirectory() {
     try {
-      directoryHandle = await window.showDirectoryPicker();
+      const handle = await window.showDirectoryPicker();
+      const permissionGranted = await verifyPermission(handle, true);
+      if (!permissionGranted) {
+        showMessage("未授予读取写入权限，无法访问所选目录", "warn");
+        return;
+      }
+      directoryHandle = handle;
       currentDirLabel.textContent = directoryHandle.name;
       await ensureSubFolders();
       await ensureModelStruct();
@@ -2833,10 +2839,12 @@
       await loadAllTemplates();
       refreshTemplates();
       updateIndexTemplateOptions();
+      await saveLastDirectoryHandle(directoryHandle);
       showMessage("工作目录已选择并加载完成");
     } catch (err) {
-      console.error(err);
-      showMessage("选择工作目录失败");
+      console.error('选择工作目录失败', err);
+      const reason = err && err.message ? `：${err.message}` : '';
+      showMessage(`选择工作目录失败${reason}`);
     }
   }
 
