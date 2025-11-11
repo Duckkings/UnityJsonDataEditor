@@ -295,6 +295,40 @@
     return rows;
   }
 
+  function normalizeSheetRowsForComparison(rows) {
+    if (!Array.isArray(rows)) return [];
+    const normalized = rows.map((row) => {
+      const list = Array.isArray(row)
+        ? row.map((cell) => String(cell ?? '').trim())
+        : [];
+      let lastIdx = list.length - 1;
+      while (lastIdx >= 0 && list[lastIdx] === '') {
+        lastIdx -= 1;
+      }
+      return list.slice(0, lastIdx + 1);
+    });
+    let lastRow = normalized.length - 1;
+    while (lastRow >= 0 && normalized[lastRow].every((cell) => cell === '')) {
+      lastRow -= 1;
+    }
+    return normalized.slice(0, lastRow + 1);
+  }
+
+  function areSheetRowsEqual(leftRows, rightRows) {
+    const left = normalizeSheetRowsForComparison(leftRows);
+    const right = normalizeSheetRowsForComparison(rightRows);
+    if (left.length !== right.length) return false;
+    for (let r = 0; r < left.length; r += 1) {
+      const rowA = left[r];
+      const rowB = right[r] || [];
+      if (rowA.length !== rowB.length) return false;
+      for (let c = 0; c < rowA.length; c += 1) {
+        if (rowA[c] !== (rowB[c] || '')) return false;
+      }
+    }
+    return true;
+  }
+
   function getTemplateParameterSignature(tpl) {
     if (!tpl) return '';
     const params = (tpl.parameters || []).map((p) => {
@@ -329,9 +363,6 @@
       sheetModeDirty = false;
       return { ok: true };
     }
-    if (!sheetModeDirty) {
-      return { ok: true };
-    }
     const workbook = window.luckysheet.getluckysheetfile();
     if (!Array.isArray(workbook) || workbook.length === 0) {
       sheetModeDirty = false;
@@ -339,6 +370,11 @@
     }
     const sheet = workbook[0];
     const mergedRows = collectLuckysheetRows(sheet);
+    const currentRows = buildCsvRowsForTemplate(tpl, tpl.instances || []);
+    if (!sheetModeDirty && areSheetRowsEqual(mergedRows, currentRows)) {
+      markSheetTemplateValidation(tpl, true);
+      return { ok: true };
+    }
     try {
       const parsed = buildTemplateFromCsv(mergedRows, `${tpl.name || 'template'}.csv`);
       if ((parsed.name || tpl.name) !== tpl.name) {
@@ -512,7 +548,15 @@
           showMessage('模板列由系统维护，无法修改', 'warn');
           return false;
         }
-        if ((row === 0 || row === 1) && column > 0 && column <= 3) {
+        if (column === 1) {
+          showMessage('ID 列由系统维护，无法修改', 'warn');
+          return false;
+        }
+        if (column === 2) {
+          showMessage('索引列由系统维护，无法修改', 'warn');
+          return false;
+        }
+        if ((row === 0 || row === 1) && column === 3) {
           showMessage('保留字段不可编辑', 'warn');
           return false;
         }
@@ -1025,8 +1069,37 @@
       `${indexMeta.field}/${indexMeta.type}`,
       'string',
     ];
+    const paramList = [];
+    const seenNames = new Set();
     (tpl.parameters || []).forEach((p) => {
-      if (!p) return;
+      if (!p || !p.name) return;
+      paramList.push(p);
+      seenNames.add(p.name);
+    });
+    if (isEnumTemplate(tpl)) {
+      const numericKeys = new Set();
+      (Array.isArray(instances) ? instances : []).forEach((inst) => {
+        const payload = inst && inst.payload ? inst.payload : {};
+        Object.keys(payload || {}).forEach((key) => {
+          if (/^\d+$/.test(key)) numericKeys.add(key);
+        });
+      });
+      Array.from(numericKeys)
+        .sort((a, b) => {
+          const na = Number(a);
+          const nb = Number(b);
+          if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) {
+            return na - nb;
+          }
+          return a.localeCompare(b, 'zh-Hans-CN');
+        })
+        .forEach((key) => {
+          if (seenNames.has(key)) return;
+          paramList.push({ name: key, type: 'string' });
+          seenNames.add(key);
+        });
+    }
+    paramList.forEach((p) => {
       headers.push(p.name);
       if (p.parameterIndexes && p.parameterIndexes.template && p.parameterIndexes.param) {
         const idxField = p.parameterIndexes.indexField || '';
@@ -1049,7 +1122,7 @@
         ),
         inst && inst.name != null ? inst.name : '',
       ];
-      (tpl.parameters || []).forEach((p) => {
+      paramList.forEach((p) => {
         if (!p) return;
         row.push(serializeValueForCsv(p, payload[p.name]));
       });
