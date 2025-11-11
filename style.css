@@ -47,6 +47,17 @@ body.dark .param-item {
 body.dark .param-item.reserved {
   background-color: #3a3a3a;
 }
+body.dark .param-list.has-invalid-reference .param-item,
+body.dark .param-item.invalid-reference {
+  color: #ff6b6b;
+}
+body.dark .param-list.has-invalid-reference .param-item input,
+body.dark .param-list.has-invalid-reference .param-item select,
+body.dark .param-item.invalid-reference input,
+body.dark .param-item.invalid-reference select {
+  border-color: #ff6b6b;
+  color: #ff6b6b;
+}
 body.dark .toolbar button {
   background-color: #444;
   color: #ddd;
@@ -544,6 +555,19 @@ body.dark .param-item.selecting {
   border: 1px solid #e0e0e0;
   border-radius: 4px;
   background-color: #fafafa;
+}
+
+.param-list.has-invalid-reference .param-item,
+.param-item.invalid-reference {
+  color: #d14343;
+}
+
+.param-list.has-invalid-reference .param-item input,
+.param-list.has-invalid-reference .param-item select,
+.param-item.invalid-reference input,
+.param-item.invalid-reference select {
+  border-color: #d14343;
+  color: #d14343;
 }
 
 .param-item.reserved {
