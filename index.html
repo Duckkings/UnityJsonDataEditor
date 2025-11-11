@@ -4,7 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>数据表编辑器</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/css/pluginsCss.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/plugins.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/css/luckysheet.css" />
     <link rel="stylesheet" href="style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/js/plugin.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/luckysheet.umd.js"></script>
     <script src="script.js" defer></script>
   </head>
   <body class="dark">
@@ -15,6 +20,7 @@
         <span id="currentDir" class="dir-label"></span>
         <button id="saveBtn">保存</button>
         <button id="regenerateCs">重新生成C#数据结构脚本</button>
+        <button id="toggleMode" data-mode="column">切换为表格模式</button>
         <button id="exportCsv">导出为CSV</button>
         <button id="confirmExportCsv" style="display:none">导出</button>
         <button id="cancelExportCsv" style="display:none">退出选择</button>
@@ -31,7 +37,7 @@
         <div id="message" class="message" style="display:none"></div>
       </header>
       <!-- 主内容区域：三列布局 -->
-      <main id="classicLayout" class="container">
+      <main class="container" id="columnModeContainer">
         <!-- 模板列表 -->
         <section class="panel templates">
           <div class="panel-header">
@@ -80,26 +86,18 @@
           <div id="paramList" class="param-list"></div>
         </section>
       </main>
-      <div id="tableModeContainer" class="table-mode" style="display:none">
-        <aside class="table-mode-sidebar">
-          <div class="table-mode-sidebar-title">模板</div>
-          <ul id="tableModeTemplateList" class="table-mode-template-list"></ul>
-        </aside>
-        <section class="table-mode-main">
-          <div class="table-mode-toolbar">
-            <button id="tableModeAddColumn" class="primary">新增列</button>
-            <span class="table-mode-hint">新增列时请填写参数名与类型（例如：string、int 或 list等）。</span>
+      <div id="tableModeContainer" class="table-mode" aria-hidden="true">
+        <div class="table-mode-toolbar">
+          <div class="table-mode-title">表格模式</div>
+          <div class="table-mode-index">索引字段：<span id="tableModeIndexField"></span></div>
+        </div>
+        <div class="table-mode-body">
+          <div id="luckysheetWrapper" class="luckysheet-wrapper">
+            <div id="luckysheet"></div>
+            <div id="tableModeEmpty" class="table-mode-empty">暂无数据</div>
           </div>
-          <div class="table-mode-grid" id="tableModeGrid">
-            <table id="tableModeTable">
-              <thead>
-                <tr id="tableModeHeaderRow"></tr>
-                <tr id="tableModeTypeRow"></tr>
-              </thead>
-              <tbody id="tableModeBody"></tbody>
-            </table>
-          </div>
-        </section>
+        </div>
+        <div id="tableModeTabs" class="table-mode-tabs"></div>
       </div>
     </div>
     <div id="logOverlay" class="log-overlay" style="display:none">
