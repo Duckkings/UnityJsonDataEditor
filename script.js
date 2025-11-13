@@ -2911,7 +2911,7 @@ OrdinalIgnoreCase);
     public static void Initialize(string dataDirectory = null)
     {
         _dataDirectory = string.IsNullOrWhiteSpace(dataDirectory)
-            ? Path.GetFullPath(Path.Combine(Application.dataPath, \"..\", \"dataEntity\"))
+            ? Path.GetFullPath(Path.Combine(Application.dataPath, \"dataEntity\"))
             : Path.GetFullPath(dataDirectory);
         LoadAll();
     }
@@ -3581,10 +3581,10 @@ DataEntityRuntimeLoader \u4f7f\u7528\u8bf4\u660e
 ================================
 
 1. \u521d\u59cb\u5316
-   // dataEntity \u76ee\u5f55\u4f4d\u4e8e\u9879\u76ee\u6839\u76ee\u5f55\u65f6\u53ef\u76f4\u63a5\u8c03\u7528
+   // dataEntity \u76ee\u5f55\u4f4d\u4e8e Assets \u76ee\u5f55\u4e0b\u65f6\u53ef\u76f4\u63a5\u8c03\u7528
    DataEntityRuntimeLoader.Initialize();
    // \u6216\u8005\u663e\u5f0f\u4f20\u5165\u8def\u5f84
-   DataEntityRuntimeLoader.Initialize(Path.Combine(Application.dataPath, \"..\", \"dataEntity\"));
+   DataEntityRuntimeLoader.Initialize(Path.Combine(Application.dataPath, \"dataEntity\"));
 
 2. \u8bfb\u53d6\u53c2\u6570
    // \u666e\u901a\u53c2\u6570\uff1a\u652f\u6301\u901a\u8fc7\u5b9e\u4f8b\u540d\u6216\u7d22\u5f15\u952e\u67e5\u8be2
