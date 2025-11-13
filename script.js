@@ -5339,16 +5339,26 @@ DataEntityRuntimeTester 使用说明
         dataList.id = suggestId;
         const targetTpl = templates.find(t => t.name === p.parameterIndexes.template);
         if (targetTpl && !isEnumTemplate(targetTpl)) {
-          const seen = new Set();
-          targetTpl.instances.forEach(it => {
+          targetTpl.instances.forEach((it, instIdx) => {
             const v = it.payload ? it.payload[p.parameterIndexes.param] : undefined;
             const sv = v == null ? '' : String(v);
-            if (sv && !seen.has(sv)) {
-              seen.add(sv);
-              const opt = document.createElement('option');
-              opt.value = sv;
-              dataList.appendChild(opt);
-            }
+            if (!sv) return;
+            const rawName = getInstanceFieldValue(it, 'name', targetTpl.name);
+            const instName = rawName != null && String(rawName).trim() !== ''
+              ? String(rawName).trim()
+              : (() => {
+                  const idValue = getInstanceFieldValue(it, 'id', targetTpl.name);
+                  if (idValue != null && String(idValue).trim() !== '') {
+                    return `ID:${String(idValue).trim()}`;
+                  }
+                  return `实例${instIdx + 1}`;
+                })();
+            const opt = document.createElement('option');
+            opt.value = sv;
+            const label = `${sv}（${instName}）`;
+            opt.label = label;
+            opt.textContent = label;
+            dataList.appendChild(opt);
           });
         }
         item.appendChild(dataList);
