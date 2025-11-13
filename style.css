@@ -115,6 +115,16 @@ body.dark input.invalid-name {
   color: #fff;
 }
 
+.toolbar button.trash-button.has-items {
+  background-color: #ff9800;
+  color: #fff;
+}
+
+body.dark .toolbar button.trash-button.has-items {
+  background-color: #c67c00;
+  color: #fff;
+}
+
 .dir-label {
   flex: 1;
   color: #666;
@@ -773,5 +783,134 @@ body.dark .log-entry.error {
 }
 
 body.dark .log-empty {
+  color: #aaa;
+}
+
+/* 垃圾箱面板 */
+.trash-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 600;
+}
+
+.trash-dialog {
+  width: min(520px, 90vw);
+  max-height: 80vh;
+  background-color: #fff;
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+}
+
+body.dark .trash-dialog {
+  background-color: #2a2a2a;
+  color: #ddd;
+}
+
+.trash-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+body.dark .trash-header {
+  border-bottom: 1px solid #444;
+}
+
+.trash-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.trash-content {
+  flex: 1;
+  padding: 12px 16px;
+  overflow-y: auto;
+}
+
+.trash-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.trash-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background-color: #fafafa;
+  cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.trash-item:hover {
+  background-color: #f0f0f0;
+}
+
+.trash-item.selected {
+  border-color: #4caf50;
+  background-color: #e8f5e9;
+}
+
+body.dark .trash-item {
+  border: 1px solid #444;
+  background-color: #333;
+}
+
+body.dark .trash-item:hover {
+  background-color: #3a3a3a;
+}
+
+body.dark .trash-item.selected {
+  border-color: #388e3c;
+  background-color: #2f4f34;
+}
+
+.trash-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.trash-name {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.trash-meta {
+  font-size: 12px;
+  color: #666;
+}
+
+body.dark .trash-meta {
+  color: #bbb;
+}
+
+.trash-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.trash-empty {
+  text-align: center;
+  color: #777;
+  padding: 24px 0;
+}
+
+body.dark .trash-empty {
   color: #aaa;
 }

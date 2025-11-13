@@ -10,6 +10,11 @@
   let dataEntityHandle = null;
   let modelStructHandle = null;
   let editorHandle = null;
+  let trashHandle = null;
+  const TRASH_FOLDER_NAME = 'toilet';
+  const pendingTemplateDeletions = new Map();
+  let trashButtonBaseLabel = '垃圾箱';
+  let trashSelectedTemplateName = null;
   // 剪贴板，用于复制粘贴不同类型的条目
   // { type: 'template' | 'instance' | 'param', items: Array<any>, extra?: any }
   let copyBuffer = null;
@@ -74,6 +79,18 @@
   const currentDirLabel = $("currentDir");
   const renameTemplateBtn = $("renameTemplate");
   const renameInstanceBtn = $("renameInstance");
+  const openTrashBtn = $("openTrash");
+  const trashOverlay = $("trashOverlay");
+  const trashListEl = $("trashList");
+  const closeTrashBtn = $("closeTrash");
+  const emptyTrashBtn = $("emptyTrash");
+
+  if (openTrashBtn && openTrashBtn.textContent) {
+    const label = openTrashBtn.textContent.trim();
+    if (label) {
+      trashButtonBaseLabel = label;
+    }
+  }
 
   const NUMERIC_NAME_PATTERN = /^\d+$/;
 
@@ -1001,6 +1018,381 @@
     renderLogs();
   }
 
+  function updateTrashButtonLabel(count) {
+    if (!openTrashBtn) return;
+    const base = trashButtonBaseLabel || '垃圾箱';
+    const total = Number.isFinite(count) && count > 0 ? count : 0;
+    openTrashBtn.textContent = total > 0 ? `${base} (${total})` : base;
+    if (total > 0) {
+      openTrashBtn.classList.add('has-items');
+    } else {
+      openTrashBtn.classList.remove('has-items');
+    }
+  }
+
+  async function ensureTrashDirectory() {
+    if (!dataEntityHandle) {
+      trashHandle = null;
+      return null;
+    }
+    if (trashHandle) {
+      return trashHandle;
+    }
+    try {
+      trashHandle = await dataEntityHandle.getDirectoryHandle(TRASH_FOLDER_NAME, { create: true });
+    } catch (err) {
+      console.warn('无法访问垃圾箱目录', err);
+      trashHandle = null;
+    }
+    return trashHandle;
+  }
+
+  function formatTrashTimestampText(ms) {
+    if (!ms) return '未知时间';
+    const date = new Date(ms);
+    if (Number.isNaN(date.getTime())) return '未知时间';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  function formatFileSize(bytes) {
+    if (typeof bytes !== 'number' || Number.isNaN(bytes) || bytes <= 0) return '0 B';
+    if (bytes < 1024) return `${bytes} B`;
+    const units = ['KB', 'MB', 'GB'];
+    let size = bytes / 1024;
+    let unit = 0;
+    while (size >= 1024 && unit < units.length - 1) {
+      size /= 1024;
+      unit += 1;
+    }
+    const precision = size >= 10 ? 0 : 1;
+    return `${size.toFixed(precision)} ${units[unit]}`;
+  }
+
+  async function listTrashEntries() {
+    const handle = await ensureTrashDirectory();
+    if (!handle) return [];
+    const items = [];
+    try {
+      for await (const entry of handle.values()) {
+        if (entry.kind === 'file' && entry.name.toLowerCase().endsWith('.json')) {
+          try {
+            const file = await entry.getFile();
+            items.push({
+              templateName: entry.name.replace(/\.json$/i, ''),
+              fileName: entry.name,
+              lastModified: file.lastModified,
+              size: file.size,
+            });
+          } catch (err) {
+            console.warn('读取垃圾箱文件失败', err);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('遍历垃圾箱目录失败', err);
+      return [];
+    }
+    items.sort((a, b) => {
+      const timeDiff = (b.lastModified || 0) - (a.lastModified || 0);
+      if (timeDiff !== 0) return timeDiff;
+      return a.templateName.localeCompare(b.templateName);
+    });
+    return items;
+  }
+
+  function updateTrashSelectionUI() {
+    if (!trashListEl) return;
+    const items = trashListEl.querySelectorAll('.trash-item');
+    items.forEach((item) => {
+      const name = item.dataset.name || '';
+      item.classList.toggle('selected', Boolean(trashSelectedTemplateName) && name === trashSelectedTemplateName);
+    });
+  }
+
+  function setTrashSelection(name) {
+    trashSelectedTemplateName = name || null;
+    updateTrashSelectionUI();
+  }
+
+  function renderTrashEntries(entries) {
+    if (!trashListEl) return;
+    trashListEl.innerHTML = '';
+    if (!Array.isArray(entries) || entries.length === 0) {
+      const emptyEl = document.createElement('div');
+      emptyEl.className = 'trash-empty';
+      emptyEl.textContent = '垃圾箱为空';
+      trashListEl.appendChild(emptyEl);
+      trashSelectedTemplateName = null;
+      return;
+    }
+    if (!entries.some((entry) => entry.templateName === trashSelectedTemplateName)) {
+      trashSelectedTemplateName = entries[0].templateName;
+    }
+    const list = document.createElement('ul');
+    list.className = 'trash-list';
+    entries.forEach((entry) => {
+      const li = document.createElement('li');
+      li.className = 'trash-item';
+      li.dataset.name = entry.templateName;
+      if (entry.templateName === trashSelectedTemplateName) {
+        li.classList.add('selected');
+      }
+      li.addEventListener('click', () => {
+        setTrashSelection(entry.templateName);
+      });
+
+      const info = document.createElement('div');
+      info.className = 'trash-info';
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'trash-name';
+      nameSpan.textContent = entry.templateName;
+      info.appendChild(nameSpan);
+      const metaSpan = document.createElement('span');
+      metaSpan.className = 'trash-meta';
+      const timeText = formatTrashTimestampText(entry.lastModified);
+      metaSpan.textContent = `${timeText} · ${formatFileSize(entry.size)}`;
+      info.appendChild(metaSpan);
+
+      const actions = document.createElement('div');
+      actions.className = 'trash-item-actions';
+      const restoreBtn = document.createElement('button');
+      restoreBtn.textContent = '恢复';
+      restoreBtn.addEventListener('click', (evt) => {
+        evt.stopPropagation();
+        restoreTemplateFromTrash(entry.templateName);
+      });
+      const deleteBtn = document.createElement('button');
+      deleteBtn.textContent = '删除';
+      deleteBtn.addEventListener('click', (evt) => {
+        evt.stopPropagation();
+        deleteTrashEntry(entry.templateName);
+      });
+      actions.appendChild(restoreBtn);
+      actions.appendChild(deleteBtn);
+
+      li.appendChild(info);
+      li.appendChild(actions);
+      list.appendChild(li);
+    });
+    trashListEl.appendChild(list);
+  }
+
+  async function refreshTrashButtonState() {
+    const entries = await listTrashEntries();
+    updateTrashButtonLabel(entries.length);
+    return entries;
+  }
+
+  async function refreshTrashOverlayContents() {
+    if (!trashOverlay || trashOverlay.style.display === 'none') return;
+    const entries = await refreshTrashButtonState();
+    renderTrashEntries(entries);
+    updateTrashSelectionUI();
+  }
+
+  async function openTrashOverlayPanel() {
+    if (!trashOverlay) return;
+    if (!directoryHandle || !dataEntityHandle) {
+      showMessage('请先选择工作目录', 'warn');
+      return;
+    }
+    const entries = await refreshTrashButtonState();
+    renderTrashEntries(entries);
+    trashOverlay.style.display = 'flex';
+    trashOverlay.setAttribute('aria-hidden', 'false');
+    try {
+      trashOverlay.focus({ preventScroll: true });
+    } catch {}
+  }
+
+  function closeTrashOverlayPanel() {
+    if (!trashOverlay) return;
+    trashOverlay.style.display = 'none';
+    trashOverlay.setAttribute('aria-hidden', 'true');
+    trashSelectedTemplateName = null;
+  }
+
+  async function deleteTrashEntry(templateName) {
+    if (!templateName) return;
+    const handle = await ensureTrashDirectory();
+    if (!handle || typeof handle.removeEntry !== 'function') {
+      showMessage('垃圾箱目录不可用', 'warn');
+      return;
+    }
+    const fileName = `${templateName}.json`;
+    try {
+      await handle.removeEntry(fileName);
+      if (trashSelectedTemplateName === templateName) {
+        trashSelectedTemplateName = null;
+      }
+      showMessage(`已从垃圾箱删除：${templateName}`);
+    } catch (err) {
+      if (err && err.name === 'NotFoundError') {
+        showMessage('垃圾箱中未找到该模板', 'warn');
+      } else {
+        console.warn('删除垃圾箱文件失败', err);
+        showMessage('删除失败，请检查权限', 'warn');
+      }
+    }
+    await refreshTrashOverlayContents();
+  }
+
+  function deleteSelectedTrashEntry() {
+    if (!trashSelectedTemplateName) return;
+    deleteTrashEntry(trashSelectedTemplateName);
+  }
+
+  async function emptyTrashFolder() {
+    const handle = await ensureTrashDirectory();
+    if (!handle || typeof handle.removeEntry !== 'function') {
+      showMessage('垃圾箱目录不可用', 'warn');
+      return;
+    }
+    const targets = [];
+    try {
+      for await (const entry of handle.values()) {
+        if (entry.kind === 'file' && entry.name.toLowerCase().endsWith('.json')) {
+          targets.push(entry.name);
+        }
+      }
+    } catch (err) {
+      console.warn('遍历垃圾箱目录失败', err);
+      showMessage('清空垃圾箱失败', 'warn');
+      return;
+    }
+    try {
+      for (const name of targets) {
+        await handle.removeEntry(name);
+      }
+      trashSelectedTemplateName = null;
+      showMessage('垃圾箱已清空');
+    } catch (err) {
+      console.warn('清空垃圾箱失败', err);
+      showMessage('清空垃圾箱失败，请检查权限', 'warn');
+    }
+    await refreshTrashOverlayContents();
+  }
+
+  async function restoreTemplateFromTrash(templateName) {
+    if (!templateName) return;
+    if (!directoryHandle) {
+      showMessage('请先选择工作目录', 'warn');
+      return;
+    }
+    if (!dataEntityHandle || !csharpHandle) {
+      try {
+        await ensureSubFolders();
+      } catch (err) {
+        console.warn('恢复模板时无法确保目录结构', err);
+        showMessage('恢复失败，请检查权限', 'warn');
+        return;
+      }
+    }
+    const handle = await ensureTrashDirectory();
+    if (!handle) {
+      showMessage('垃圾箱目录不可用', 'warn');
+      return;
+    }
+    const fileName = `${templateName}.json`;
+    let fileText = '';
+    let parsed = null;
+    try {
+      const fileHandle = await handle.getFileHandle(fileName, { create: false });
+      const file = await fileHandle.getFile();
+      fileText = await file.text();
+      parsed = JSON.parse(fileText);
+    } catch (err) {
+      console.warn('读取垃圾箱模板失败', err);
+      showMessage('读取垃圾箱文件失败', 'warn');
+      return;
+    }
+    if (!parsed || typeof parsed !== 'object' || !parsed.name) {
+      showMessage('模板 JSON 不合法，无法恢复', 'warn');
+      return;
+    }
+    if (templates.some((tpl) => tpl && tpl.name === parsed.name)) {
+      showMessage('已有同名模板，请先处理重名', 'warn');
+      return;
+    }
+    try {
+      await writeTextFile(dataEntityHandle, fileName, fileText);
+      if (typeof handle.removeEntry === 'function') {
+        await handle.removeEntry(fileName);
+      }
+    } catch (err) {
+      console.warn('恢复模板写入失败', err);
+      showMessage('恢复失败，请检查权限', 'warn');
+      return;
+    }
+
+    const template = {
+      name: parsed.name,
+      parameters: Array.isArray(parsed.parameters) ? parsed.parameters : [],
+      instances: Array.isArray(parsed.instances) ? parsed.instances : [],
+      indexField: parsed.indexField || 'id',
+    };
+    normalizeTemplateParameterIndexes(template);
+    if (isEnumTemplate(template)) {
+      ensureEnumParamNaming(template);
+    }
+    ensureTemplateUid(template);
+    template.__fromDisk = true;
+    templates.push(template);
+    populateMissingIndexFields(templates);
+    templates.sort((a, b) => a.name.localeCompare(b.name));
+    const idx = templates.findIndex((tpl) => tpl.__uid === template.__uid);
+    selectedTemplates.clear();
+    selectedInstances.clear();
+    selectedParams.clear();
+    if (idx >= 0) {
+      currentTemplateIndex = idx;
+      selectedTemplates.add(idx);
+      currentInstanceIndex = template.instances.length > 0 ? 0 : -1;
+    } else {
+      currentTemplateIndex = templates.length > 0 ? 0 : -1;
+      currentInstanceIndex = currentTemplateIndex >= 0 && templates[currentTemplateIndex].instances.length > 0 ? 0 : -1;
+    }
+    editingParamIndex = -1;
+    refreshTemplates();
+    refreshInstances();
+    refreshParams();
+    updateIndexTemplateOptions();
+    updateTemplateNameInputValidity();
+    updateInstanceNameInputValidity();
+    updateParamNameInputValidity();
+    lastSelectedCategory = 'template';
+    pendingTemplateDeletions.delete(templateName);
+    if (template.__uid) {
+      lastSavedStructureSnapshot.set(template.__uid, snapshotTemplateStructure(template));
+    }
+
+    try {
+      if (isEnumTemplate(template)) {
+        await saveEnumTemplateCache(template);
+        const enumJson = buildEnumTemplateJson(template);
+        if (enumJson) {
+          await writeTextFile(dataEntityHandle, `${template.name}.json`, JSON.stringify(enumJson, null, 2));
+        }
+      } else {
+        const csContent = generateCSContent(template);
+        await writeTextFile(csharpHandle, `${template.name}.cs`, csContent);
+      }
+      await writeManifestForTemplates();
+      await generateEnumCSFiles(getEnumTemplate());
+      await generateRuntimeLoaderArtifacts();
+    } catch (err) {
+      console.warn('恢复模板后生成文件失败', err);
+      showMessage('模板已恢复，但生成关联文件失败，请手动保存', 'warn');
+      await refreshTrashButtonState();
+      await refreshTrashOverlayContents();
+      return;
+    }
+
+    showMessage(`已恢复模板：${template.name}`);
+    await refreshTrashButtonState();
+    await refreshTrashOverlayContents();
+  }
   const originalAlert = window.alert.bind(window);
   window.alert = (message) => {
     addLogEntry('warn', String(message ?? ''));
@@ -1901,6 +2293,7 @@
         showMessage(`${tpl.name}模版的index清空`, 'warn');
       }
       tpl.__uid = existing.__uid;
+      tpl.__fromDisk = existing ? existing.__fromDisk : false;
       templates[existingIdx] = tpl;
       if (currentTemplateIndex === existingIdx) {
         currentInstanceIndex = tpl.instances.length > 0 ? 0 : -1;
@@ -1908,6 +2301,7 @@
       return existingIdx;
     }
     ensureTemplateUid(tpl);
+    tpl.__fromDisk = false;
     templates.push(tpl);
     return templates.length - 1;
   }
@@ -2027,10 +2421,32 @@
   if (clearLogsBtn) {
     clearLogsBtn.addEventListener('click', clearLogEntries);
   }
+  if (openTrashBtn) {
+    openTrashBtn.addEventListener('click', () => {
+      openTrashOverlayPanel();
+    });
+  }
+  if (closeTrashBtn) {
+    closeTrashBtn.addEventListener('click', () => {
+      closeTrashOverlayPanel();
+    });
+  }
+  if (emptyTrashBtn) {
+    emptyTrashBtn.addEventListener('click', () => {
+      emptyTrashFolder();
+    });
+  }
   if (logOverlay) {
     logOverlay.addEventListener('click', (e) => {
       if (e.target === logOverlay) {
         closeLogOverlay();
+      }
+    });
+  }
+  if (trashOverlay) {
+    trashOverlay.addEventListener('click', (e) => {
+      if (e.target === trashOverlay) {
+        closeTrashOverlayPanel();
       }
     });
   }
@@ -2436,6 +2852,20 @@
 
   // 全局快捷键：复制、粘贴、删除
   document.addEventListener('keydown', (e) => {
+    if (trashOverlay && trashOverlay.style.display !== 'none') {
+      if (e.key === 'Delete') {
+        e.preventDefault();
+        deleteSelectedTrashEntry();
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeTrashOverlayPanel();
+        return;
+      }
+      // 垃圾箱打开时屏蔽其他快捷键，避免与主界面冲突
+      return;
+    }
     // 避免在输入框中触发
     const tag = e.target.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
@@ -2655,6 +3085,12 @@
   async function ensureSubFolders() {
     csharpHandle = await directoryHandle.getDirectoryHandle("csharpDate", { create: true });
     dataEntityHandle = await directoryHandle.getDirectoryHandle("dataEntity", { create: true });
+    try {
+      trashHandle = await dataEntityHandle.getDirectoryHandle(TRASH_FOLDER_NAME, { create: true });
+    } catch (err) {
+      console.warn('无法创建或访问垃圾箱目录', err);
+      trashHandle = null;
+    }
     try {
       editorHandle = await directoryHandle.getDirectoryHandle("Editor", { create: true });
     } catch (err) {
@@ -3877,6 +4313,7 @@ DataEntityRuntimeTester 使用说明
     currentInstanceIndex = -1;
     templateUidCounter = 0;
     lastSavedStructureSnapshot = new Map();
+    pendingTemplateDeletions.clear();
     let enumLoadedFromJson = false;
     for await (const entry of dataEntityHandle.values()) {
       if (entry.kind === "file" && entry.name.toLowerCase().endsWith(".json")) {
@@ -3903,6 +4340,7 @@ DataEntityRuntimeTester 使用说明
               enumLoadedFromJson = true;
             }
             ensureTemplateUid(template);
+            template.__fromDisk = true;
             templates.push(template);
           }
         } catch (err) {
@@ -3917,6 +4355,7 @@ DataEntityRuntimeTester 使用说明
         if (!Array.isArray(cachedEnum.parameters)) cachedEnum.parameters = [];
         if (!Array.isArray(cachedEnum.instances)) cachedEnum.instances = [];
         ensureTemplateUid(cachedEnum);
+        cachedEnum.__fromDisk = false;
         templates.push(cachedEnum);
       }
     }
@@ -3928,6 +4367,7 @@ DataEntityRuntimeTester 使用说明
       currentInstanceIndex = templates[0].instances.length > 0 ? 0 : -1;
     }
     lastSavedStructureSnapshot = captureCurrentStructureSnapshot();
+    await refreshTrashButtonState();
   }
 
   /**
@@ -3960,6 +4400,7 @@ DataEntityRuntimeTester 使用说明
       indexField: 'id',
     };
     ensureTemplateUid(template);
+    template.__fromDisk = false;
     templates.push(template);
     currentTemplateIndex = templates.length - 1;
     currentInstanceIndex = 0;
@@ -5834,6 +6275,7 @@ DataEntityRuntimeTester 使用说明
         inst.payload.name = inst.name;
       });
       ensureTemplateUid(newTpl);
+      newTpl.__fromDisk = false;
       templates.push(newTpl);
     });
     refreshTemplates();
@@ -5853,6 +6295,15 @@ DataEntityRuntimeTester 使用说明
     }
     indices.sort((a, b) => b - a);
     indices.forEach((idx) => {
+      const tpl = templates[idx];
+      if (tpl && tpl.__uid) {
+        lastSavedStructureSnapshot.delete(tpl.__uid);
+      }
+      if (tpl && tpl.__fromDisk) {
+        if (!templates.some((t, currentIdx) => currentIdx !== idx && t && t.name === tpl.name)) {
+          pendingTemplateDeletions.set(tpl.name, { name: tpl.name, deletedAt: Date.now() });
+        }
+      }
       templates.splice(idx, 1);
     });
     // 更新当前模板索引
@@ -6088,6 +6539,45 @@ DataEntityRuntimeTester 使用说明
     }
   }
 
+  async function deleteCSharpFileIfExists(templateName) {
+    if (!templateName || !csharpHandle || typeof csharpHandle.removeEntry !== 'function') return;
+    const fileName = `${templateName}.cs`;
+    try {
+      await csharpHandle.removeEntry(fileName);
+    } catch (err) {
+      if (err && err.name === 'NotFoundError') {
+        return;
+      }
+      console.warn(`删除 ${fileName} 失败`, err);
+    }
+  }
+
+  async function moveTemplateJsonToTrash(templateName) {
+    if (!templateName || !dataEntityHandle) return { moved: false, reason: 'no-data-entity' };
+    const handle = await ensureTrashDirectory();
+    if (!handle) return { moved: false, reason: 'no-trash' };
+    const fileName = `${templateName}.json`;
+    try {
+      const fileHandle = await dataEntityHandle.getFileHandle(fileName, { create: false });
+      const file = await fileHandle.getFile();
+      const content = await file.text();
+      const destFile = await handle.getFileHandle(fileName, { create: true });
+      const writable = await destFile.createWritable({ keepExistingData: false });
+      await writable.write(content);
+      await writable.close();
+      if (typeof dataEntityHandle.removeEntry === 'function') {
+        await dataEntityHandle.removeEntry(fileName);
+      }
+      return { moved: true };
+    } catch (err) {
+      if (err && err.name === 'NotFoundError') {
+        return { moved: true, skipped: true };
+      }
+      console.warn(`移动 ${fileName} 至垃圾箱失败`, err);
+      return { moved: false, error: err };
+    }
+  }
+
   function buildEnumTemplateJson(tpl) {
     if (!tpl || !isEnumTemplate(tpl)) return null;
     const indexField = 'id';
@@ -6140,6 +6630,18 @@ DataEntityRuntimeTester 使用说明
     };
   }
 
+  async function writeManifestForTemplates() {
+    if (!dataEntityHandle) return;
+    const manifest = templates
+      .filter((tpl) => !isEnumTemplate(tpl))
+      .map((tpl) => ({ template: tpl.name, path: `${tpl.name}.json` }));
+    await writeTextFile(
+      dataEntityHandle,
+      'manifest.json',
+      JSON.stringify(manifest, null, 2)
+    );
+  }
+
   /**
    * 保存所有模板到文件
    */
@@ -6179,10 +6681,12 @@ DataEntityRuntimeTester 使用说明
       if (!csharpHandle || !dataEntityHandle) {
         await ensureSubFolders();
       }
+      await ensureTrashDirectory();
       const templateDecisions = new Map();
       const csCache = new Map();
       let enumTemplateSaved = false;
       const pendingStructureDecision = [];
+      const trashFailures = [];
 
       for (const tpl of templates) {
         ensureTemplateUid(tpl);
@@ -6232,14 +6736,37 @@ DataEntityRuntimeTester 使用说明
               JSON.stringify(enumJsonObj, null, 2)
             );
           }
+          tpl.__fromDisk = true;
           continue;
         }
         const json = JSON.stringify({ name: tpl.name, indexField: tpl.indexField || 'id', parameters: tpl.parameters, instances: tpl.instances }, null, 2);
         await writeTextFile(dataEntityHandle, `${tpl.name}.json`, json);
+        tpl.__fromDisk = true;
         const meta = templateDecisions.get(tpl.__uid);
         if (meta && meta.decision === 'replace') {
           const content = csCache.get(tpl.__uid) || generateCSContent(tpl);
           await writeTextFile(csharpHandle, `${tpl.name}.cs`, content);
+        }
+      }
+
+      const deletionsToProcess = [];
+      for (const [name] of Array.from(pendingTemplateDeletions.entries())) {
+        if (templates.some((tpl) => tpl && tpl.name === name)) {
+          pendingTemplateDeletions.delete(name);
+          continue;
+        }
+        deletionsToProcess.push(name);
+      }
+      if (deletionsToProcess.length > 0) {
+        await ensureTrashDirectory();
+        for (const name of deletionsToProcess) {
+          const result = await moveTemplateJsonToTrash(name);
+          if (result && result.moved) {
+            pendingTemplateDeletions.delete(name);
+            await deleteCSharpFileIfExists(name);
+          } else {
+            trashFailures.push(name);
+          }
         }
       }
 
@@ -6250,14 +6777,19 @@ DataEntityRuntimeTester 使用说明
         await deleteDataEntityFileIfExists('enum.json');
       }
 
-      const manifest = templates
-        .filter((tpl) => !isEnumTemplate(tpl))
-        .map((tpl) => ({ template: tpl.name, path: `${tpl.name}.json` }));
-      await writeTextFile(dataEntityHandle, 'manifest.json', JSON.stringify(manifest, null, 2));
+      await writeManifestForTemplates();
       await generateRuntimeLoaderArtifacts();
 
       lastSavedStructureSnapshot = captureCurrentStructureSnapshot();
-      showMessage("已保存所有更改");
+      await refreshTrashButtonState();
+      await refreshTrashOverlayContents();
+      if (trashFailures.length > 0) {
+        const detail = trashFailures.join(', ');
+        addLogEntry('warn', '以下模板移入垃圾箱失败', { detail });
+        showMessage('部分模板移入垃圾箱失败，请检查日志', 'warn');
+      } else {
+        showMessage("已保存所有更改");
+      }
     } catch (err) {
       console.error(err);
       showMessage("保存失败，请检查权限");
