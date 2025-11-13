@@ -184,6 +184,20 @@ body.dark .toolbar button.trash-button.has-items {
   border-radius: 3px;
 }
 
+.panel-header input[type="number"] {
+  padding: 4px 6px;
+  font-size: 14px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  width: 110px;
+}
+
+body.dark .panel-header input[type="number"] {
+  background-color: #2a2a2a;
+  border-color: #555;
+  color: #f0f0f0;
+}
+
 .panel-header select {
   padding: 4px 6px;
   font-size: 14px;
@@ -260,6 +274,7 @@ body.sheet-mode .toolbar #newTemplate,
 body.sheet-mode .toolbar #renameTemplate,
 body.sheet-mode .toolbar #searchTemplates,
 body.sheet-mode .toolbar #instanceName,
+body.sheet-mode .toolbar #instanceId,
 body.sheet-mode .toolbar #newInstance,
 body.sheet-mode .toolbar #renameInstance,
 body.sheet-mode .toolbar #copyInstance,
@@ -551,6 +566,44 @@ body.dark .instance-compare-values {
 
 body.dark #instanceList li.duplicate-index > span {
   color: #ff8080;
+}
+
+#instanceList li.duplicate-id > span {
+  color: #d93025;
+  font-weight: 600;
+}
+
+body.dark #instanceList li.duplicate-id > span {
+  color: #ff8080;
+}
+
+#templateList li.duplicate-id > span {
+  color: #d93025;
+  font-weight: 600;
+}
+
+body.dark #templateList li.duplicate-id > span {
+  color: #ff8080;
+}
+
+.sheet-template-list li.duplicate-id {
+  background: #ffecec;
+  color: #c53030;
+}
+
+.sheet-template-list li.duplicate-id.active {
+  background: #fdd5d5;
+  color: #a62020;
+}
+
+body.dark .sheet-template-list li.duplicate-id {
+  background: #4a1f1f;
+  color: #ff9b9b;
+}
+
+body.dark .sheet-template-list li.duplicate-id.active {
+  background: #5c2626;
+  color: #ffbaba;
 }
 
 .list li .export-count {

@@ -46,6 +46,7 @@
   let sheetRenderedParameterSignature = '';
   let sheetRenderedTemplatesFingerprint = '';
   const sheetRenderedSheetIds = new Map();
+  const sheetDuplicateIdRows = new Map();
   let sheetModeDirty = false;
   let luckysheetInitialized = false;
   const sheetTemplateValidation = new Map();
@@ -62,6 +63,7 @@
   const $ = (id) => document.getElementById(id);
   const templateNameInput = $("templateName");
   const instanceNameInput = $("instanceName");
+  const instanceIdInput = $("instanceId");
   const paramNameInput = $("paramName");
   const paramTypeSelect = $("paramType");
   const builtinParamTypeOptions = Array.from(paramTypeSelect.options).map((opt) => ({
@@ -115,6 +117,48 @@
   function updateInstanceNameInputValidity() {
     if (!instanceNameInput) return;
     setInvalidNameVisual(instanceNameInput, isPureNumericName(instanceNameInput.value));
+  }
+
+  function updateInstanceIdInputState(duplicateIdInfo = null) {
+    if (!instanceIdInput) return;
+    const tpl = templates[currentTemplateIndex];
+    if (!tpl || currentInstanceIndex < 0 || currentInstanceIndex >= tpl.instances.length) {
+      instanceIdInput.value = '';
+      instanceIdInput.disabled = true;
+      instanceIdInput.classList.remove('invalid-name');
+      instanceIdInput.removeAttribute('title');
+      return;
+    }
+    const inst = tpl.instances[currentInstanceIndex];
+    instanceIdInput.disabled = false;
+    const value = inst && inst.id != null ? inst.id : '';
+    instanceIdInput.value = value;
+    if (duplicateIdInfo && duplicateIdInfo.byIndex && typeof duplicateIdInfo.byIndex.get === 'function') {
+      const duplicateEntry = duplicateIdInfo.byIndex.get(currentInstanceIndex);
+      if (duplicateEntry) {
+        instanceIdInput.classList.add('invalid-name');
+        const display = duplicateEntry.value !== '' ? duplicateEntry.value : '（空）';
+        const entries = Array.isArray(duplicateEntry.entries) ? duplicateEntry.entries : [];
+        const positions = entries
+          .map((item) => (item && Number.isInteger(item.idx) ? item.idx + 1 : null))
+          .filter((idx) => idx != null);
+        const detailParts = [];
+        if (entries.length > 0) {
+          detailParts.push(`共 ${entries.length} 项`);
+        }
+        if (positions.length > 0) {
+          detailParts.push(`位置 ${positions.join(', ')}`);
+        }
+        const detailSuffix = detailParts.length > 0 ? `（${detailParts.join('，')}）` : '';
+        instanceIdInput.title = `ID 重复${detailSuffix}：${display}`;
+      } else {
+        instanceIdInput.classList.remove('invalid-name');
+        instanceIdInput.removeAttribute('title');
+      }
+    } else {
+      instanceIdInput.classList.remove('invalid-name');
+      instanceIdInput.removeAttribute('title');
+    }
   }
 
   function updateParamNameInputValidity() {
@@ -283,6 +327,7 @@
       index: sheetIndex = 0,
       order = 0,
       status = 0,
+      duplicateIdRows = null,
     } = options || {};
     const celldata = [];
     const header = rows[0] || [];
@@ -303,6 +348,11 @@
         } else if (cIdx === 0) {
           cellOptions.fc = '#6a6a6a';
         }
+        if (duplicateIdRows instanceof Set && duplicateIdRows.has(rIdx) && rIdx >= 2 && cIdx === 1) {
+          cellOptions.bg = '#ffecec';
+          cellOptions.fc = '#c53030';
+          cellOptions.bl = 1;
+        }
         celldata.push({ r: rIdx, c: cIdx, v: buildLuckysheetCell(value, cellOptions) });
       });
     });
@@ -316,6 +366,73 @@
       column: Math.max(header.length, 1),
       config: { columnlen },
     };
+  }
+
+  function applyLuckysheetDuplicateIdStyles(sheetId, rowsSet) {
+    if (!sheetId) return;
+    const api = window.luckysheet;
+    const nextSet = rowsSet instanceof Set ? rowsSet : new Set(rowsSet || []);
+    const prevSet = sheetDuplicateIdRows.get(sheetId) || new Set();
+    if (!api || typeof api.setRangeStyle !== 'function') {
+      sheetDuplicateIdRows.set(sheetId, new Set(nextSet));
+      return;
+    }
+    const prevRows = Array.from(prevSet);
+    const nextRows = Array.from(nextSet);
+    const toClear = prevRows.filter((row) => !nextSet.has(row));
+    if (toClear.length > 0) {
+      api.setRangeStyle({
+        range: toClear.map((row) => ({ row: [row, row], column: [1, 1] })),
+        style: { bg: '#ffffff', fc: '#000000', bl: 0 },
+      });
+    }
+    const toApply = nextRows.filter((row) => row >= 2 && !prevSet.has(row));
+    if (toApply.length > 0) {
+      api.setRangeStyle({
+        range: toApply.map((row) => ({ row: [row, row], column: [1, 1] })),
+        style: { bg: '#ffecec', fc: '#c53030', bl: 1 },
+      });
+    }
+    sheetDuplicateIdRows.set(sheetId, new Set(nextSet));
+  }
+
+  function refreshActiveLuckysheetDuplicateStyles() {
+    if (!window.luckysheet || typeof window.luckysheet.getluckysheetfile !== 'function') return;
+    if (sheetActiveTemplateIndex < 0) return;
+    const sheetId = sheetRenderedSheetIds.get(sheetActiveTemplateIndex);
+    if (!sheetId) return;
+    const workbook = window.luckysheet.getluckysheetfile();
+    if (!Array.isArray(workbook)) return;
+    const sheet = workbook.find((item) => {
+      if (!item) return false;
+      return item.index === sheetId || item.id === sheetId || item.sheetId === sheetId;
+    });
+    if (!sheet) return;
+    const rows = collectLuckysheetRows(sheet);
+    const buckets = new Map();
+    for (let r = 2; r < rows.length; r += 1) {
+      const row = rows[r] || [];
+      const idValue = row[1];
+      const trimmed = String(idValue ?? '').trim();
+      let key = trimmed;
+      if (trimmed !== '') {
+        const num = Number(trimmed);
+        if (Number.isFinite(num)) {
+          key = String(Math.trunc(num));
+        }
+      }
+      if (!buckets.has(key)) {
+        buckets.set(key, []);
+      }
+      buckets.get(key).push(r);
+    }
+    const duplicateRows = new Set();
+    buckets.forEach((list) => {
+      if (list.length > 1) {
+        list.forEach((rowIndex) => duplicateRows.add(rowIndex));
+      }
+    });
+    applyLuckysheetDuplicateIdStyles(sheetId, duplicateRows);
   }
 
   function activateLuckysheetSheet(sheetId) {
@@ -619,6 +736,7 @@
       refreshInstances();
       refreshParams();
       sheetRenderedTemplatesFingerprint = computeSheetTemplatesFingerprint();
+      refreshActiveLuckysheetDuplicateStyles();
       return { ok: true };
     } catch (err) {
       console.error(err);
@@ -639,9 +757,26 @@
       const classes = [];
       if (idx === sheetActiveTemplateIndex) classes.push('active');
       if (validation) classes.push('invalid');
+      const duplicateIdInfo = collectDuplicateIdInfo(tpl);
+      const duplicateIdKeys = Array.from(duplicateIdInfo.duplicates.keys());
+      if (duplicateIdKeys.length > 0) {
+        classes.push('duplicate-id');
+      }
       li.className = classes.join(' ');
+      const tooltipParts = [];
       if (validation && validation.message) {
-        li.title = validation.message;
+        tooltipParts.push(validation.message);
+      }
+      if (duplicateIdKeys.length > 0) {
+        const preview = duplicateIdKeys
+          .map((key) => (key === '' ? '（空）' : key))
+          .slice(0, 3)
+          .join(', ');
+        const suffix = duplicateIdKeys.length > 3 ? '…' : '';
+        tooltipParts.push(`存在重复 ID：${preview}${suffix}`);
+      }
+      if (tooltipParts.length > 0) {
+        li.title = tooltipParts.join('\n');
       } else {
         li.removeAttribute('title');
       }
@@ -725,6 +860,7 @@
     if (needsRebuild) {
       const workbookSheets = [];
       sheetRenderedSheetIds.clear();
+      sheetDuplicateIdRows.clear();
       let activeSheetPrepared = false;
       templates.forEach((template, idx) => {
         if (!template) return;
@@ -738,13 +874,19 @@
         if (status === 1) {
           activeSheetPrepared = true;
         }
+        const duplicateIdInfo = collectDuplicateIdInfo(template);
+        const duplicateRowSet = new Set(
+          Array.from(duplicateIdInfo.byIndex.keys()).map((instanceIdx) => instanceIdx + 2)
+        );
         const sheetData = buildLuckysheetSheetFromRows(rows, sheetName, {
           index: sheetId,
           order: workbookSheets.length,
           status,
+          duplicateIdRows: duplicateRowSet,
         });
         workbookSheets.push(sheetData);
         sheetRenderedSheetIds.set(idx, sheetId);
+        sheetDuplicateIdRows.set(sheetId, duplicateRowSet);
       });
       if (workbookSheets.length === 0) {
         if (window.luckysheet?.destroy && luckysheetInitialized) {
@@ -766,8 +908,8 @@
               showMessage('模板列由系统维护，无法修改', 'warn');
               return false;
             }
-            if (column === 1) {
-              showMessage('ID 列由系统维护，无法修改', 'warn');
+            if (column === 1 && row <= 1) {
+              showMessage('ID 列标题不可修改', 'warn');
               return false;
             }
             if (column === 2) {
@@ -782,6 +924,7 @@
           },
           cellUpdate() {
             sheetModeDirty = true;
+            setTimeout(refreshActiveLuckysheetDuplicateStyles, 0);
           },
         };
         window.luckysheet?.create({
@@ -851,6 +994,7 @@
     sheetRenderedParameterSignature = getTemplateParameterSignature(tpl);
     luckysheetContainer.style.display = 'block';
     if (sheetEmptyStateEl) sheetEmptyStateEl.style.display = 'none';
+    refreshActiveLuckysheetDuplicateStyles();
   }
 
   function enterSheetMode() {
@@ -874,6 +1018,7 @@
     sheetRenderedParameterSignature = '';
     sheetRenderedTemplatesFingerprint = '';
     sheetRenderedSheetIds.clear();
+    sheetDuplicateIdRows.clear();
     if (luckysheetContainer) luckysheetContainer.style.display = 'none';
     if (sheetEmptyStateEl) sheetEmptyStateEl.style.display = 'none';
   }
@@ -2002,7 +2147,6 @@
       parameterDefs.push(param);
     });
 
-    const idsFromCsv = [];
     let indexFieldMismatch = false;
     const instances = nonEmptyDataRows.map((row) => {
       const record = {};
@@ -2013,7 +2157,7 @@
       if (idTrimmed && !Number.isFinite(parsedId)) {
         throw new Error(`无法解析 id：${idRaw}`);
       }
-      idsFromCsv.push(parsedId);
+      const normalizedId = Math.trunc(parsedId);
       const nameValue = row[nameIdx] != null ? String(row[nameIdx]) : '';
       payload.template = templateName;
       payload.name = nameValue;
@@ -2031,28 +2175,14 @@
           payload[param.name] = convertCsvValueByType(param.type, raw);
         }
       });
-      record.id = parsedId;
+      record.id = normalizedId;
       record.name = nameValue;
       record.payload = payload;
+      payload.id = normalizedId;
       return record;
     });
 
-    let idsIncremental = true;
-    if (idsFromCsv.length > 0) {
-      if (Number.isNaN(idsFromCsv[0])) idsIncremental = false;
-      for (let i = 1; i < idsFromCsv.length; i += 1) {
-        if (!Number.isFinite(idsFromCsv[i]) || idsFromCsv[i] !== idsFromCsv[i - 1] + 1) {
-          idsIncremental = false;
-          break;
-        }
-      }
-    }
-
-    const idStart = idsIncremental && idsFromCsv.length > 0 ? idsFromCsv[0] : 0;
-    instances.forEach((inst, idx) => {
-      const newId = idsIncremental ? (idStart + idx) : idx;
-      inst.id = newId;
-      inst.payload.id = newId;
+    instances.forEach((inst) => {
       inst.payload.template = templateName;
       inst.payload.name = inst.name;
     });
@@ -2097,6 +2227,40 @@
     return changed;
   }
 
+
+  function collectDuplicateIdInfo(tpl) {
+    if (!tpl) {
+      return { duplicates: new Map(), byIndex: new Map() };
+    }
+    const instList = Array.isArray(tpl.instances) ? tpl.instances : [];
+    const buckets = new Map();
+    instList.forEach((inst, idx) => {
+      const raw = inst && inst.id != null ? String(inst.id) : '';
+      const trimmed = raw.trim();
+      let key = trimmed;
+      if (trimmed !== '') {
+        const num = Number(trimmed);
+        if (Number.isFinite(num)) {
+          key = String(Math.trunc(num));
+        }
+      }
+      if (!buckets.has(key)) {
+        buckets.set(key, []);
+      }
+      buckets.get(key).push({ idx, inst, value: key });
+    });
+    const duplicates = new Map();
+    const byIndex = new Map();
+    buckets.forEach((entries, key) => {
+      if (entries.length > 1) {
+        duplicates.set(key, entries);
+        entries.forEach((entry) => {
+          byIndex.set(entry.idx, { value: key, entries });
+        });
+      }
+    });
+    return { duplicates, byIndex };
+  }
 
   function getNumericInstanceId(inst) {
     if (!inst) return Number.NaN;
@@ -2458,6 +2622,17 @@
   }
   if (instanceNameInput) {
     instanceNameInput.addEventListener('input', updateInstanceNameInputValidity);
+  }
+  if (instanceIdInput) {
+    const commitId = () => commitInstanceIdChange();
+    instanceIdInput.addEventListener('change', commitId);
+    instanceIdInput.addEventListener('blur', commitId);
+    instanceIdInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        commitInstanceIdChange();
+        instanceIdInput.blur();
+      }
+    });
   }
   if (paramNameInput) {
     paramNameInput.addEventListener('input', updateParamNameInputValidity);
@@ -4480,7 +4655,18 @@ DataEntityRuntimeTester 使用说明
       showMessage('实例名称不能为纯数字');
       return;
     }
-    const nextId = tpl.instances.length > 0 ? Math.max(...tpl.instances.map((i) => i.id)) + 1 : 0;
+    const usedIds = new Set();
+    tpl.instances.forEach((inst) => {
+      if (!inst) return;
+      const value = Number(inst.id);
+      if (Number.isFinite(value) && value >= 0) {
+        usedIds.add(Math.trunc(value));
+      }
+    });
+    let nextId = 0;
+    while (usedIds.has(nextId)) {
+      nextId += 1;
+    }
     const inst = {
       id: nextId,
       name,
@@ -4530,6 +4716,61 @@ DataEntityRuntimeTester 使用说明
     updateInstanceNameInputValidity();
   }
 
+  function commitInstanceIdChange(rawValue = null) {
+    if (!instanceIdInput) return;
+    if (currentTemplateIndex < 0 || currentInstanceIndex < 0) {
+      updateInstanceIdInputState();
+      return;
+    }
+    const tpl = templates[currentTemplateIndex];
+    if (!tpl) return;
+    const inst = tpl.instances[currentInstanceIndex];
+    if (!inst) return;
+    const value = rawValue != null ? rawValue : instanceIdInput.value;
+    const trimmed = String(value ?? '').trim();
+    if (!trimmed) {
+      showMessage('ID 不能为空', 'warn');
+      instanceIdInput.value = inst.id != null ? inst.id : '';
+      updateInstanceIdInputState(collectDuplicateIdInfo(tpl));
+      return;
+    }
+    if (!/^[-+]?\d+$/.test(trimmed)) {
+      showMessage('ID 必须为整数', 'warn');
+      instanceIdInput.value = inst.id != null ? inst.id : '';
+      updateInstanceIdInputState(collectDuplicateIdInfo(tpl));
+      return;
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed)) {
+      showMessage('ID 必须为整数', 'warn');
+      instanceIdInput.value = inst.id != null ? inst.id : '';
+      updateInstanceIdInputState(collectDuplicateIdInfo(tpl));
+      return;
+    }
+    const normalized = Math.trunc(parsed);
+    if (inst.id === normalized) {
+      instanceIdInput.value = inst.id != null ? inst.id : '';
+      updateInstanceIdInputState(collectDuplicateIdInfo(tpl));
+      return;
+    }
+    inst.id = normalized;
+    if (!inst.payload) inst.payload = {};
+    inst.payload.id = normalized;
+    inst.payload.template = tpl.name;
+    if (inst.name != null) {
+      inst.payload.name = inst.name;
+    }
+    inst.payload.index = String(getValueByFieldForInstance(tpl, inst, tpl.indexField || 'id'));
+    refreshInstances();
+    refreshParams();
+    refreshTemplates();
+    updateSheetTemplateNav();
+    if (isSheetModeActive()) {
+      sheetRenderedTemplatesFingerprint = '';
+      renderLuckysheetForActiveInstance();
+    }
+  }
+
   /**
    * 复制实例
    */
@@ -4557,19 +4798,43 @@ DataEntityRuntimeTester 使用说明
       alert("没有已复制的实例");
       return;
     }
+    const offsetInput = prompt('粘贴的实例 ID 偏移量', '1');
+    if (offsetInput === null) {
+      return;
+    }
+    const trimmed = String(offsetInput).trim();
+    if (!/^[-+]?\d+$/.test(trimmed)) {
+      showMessage('偏移量必须为整数', 'warn');
+      return;
+    }
+    const offsetValue = Number(trimmed);
+    if (!Number.isFinite(offsetValue)) {
+      showMessage('偏移量必须为整数', 'warn');
+      return;
+    }
+    const offset = Math.trunc(offsetValue);
     copyBuffer.items.forEach((srcInst) => {
-      const nextId = tpl.instances.length > 0 ? Math.max(...tpl.instances.map((i) => i.id)) + 1 : 0;
+      const baseIdValue = Number(srcInst?.id);
+      const baseId = Number.isFinite(baseIdValue) ? Math.trunc(baseIdValue) : 0;
+      const newId = baseId + offset;
       const newInst = JSON.parse(JSON.stringify(srcInst));
-      newInst.id = nextId;
+      newInst.id = newId;
       newInst.name = `${srcInst.name}_复制`;
       newInst.payload = { ...srcInst.payload };
-      newInst.payload.id = nextId;
+      newInst.payload.id = newId;
       newInst.payload.name = newInst.name;
       newInst.payload.template = tpl.name;
+      newInst.payload.index = String(getValueByFieldForInstance(tpl, newInst, tpl.indexField || 'id'));
       tpl.instances.push(newInst);
     });
     refreshInstances();
     refreshParams();
+    refreshTemplates();
+    updateSheetTemplateNav();
+    if (isSheetModeActive()) {
+      sheetRenderedTemplatesFingerprint = '';
+      renderLuckysheetForActiveInstance();
+    }
     showMessage(`已粘贴 ${copyBuffer.items.length} 个实例`);
   }
 
@@ -4586,19 +4851,32 @@ DataEntityRuntimeTester 使用说明
       return;
     }
     indices.sort((a, b) => b - a);
+    let nextSelection = -1;
     indices.forEach((idx) => {
       tpl.instances.splice(idx, 1);
+      nextSelection = idx;
     });
-    // 重新赋予 id
-    tpl.instances.forEach((inst, index) => {
-      inst.id = index;
-      inst.payload.id = index;
-    });
-    // 更新当前实例索引
-    currentInstanceIndex = tpl.instances.length > 0 ? 0 : -1;
+    const remaining = tpl.instances.length;
+    if (remaining > 0) {
+      if (nextSelection < 0) {
+        nextSelection = 0;
+      }
+      if (nextSelection >= remaining) {
+        nextSelection = remaining - 1;
+      }
+      currentInstanceIndex = nextSelection;
+    } else {
+      currentInstanceIndex = -1;
+    }
     selectedInstances.clear();
     refreshInstances();
     refreshParams();
+    refreshTemplates();
+    updateSheetTemplateNav();
+    if (isSheetModeActive()) {
+      sheetRenderedTemplatesFingerprint = '';
+      renderLuckysheetForActiveInstance();
+    }
     showMessage(`已删除 ${indices.length} 个实例`);
   }
 
@@ -5104,6 +5382,21 @@ DataEntityRuntimeTester 使用说明
         else if (from > currentTemplateIndex && to <= currentTemplateIndex) currentTemplateIndex++;
         refreshTemplates();
       });
+      // 设置选中状态与重复 ID 提示
+      const duplicateIdInfo = collectDuplicateIdInfo(tpl);
+      const duplicateIdKeys = Array.from(duplicateIdInfo.duplicates.keys());
+      if (duplicateIdKeys.length > 0) {
+        li.classList.add('duplicate-id');
+        const preview = duplicateIdKeys
+          .map((key) => (key === '' ? '（空）' : key))
+          .slice(0, 3)
+          .join(', ');
+        const suffix = duplicateIdKeys.length > 3 ? '…' : '';
+        li.title = `存在重复 ID：${preview}${suffix}`;
+      } else {
+        li.classList.remove('duplicate-id');
+        li.removeAttribute('title');
+      }
       // 设置选中状态
       if (selectedTemplates.has(idx)) li.classList.add('active');
       let exportState = 'none';
@@ -5405,16 +5698,33 @@ DataEntityRuntimeTester 使用说明
         deactivateCompareValues({ force: true });
       }
       lastDuplicateIndexInfo = null;
+      if (instanceIdInput) {
+        instanceIdInput.value = '';
+        instanceIdInput.disabled = true;
+        instanceIdInput.classList.remove('invalid-name');
+        instanceIdInput.removeAttribute('title');
+      }
       return;
     }
     const tpl = templates[currentTemplateIndex];
+    if (!tpl) {
+      if (instanceIdInput) {
+        instanceIdInput.value = '';
+        instanceIdInput.disabled = true;
+        instanceIdInput.classList.remove('invalid-name');
+        instanceIdInput.removeAttribute('title');
+      }
+      return;
+    }
     ensureTemplateUid(tpl);
     if (compareValueState.active && compareValueState.templateUid && compareValueState.templateUid !== tpl.__uid) {
       deactivateCompareValues({ force: true });
     }
     const duplicateInfo = collectDuplicateIndexInfo(tpl);
+    const duplicateIdInfo = collectDuplicateIdInfo(tpl);
     lastDuplicateIndexInfo = { uid: tpl.__uid, info: duplicateInfo };
     const duplicatesByIndex = duplicateInfo.byIndex;
+    const duplicatesById = duplicateIdInfo.byIndex;
     const templateIdxForExport = currentTemplateIndex;
     tpl.instances.forEach((inst, idx) => {
       const li = document.createElement("li");
@@ -5449,11 +5759,35 @@ DataEntityRuntimeTester 使用说明
         refreshInstances();
       });
       // 设置索引重复状态与选中状态
+      const tooltipParts = [];
       const duplicateEntry = duplicatesByIndex.get(idx);
       if (duplicateEntry) {
         li.classList.add('duplicate-index');
         const displayValue = duplicateEntry.value !== '' ? duplicateEntry.value : '（空）';
-        li.title = `索引值重复：${displayValue}`;
+        tooltipParts.push(`索引值重复：${displayValue}`);
+      }
+      const duplicateIdEntry = duplicatesById.get(idx);
+      if (duplicateIdEntry) {
+        li.classList.add('duplicate-id');
+        const displayId = duplicateIdEntry.value !== '' ? duplicateIdEntry.value : '（空）';
+        const idEntries = Array.isArray(duplicateIdEntry.entries) ? duplicateIdEntry.entries : [];
+        const idPositions = idEntries
+          .map((item) => (item && Number.isInteger(item.idx) ? item.idx + 1 : null))
+          .filter((pos) => pos != null);
+        const idDetailParts = [];
+        if (idEntries.length > 0) {
+          idDetailParts.push(`共 ${idEntries.length} 项`);
+        }
+        if (idPositions.length > 0) {
+          idDetailParts.push(`位置 ${idPositions.join(', ')}`);
+        }
+        const idDetailSuffix = idDetailParts.length > 0 ? `（${idDetailParts.join('，')}）` : '';
+        tooltipParts.push(`ID 重复${idDetailSuffix}：${displayId}`);
+      }
+      if (tooltipParts.length > 0) {
+        li.title = tooltipParts.join('\n');
+      } else {
+        li.removeAttribute('title');
       }
       if (selectedInstances.has(idx)) li.classList.add('active');
       let instanceExportSelected = false;
@@ -5550,6 +5884,7 @@ DataEntityRuntimeTester 使用说明
     // 应用实例搜索过滤
     filterList(instanceListEl, searchInstancesInput.value);
     updateInstanceNameInputValidity();
+    updateInstanceIdInputState(duplicateIdInfo);
     if (isSheetModeActive()) {
       if (sheetActiveTemplateIndex === currentTemplateIndex && currentInstanceIndex >= 0) {
         sheetActiveInstanceIndex = currentInstanceIndex;
@@ -6687,6 +7022,7 @@ DataEntityRuntimeTester 使用说明
       let enumTemplateSaved = false;
       const pendingStructureDecision = [];
       const trashFailures = [];
+      const duplicateIdWarnings = [];
 
       for (const tpl of templates) {
         ensureTemplateUid(tpl);
@@ -6739,7 +7075,25 @@ DataEntityRuntimeTester 使用说明
           tpl.__fromDisk = true;
           continue;
         }
-        const json = JSON.stringify({ name: tpl.name, indexField: tpl.indexField || 'id', parameters: tpl.parameters, instances: tpl.instances }, null, 2);
+        const duplicateIdInfo = collectDuplicateIdInfo(tpl);
+        const duplicateIndices = new Set(duplicateIdInfo.byIndex.keys());
+        const cleanedInstances = Array.isArray(tpl.instances)
+          ? tpl.instances.filter((_, idx) => !duplicateIndices.has(idx))
+          : [];
+        if (duplicateIndices.size > 0) {
+          const values = Array.from(duplicateIdInfo.duplicates.keys()).map((key) => (key === '' ? '（空）' : key));
+          duplicateIdWarnings.push({
+            name: tpl.name,
+            count: duplicateIndices.size,
+            values,
+          });
+        }
+        const json = JSON.stringify({
+          name: tpl.name,
+          indexField: tpl.indexField || 'id',
+          parameters: tpl.parameters,
+          instances: cleanedInstances,
+        }, null, 2);
         await writeTextFile(dataEntityHandle, `${tpl.name}.json`, json);
         tpl.__fromDisk = true;
         const meta = templateDecisions.get(tpl.__uid);
@@ -6783,10 +7137,23 @@ DataEntityRuntimeTester 使用说明
       lastSavedStructureSnapshot = captureCurrentStructureSnapshot();
       await refreshTrashButtonState();
       await refreshTrashOverlayContents();
+      if (duplicateIdWarnings.length > 0) {
+        const detail = duplicateIdWarnings
+          .map((item) => {
+            const preview = item.values.slice(0, 5).join(', ');
+            const suffix = item.values.length > 5 ? '…' : '';
+            return `${item.name}: 跳过 ${item.count} 项（${preview}${suffix}）`;
+          })
+          .join('\n');
+        addLogEntry('warn', '部分实例因 ID 重复未写入 JSON', { detail });
+      }
       if (trashFailures.length > 0) {
         const detail = trashFailures.join(', ');
         addLogEntry('warn', '以下模板移入垃圾箱失败', { detail });
         showMessage('部分模板移入垃圾箱失败，请检查日志', 'warn');
+      } else if (duplicateIdWarnings.length > 0) {
+        const names = duplicateIdWarnings.map((item) => item.name).join(', ');
+        showMessage(`保存完成，但以下模板存在重复 ID：${names}`, 'warn');
       } else {
         showMessage("已保存所有更改");
       }
