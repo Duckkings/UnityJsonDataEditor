@@ -6078,6 +6078,58 @@ DataEntityRuntimeTester 使用说明
     }
   }
 
+  function buildEnumTemplateJson(tpl) {
+    if (!tpl || !isEnumTemplate(tpl)) return null;
+    const indexField = 'id';
+    const parameters = Array.isArray(tpl.parameters)
+      ? tpl.parameters.map((param, idx) => {
+          if (!param || typeof param !== 'object') return param;
+          const clone = JSON.parse(JSON.stringify(param));
+          clone.name = clone.name != null && clone.name !== '' ? clone.name : String(idx);
+          clone.type = 'string';
+          if (clone.parameterIndexes) {
+            delete clone.parameterIndexes;
+          }
+          return clone;
+        })
+      : [];
+    const instances = Array.isArray(tpl.instances)
+      ? tpl.instances.map((inst, instIdx) => {
+          if (!inst || typeof inst !== 'object') return inst;
+          const clone = JSON.parse(JSON.stringify(inst));
+          if (clone.id == null) {
+            clone.id = instIdx;
+          }
+          if (!clone.payload || typeof clone.payload !== 'object') {
+            clone.payload = {};
+          }
+          if (clone.payload.id == null) {
+            clone.payload.id = clone.id;
+          }
+          if (clone.payload.template == null) {
+            clone.payload.template = tpl.name;
+          }
+          if (clone.payload.name == null) {
+            clone.payload.name = clone.name != null ? clone.name : '';
+          }
+          const indexSource = clone.payload[indexField];
+          if (indexSource == null) {
+            const fallback = clone.payload.id;
+            clone.payload.index = fallback == null ? '' : String(fallback);
+          } else {
+            clone.payload.index = String(indexSource);
+          }
+          return clone;
+        })
+      : [];
+    return {
+      name: tpl.name,
+      indexField,
+      parameters,
+      instances,
+    };
+  }
+
   /**
    * 保存所有模板到文件
    */
@@ -6162,7 +6214,14 @@ DataEntityRuntimeTester 使用说明
         if (isEnumTemplate(tpl)) {
           await saveEnumTemplateCache(tpl);
           enumTemplateSaved = true;
-          await deleteDataEntityFileIfExists(`${tpl.name}.json`);
+          const enumJsonObj = buildEnumTemplateJson(tpl);
+          if (enumJsonObj) {
+            await writeTextFile(
+              dataEntityHandle,
+              `${tpl.name}.json`,
+              JSON.stringify(enumJsonObj, null, 2)
+            );
+          }
           continue;
         }
         const json = JSON.stringify({ name: tpl.name, indexField: tpl.indexField || 'id', parameters: tpl.parameters, instances: tpl.instances }, null, 2);
