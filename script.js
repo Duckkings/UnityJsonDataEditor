@@ -4922,8 +4922,10 @@ DataEntityRuntimeTester 使用说明
           indexTemplateSelect.value = '';
           updateIndexParamOptions();
         } else if (targetTpl) {
+          const isReservedField = RESERVED_INDEX_FIELDS.has(idxParam);
           const targetParam = (targetTpl.parameters || []).find(p => p && p.name === idxParam);
-          if (!targetParam || !INDEXABLE_PARAM_TYPES.has(targetParam.type)) {
+          const validParam = isReservedField || (targetParam && INDEXABLE_PARAM_TYPES.has(targetParam.type));
+          if (!validParam) {
             alert('索引字段类型必须是 int/long/float/string');
             indexParamSelect.value = '';
           } else {
@@ -5026,8 +5028,10 @@ DataEntityRuntimeTester 使用说明
         alert('索引目标不能是 enum 模板');
         newIndexObj = null;
       } else if (targetTpl) {
+        const isReservedField = RESERVED_INDEX_FIELDS.has(newIndexObj.param);
         const targetParam = (targetTpl.parameters || []).find(p => p && p.name === newIndexObj.param);
-        if (!targetParam || !INDEXABLE_PARAM_TYPES.has(targetParam.type)) {
+        const validParam = isReservedField || (targetParam && INDEXABLE_PARAM_TYPES.has(targetParam.type));
+        if (!validParam) {
           alert('索引字段类型必须是 int/long/float/string');
           newIndexObj = null;
         } else {
@@ -6094,8 +6098,7 @@ DataEntityRuntimeTester 使用说明
       }
       if (p.parameterIndexes) {
         const info = document.createElement('span');
-        const idxField = p.parameterIndexes.indexField ? ` (${p.parameterIndexes.indexField})` : '';
-        info.textContent = `索引：${p.parameterIndexes.template} → ${p.parameterIndexes.param}${idxField}`;
+        info.textContent = `索引：${p.parameterIndexes.template} → ${p.parameterIndexes.param}`;
         info.style.marginRight = '8px';
         item.appendChild(info);
 
@@ -6844,16 +6847,30 @@ DataEntityRuntimeTester 使用说明
       indexParamSelect.value = "";
       return;
     }
-    const indexableParams = (tpl.parameters || []).filter((p) => p && INDEXABLE_PARAM_TYPES.has(p.type));
+    const previousValue = indexParamSelect.value;
+    const indexableParams = [];
+    const seenNames = new Set();
+    function appendParamOption(name, label) {
+      if (!name || seenNames.has(name)) return;
+      seenNames.add(name);
+      indexableParams.push({ name, label: label || name });
+    }
+
+    appendParamOption('id', 'id');
+    (tpl.parameters || [])
+      .filter((p) => p && INDEXABLE_PARAM_TYPES.has(p.type))
+      .forEach((p) => appendParamOption(p.name, p.name));
+
     if (indexableParams.length === 0) {
-      const opt = document.createElement("option");
-      opt.value = "";
-      opt.textContent = "无可用参数";
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '无可用参数';
       indexParamSelect.appendChild(opt);
-      indexParamSelect.value = "";
+      indexParamSelect.value = '';
       indexParamSelect.disabled = true;
       return;
     }
+
     const optDef = document.createElement("option");
     optDef.value = "";
     optDef.textContent = "选择参数";
@@ -6861,9 +6878,18 @@ DataEntityRuntimeTester 使用说明
     indexableParams.forEach((p) => {
       const opt = document.createElement("option");
       opt.value = p.name;
-      opt.textContent = p.name;
+      opt.textContent = p.label;
       indexParamSelect.appendChild(opt);
     });
+
+    if (previousValue) {
+      indexParamSelect.value = previousValue;
+      if (indexParamSelect.value !== previousValue) {
+        indexParamSelect.value = '';
+      }
+    } else {
+      indexParamSelect.value = '';
+    }
   }
 
   async function deleteDataEntityFileIfExists(fileName) {
