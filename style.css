@@ -47,12 +47,9 @@ body.dark .param-item {
 body.dark .param-item.reserved {
   background-color: #3a3a3a;
 }
-body.dark .param-list.has-invalid-reference .param-item,
 body.dark .param-item.invalid-reference {
   color: #ff6b6b;
 }
-body.dark .param-list.has-invalid-reference .param-item input,
-body.dark .param-list.has-invalid-reference .param-item select,
 body.dark .param-item.invalid-reference input,
 body.dark .param-item.invalid-reference select {
   border-color: #ff6b6b;
@@ -519,12 +516,29 @@ body.dark .search-bar input {
   background-color: #e8f5e9;
 }
 
+.list li.invalid-reference {
+  background-color: #ffecec;
+  color: #c62828;
+}
+
+.list li.invalid-reference.active {
+  background-color: #ffd0d0;
+}
+
 .list li.selecting {
   background-color: #c8e6c9;
 }
 
 body.dark .list li.active {
   background-color: #264d3a;
+}
+body.dark .list li.invalid-reference {
+  background-color: #4a1f1f;
+  color: #ff9b9b;
+}
+body.dark .list li.invalid-reference.active {
+  background-color: #5c2626;
+  color: #ffc1c1;
 }
 body.dark .list li.selecting {
   background-color: #345c48;
@@ -642,13 +656,9 @@ body.dark .param-item.selecting {
   background-color: #fafafa;
 }
 
-.param-list.has-invalid-reference .param-item,
 .param-item.invalid-reference {
   color: #d14343;
 }
-
-.param-list.has-invalid-reference .param-item input,
-.param-list.has-invalid-reference .param-item select,
 .param-item.invalid-reference input,
 .param-item.invalid-reference select {
   border-color: #d14343;

@@ -310,6 +310,30 @@
     return { invalidParams, hasInvalid: invalidParams.size > 0 };
   }
 
+  function collectInstanceIndexInvalidReasons(tpl) {
+    const invalidMap = new Map();
+    if (!tpl || !Array.isArray(tpl.instances)) {
+      return invalidMap;
+    }
+    tpl.instances.forEach((inst, idx) => {
+      const validation = evaluateInstanceIndexValidation(tpl, inst);
+      if (validation.hasInvalid) {
+        invalidMap.set(idx, validation);
+      }
+    });
+    return invalidMap;
+  }
+
+  function doesTemplateHaveInvalidIndexReferences(tpl) {
+    if (!tpl || !Array.isArray(tpl.instances)) {
+      return false;
+    }
+    return tpl.instances.some((inst) => {
+      const validation = evaluateInstanceIndexValidation(tpl, inst);
+      return validation.hasInvalid;
+    });
+  }
+
   function buildLuckysheetCell(text, options = {}) {
     const str = text == null ? '' : String(text);
     return Object.assign(
@@ -5391,6 +5415,7 @@ DataEntityRuntimeTester 使用说明
         refreshTemplates();
       });
       // 设置选中状态与重复 ID 提示
+      const tooltipParts = [];
       const duplicateIdInfo = collectDuplicateIdInfo(tpl);
       const duplicateIdKeys = Array.from(duplicateIdInfo.duplicates.keys());
       if (duplicateIdKeys.length > 0) {
@@ -5400,9 +5425,18 @@ DataEntityRuntimeTester 使用说明
           .slice(0, 3)
           .join(', ');
         const suffix = duplicateIdKeys.length > 3 ? '…' : '';
-        li.title = `存在重复 ID：${preview}${suffix}`;
+        tooltipParts.push(`存在重复 ID：${preview}${suffix}`);
       } else {
         li.classList.remove('duplicate-id');
+      }
+      const hasInvalidReferences = doesTemplateHaveInvalidIndexReferences(tpl);
+      li.classList.toggle('invalid-reference', hasInvalidReferences);
+      if (hasInvalidReferences) {
+        tooltipParts.push('存在无效的索引引用');
+      }
+      if (tooltipParts.length > 0) {
+        li.title = tooltipParts.join('\n');
+      } else {
         li.removeAttribute('title');
       }
       // 设置选中状态
@@ -5730,6 +5764,7 @@ DataEntityRuntimeTester 使用说明
     }
     const duplicateInfo = collectDuplicateIndexInfo(tpl);
     const duplicateIdInfo = collectDuplicateIdInfo(tpl);
+    const invalidInstanceMap = collectInstanceIndexInvalidReasons(tpl);
     lastDuplicateIndexInfo = { uid: tpl.__uid, info: duplicateInfo };
     const duplicatesByIndex = duplicateInfo.byIndex;
     const duplicatesById = duplicateIdInfo.byIndex;
@@ -5791,6 +5826,16 @@ DataEntityRuntimeTester 使用说明
         }
         const idDetailSuffix = idDetailParts.length > 0 ? `（${idDetailParts.join('，')}）` : '';
         tooltipParts.push(`ID 重复${idDetailSuffix}：${displayId}`);
+      }
+      const invalidReference = invalidInstanceMap.get(idx);
+      if (invalidReference && invalidReference.hasInvalid) {
+        li.classList.add('invalid-reference');
+        const invalidDetails = Array.from(invalidReference.invalidParams.entries())
+          .map(([name, reason]) => `${name}: ${reason}`)
+          .join('；');
+        if (invalidDetails) {
+          tooltipParts.push(`索引引用错误：${invalidDetails}`);
+        }
       }
       if (tooltipParts.length > 0) {
         li.title = tooltipParts.join('\n');
@@ -5931,7 +5976,6 @@ DataEntityRuntimeTester 使用说明
     const tpl = templates[currentTemplateIndex];
     const inst = tpl.instances[currentInstanceIndex];
     const indexValidation = evaluateInstanceIndexValidation(tpl, inst);
-    paramListEl.classList.toggle('has-invalid-reference', indexValidation.hasInvalid);
     if (indexValidation.hasInvalid) {
       const tooltip = Array.from(indexValidation.invalidParams.entries())
         .map(([name, reason]) => `${name}: ${reason}`)
