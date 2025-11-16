@@ -3357,7 +3357,6 @@
           '}',
           '',
           '[Serializable]',
-          '[JsonConverter(typeof(DataRefConverter))] // 全局指定这个类型走自定义解析',
           'public class DataRef',
           '{',
           '    public string template;  // 对应 JSON 里的 "template"',
@@ -3508,6 +3507,11 @@ public static class DataEntityRuntimeLoader
     {
         MissingMemberHandling = MissingMemberHandling.Ignore,
         NullValueHandling = NullValueHandling.Ignore,
+        Converters = new List<JsonConverter>
+        {
+            // 在共享设置中显式注册 DataRefConverter，避免 DataRef 在 ToObject 时递归套用自身转换器
+            new DataRefConverter(),
+        },
     };
 
     private static readonly Dictionary<string, string> ManifestIndex = new Dictionary<string, string>(StringComparer.
