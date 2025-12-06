@@ -10,6 +10,9 @@
   let dataEntityHandle = null;
   let modelStructHandle = null;
   let editorHandle = null;
+  let cppModelHandle = null;
+  let cppEnumHandle = null;
+  let configDirHandle = null;
   let trashHandle = null;
   const TRASH_FOLDER_NAME = 'toilet';
   const pendingTemplateDeletions = new Map();
@@ -31,9 +34,29 @@
   let anchorInstance = null;
   let anchorParam = null;
   // 最近操作的栏目类型，用于快捷键判断
-  let lastSelectedCategory = null;
+ let lastSelectedCategory = null;
   // 当前正在编辑的参数索引，-1 表示新建
   let editingParamIndex = -1;
+  const ENGINE_MODES = { UNITY: 'unity', UE: 'ue' };
+  let currentEngineMode = ENGINE_MODES.UNITY;
+  const ENGINE_LABELS = {
+    [ENGINE_MODES.UNITY]: 'Unity',
+    [ENGINE_MODES.UE]: 'UE',
+  };
+  const engineModeNeedsConfirmation = {
+    [ENGINE_MODES.UNITY]: false,
+    [ENGINE_MODES.UE]: true,
+  };
+  const CONFIG_DIR_NAME = 'dataEditorConfig';
+  const CONFIG_FILE_NAME = 'config.json';
+
+  function isUnityMode() {
+    return currentEngineMode === ENGINE_MODES.UNITY;
+  }
+
+  function isUEMode() {
+    return currentEngineMode === ENGINE_MODES.UE;
+  }
   // 缓存当前模板的索引重复信息，便于在索引跳转时复用
   let lastDuplicateIndexInfo = null;
   const EDIT_MODES = { CLASSIC: 'classic', SHEET: 'sheet' };
@@ -66,11 +89,20 @@
   const instanceIdInput = $("instanceId");
   const paramNameInput = $("paramName");
   const paramTypeSelect = $("paramType");
+  const listElementTypeSelect = $("listElementType");
   const builtinParamTypeOptions = Array.from(paramTypeSelect.options).map((opt) => ({
     value: opt.value,
     label: opt.textContent,
   }));
   const builtinParamTypeSet = new Set(builtinParamTypeOptions.map((opt) => opt.value));
+  const LIST_ELEMENT_TYPE_OPTIONS = [
+    { value: 'string', label: '字符串' },
+    { value: 'int', label: '整数' },
+    { value: 'float', label: '浮点数' },
+    { value: 'long', label: '长整型' },
+    { value: 'bool', label: '布尔' },
+  ];
+  const LIST_ELEMENT_TYPE_SET = new Set(LIST_ELEMENT_TYPE_OPTIONS.map((opt) => opt.value));
   const indexTemplateSelect = $("indexTemplate");
   const indexParamSelect = $("indexParam");
   const INDEXABLE_PARAM_TYPES = new Set(["int", "long", "float", "string"]);
@@ -95,9 +127,55 @@
   }
 
   const NUMERIC_NAME_PATTERN = /^\d+$/;
+  const UE_NAME_PATTERN = /^[A-Za-z0-9_]+$/;
 
   function isPureNumericName(name) {
     return NUMERIC_NAME_PATTERN.test(String(name || "").trim());
+  }
+
+  function isUENameCompliant(name) {
+    if (name == null) return false;
+    return UE_NAME_PATTERN.test(String(name).trim());
+  }
+
+  function isTemplateNameInvalid(name) {
+    if (isPureNumericName(name)) return true;
+    if (isUEMode() && !isUENameCompliant(name)) return true;
+    return false;
+  }
+
+  function isEnumValueInvalid(value) {
+    if (isPureNumericName(value)) return true;
+    if (isUEMode() && !isUENameCompliant(value)) return true;
+    return false;
+  }
+
+  function getValidListElementType(value) {
+    return LIST_ELEMENT_TYPE_SET.has(value) ? value : 'string';
+  }
+
+  function ensureParamElementType(param) {
+    if (!param) return;
+    if (param.type === 'list') {
+      param.elementType = getValidListElementType(param.elementType);
+    } else if (param.elementType) {
+      delete param.elementType;
+    }
+  }
+
+  function getListElementTypeForParam(param) {
+    if (!param || param.type !== 'list') return 'string';
+    return getValidListElementType(param.elementType);
+  }
+
+  function getSelectedListElementType() {
+    if (!listElementTypeSelect) return 'string';
+    return getValidListElementType(listElementTypeSelect.value);
+  }
+
+  function getListElementTypeLabel(value) {
+    const target = LIST_ELEMENT_TYPE_OPTIONS.find((opt) => opt.value === value);
+    return target ? target.label : value;
   }
 
   function setInvalidNameVisual(element, invalid) {
@@ -111,13 +189,143 @@
 
   function updateTemplateNameInputValidity() {
     if (!templateNameInput) return;
-    setInvalidNameVisual(templateNameInput, isPureNumericName(templateNameInput.value));
+    setInvalidNameVisual(templateNameInput, isTemplateNameInvalid(templateNameInput.value));
   }
 
   function updateInstanceNameInputValidity() {
     if (!instanceNameInput) return;
     setInvalidNameVisual(instanceNameInput, isPureNumericName(instanceNameInput.value));
   }
+
+  function updateListElementTypeSelectState(customValue) {
+    if (!listElementTypeSelect) return;
+    const shouldShow = paramTypeSelect && paramTypeSelect.value === 'list';
+    listElementTypeSelect.style.display = shouldShow ? '' : 'none';
+    listElementTypeSelect.disabled = !shouldShow;
+    if (!shouldShow) return;
+    const value = customValue ? getValidListElementType(customValue) : getValidListElementType(listElementTypeSelect.value);
+    if (listElementTypeSelect.value !== value) {
+      listElementTypeSelect.value = value;
+    }
+  }
+
+  function getCurrentEngineLabel() {
+    return ENGINE_LABELS[currentEngineMode] || '';
+  }
+
+  function updateEngineModeUIState() {
+    if (engineModeToggleBtn) {
+      engineModeToggleBtn.textContent = `切换模式：当前${getCurrentEngineLabel()}`;
+    }
+    if (regenerateCsBtn) {
+      regenerateCsBtn.style.display = isUnityMode() ? '' : 'none';
+    }
+    if (regenerateCppBtn) {
+      regenerateCppBtn.style.display = isUEMode() ? '' : 'none';
+    }
+    updateTemplateNameInputValidity();
+    refreshParamTypeOptions();
+  }
+
+  function setEngineMode(newMode) {
+    if (!Object.values(ENGINE_MODES).includes(newMode)) return;
+    if (newMode === currentEngineMode) return;
+    currentEngineMode = newMode;
+    engineModeNeedsConfirmation[newMode] = true;
+    updateEngineModeUIState();
+    refreshTemplates();
+  }
+
+  function toggleEngineMode() {
+    setEngineMode(isUnityMode() ? ENGINE_MODES.UE : ENGINE_MODES.UNITY);
+  }
+  async function getConfigDirectoryHandle(options = {}) {
+    if (!directoryHandle) return null;
+    const create = Boolean(options.create);
+    if (configDirHandle) return configDirHandle;
+    try {
+      configDirHandle = await directoryHandle.getDirectoryHandle(CONFIG_DIR_NAME, { create });
+    } catch (err) {
+      if (!create && err && err.name === 'NotFoundError') {
+        configDirHandle = null;
+        return null;
+      }
+      if (create) {
+        console.warn('无法创建配置目录', err);
+      }
+      configDirHandle = null;
+      return null;
+    }
+    return configDirHandle;
+  }
+
+  async function readEditorConfig() {
+    try {
+      const dir = await getConfigDirectoryHandle({ create: false });
+      if (!dir) return null;
+      const fileHandle = await dir.getFileHandle(CONFIG_FILE_NAME, { create: false });
+      const file = await fileHandle.getFile();
+      const text = await file.text();
+      return JSON.parse(text);
+    } catch (err) {
+      return null;
+    }
+  }
+
+  async function persistEditorConfig() {
+    if (!directoryHandle) return;
+    try {
+      const dir = await getConfigDirectoryHandle({ create: true });
+      if (!dir) return;
+      const payload = {
+        engineMode: currentEngineMode,
+      };
+      await writeTextFile(dir, CONFIG_FILE_NAME, JSON.stringify(payload, null, 2));
+    } catch (err) {
+      console.warn('保存编辑器配置失败', err);
+    }
+  }
+
+  async function loadEditorConfigState() {
+    if (!directoryHandle) {
+      updateEngineModeUIState();
+      return;
+    }
+    try {
+      const config = await readEditorConfig();
+      const mode = config && config.engineMode;
+      if (mode && Object.values(ENGINE_MODES).includes(mode)) {
+        if (currentEngineMode !== mode) {
+          setEngineMode(mode);
+        } else {
+          updateEngineModeUIState();
+        }
+        return;
+      }
+    } catch (err) {
+      console.warn('读取编辑器配置失败', err);
+    }
+    if (currentEngineMode !== ENGINE_MODES.UNITY) {
+      setEngineMode(ENGINE_MODES.UNITY);
+    } else {
+      updateEngineModeUIState();
+    }
+  }
+
+
+  async function ensureEngineGenerationConsent(actionLabel = '生成操作') {
+    if (!engineModeNeedsConfirmation[currentEngineMode]) {
+      return true;
+    }
+    const engineName = getCurrentEngineLabel();
+    const confirmed = window.confirm(`首次在${engineName}模式执行${actionLabel}，是否继续？`);
+    if (!confirmed) {
+      return false;
+    }
+    engineModeNeedsConfirmation[currentEngineMode] = false;
+    return true;
+  }
+
 
   function updateInstanceIdInputState(duplicateIdInfo = null) {
     if (!instanceIdInput) return;
@@ -806,7 +1014,7 @@
       }
       const label = document.createElement('span');
       label.textContent = tpl.name || `模板${idx + 1}`;
-      setInvalidNameVisual(label, isPureNumericName(tpl.name));
+      setInvalidNameVisual(label, isTemplateNameInvalid(tpl.name));
       li.appendChild(label);
       li.addEventListener('click', () => {
         if (idx === sheetActiveTemplateIndex) return;
@@ -1092,6 +1300,8 @@
   const logListEl = $("logList");
   const closeLogBtn = $("closeLog");
   const clearLogsBtn = $("clearLogs");
+  const engineModeToggleBtn = $("engineModeToggle");
+  const regenerateCppBtn = $("regenerateCpp");
   const toggleEditModeBtn = $("toggleEditMode");
   const sheetModePanel = $("sheetMode");
   const sheetTemplateListEl = $("sheetTemplateList");
@@ -1372,7 +1582,7 @@
     trashOverlay.setAttribute('aria-hidden', 'false');
     try {
       trashOverlay.focus({ preventScroll: true });
-    } catch {}
+    } catch (_err) {}
   }
 
   function closeTrashOverlayPanel() {
@@ -1449,15 +1659,15 @@
       showMessage('请先选择工作目录', 'warn');
       return;
     }
-    if (!dataEntityHandle || !csharpHandle) {
-      try {
-        await ensureSubFolders();
-      } catch (err) {
-        console.warn('恢复模板时无法确保目录结构', err);
-        showMessage('恢复失败，请检查权限', 'warn');
-        return;
-      }
+    try {
+      await cleanConflictingEngineArtifacts();
+      await ensureSubFolders();
+    } catch (err) {
+      console.warn('恢复模板时无法确保目录结构', err);
+      showMessage('恢复失败，请检查权限', 'warn');
+      return;
     }
+
     const handle = await ensureTrashDirectory();
     if (!handle) {
       showMessage('垃圾箱目录不可用', 'warn');
@@ -1536,6 +1746,7 @@
       lastSavedStructureSnapshot.set(template.__uid, snapshotTemplateStructure(template));
     }
 
+    let restoreInvalidMessage = '';
     try {
       if (isEnumTemplate(template)) {
         await saveEnumTemplateCache(template);
@@ -1543,13 +1754,22 @@
         if (enumJson) {
           await writeTextFile(dataEntityHandle, `${template.name}.json`, JSON.stringify(enumJson, null, 2));
         }
-      } else {
-        const csContent = generateCSContent(template);
-        await writeTextFile(csharpHandle, `${template.name}.cs`, csContent);
       }
       await writeManifestForTemplates();
-      await generateEnumCSFiles(getEnumTemplate());
-      await generateRuntimeLoaderArtifacts();
+      if (isUnityMode()) {
+        if (!isEnumTemplate(template)) {
+          const csContent = generateCSContent(template);
+          await writeTextFile(csharpHandle, `${template.name}.cs`, csContent);
+        }
+        await generateEnumCSFiles(getEnumTemplate());
+        await generateRuntimeLoaderArtifacts();
+      } else {
+        const result = await generateUECppStructuresForCurrentTemplates();
+        if (result.invalidMessage) {
+          restoreInvalidMessage = result.invalidMessage;
+          addLogEntry('warn', result.invalidMessage);
+        }
+      }
     } catch (err) {
       console.warn('恢复模板后生成文件失败', err);
       showMessage('模板已恢复，但生成关联文件失败，请手动保存', 'warn');
@@ -1558,7 +1778,11 @@
       return;
     }
 
-    showMessage(`已恢复模板：${template.name}`);
+    if (restoreInvalidMessage) {
+      showMessage(`${restoreInvalidMessage}（模板：${template.name}）`, 'warn');
+    } else {
+      showMessage(`已恢复模板：${template.name}`);
+    }
     await refreshTrashButtonState();
     await refreshTrashOverlayContents();
   }
@@ -2600,6 +2824,11 @@
       setEditMode(next);
     });
   }
+  if (engineModeToggleBtn) {
+    engineModeToggleBtn.addEventListener('click', () => {
+      toggleEngineMode();
+    });
+  }
   if (viewLogsBtn) {
     viewLogsBtn.addEventListener('click', openLogOverlay);
   }
@@ -2638,6 +2867,14 @@
       }
     });
   }
+  updateEngineModeUIState();
+  updateListElementTypeSelectState();
+  if (regenerateCsBtn) {
+    regenerateCsBtn.addEventListener("click", regenerateCSharpStructures);
+  }
+  if (regenerateCppBtn) {
+    regenerateCppBtn.addEventListener('click', regenerateCppStructures);
+  }
   if (regenerateCsBtn) {
     regenerateCsBtn.addEventListener("click", regenerateCSharpStructures);
   }
@@ -2661,9 +2898,11 @@
   if (paramNameInput) {
     paramNameInput.addEventListener('input', updateParamNameInputValidity);
   }
+  
   if (paramTypeSelect) {
     paramTypeSelect.addEventListener('change', () => {
       updateIndexTemplateOptions();
+      updateListElementTypeSelectState();
     });
   }
   if (renameTemplateBtn) {
@@ -3221,7 +3460,7 @@
         }
         return false;
       }
-    } catch {}
+    } catch (_err) {}
     return true;
   }
   async function autoRestoreLastDirectory() {
@@ -3230,15 +3469,19 @@
       if (!handle) return;
       // 申请持久化存储，提升恢复成功率
       if (navigator.storage && navigator.storage.persist) {
-        try { await navigator.storage.persist(); } catch {}
+        try { await navigator.storage.persist(); } catch (_err) {}
       }
       const ok = await verifyPermission(handle, true);
       if (!ok) return;
       directoryHandle = handle;
+      configDirHandle = null;
       currentDirLabel.textContent = directoryHandle.name;
+      await loadEditorConfigState();
       await ensureSubFolders();
-      await ensureModelStruct();
-      await generateRuntimeLoaderArtifacts();
+      if (isUnityMode()) {
+        await ensureModelStruct();
+        await generateRuntimeLoaderArtifacts();
+      }
       await loadAllTemplates();
       refreshTemplates();
       updateIndexTemplateOptions();
@@ -3254,10 +3497,14 @@
   async function chooseDirectory() {
     try {
       directoryHandle = await window.showDirectoryPicker();
+      configDirHandle = null;
       currentDirLabel.textContent = directoryHandle.name;
+      await loadEditorConfigState();
       await ensureSubFolders();
-      await ensureModelStruct();
-      await generateRuntimeLoaderArtifacts();
+      if (isUnityMode()) {
+        await ensureModelStruct();
+        await generateRuntimeLoaderArtifacts();
+      }
       await loadAllTemplates();
       refreshTemplates();
       updateIndexTemplateOptions();
@@ -3281,8 +3528,40 @@
     return IGNORED_FILE_SUFFIXES.some((suffix) => lower.endsWith(suffix));
   }
 
+  async function removeDirectoryIfExists(parentHandle, name) {
+    if (!parentHandle || typeof parentHandle.removeEntry !== 'function' || !name) return false;
+    try {
+      await parentHandle.removeEntry(name, { recursive: true });
+      return true;
+    } catch (err) {
+      if (err && err.name === 'NotFoundError') {
+        return false;
+      }
+      console.warn(`删除目录${name}失败`, err);
+      return false;
+    }
+  }
+
+  async function cleanConflictingEngineArtifacts() {
+    if (!directoryHandle) return;
+    let removed = false;
+    if (isUnityMode()) {
+      removed = (await removeDirectoryIfExists(directoryHandle, 'cppmodel')) || removed;
+      cppModelHandle = null;
+      cppEnumHandle = null;
+    } else {
+      removed = (await removeDirectoryIfExists(directoryHandle, 'csharpDate')) || removed;
+      removed = (await removeDirectoryIfExists(directoryHandle, 'Editor')) || removed;
+    
+      csharpHandle = null;
+      
+      editorHandle = null;
+      modelStructHandle = null;
+    }
+  }
+
   async function ensureSubFolders() {
-    csharpHandle = await directoryHandle.getDirectoryHandle("csharpDate", { create: true });
+    if (!directoryHandle) return;
     dataEntityHandle = await directoryHandle.getDirectoryHandle("dataEntity", { create: true });
     try {
       trashHandle = await dataEntityHandle.getDirectoryHandle(TRASH_FOLDER_NAME, { create: true });
@@ -3290,28 +3569,51 @@
       console.warn('无法创建或访问垃圾箱目录', err);
       trashHandle = null;
     }
-    try {
-      editorHandle = await directoryHandle.getDirectoryHandle("Editor", { create: true });
-    } catch (err) {
-      console.warn('无法创建或访问 Editor 文件夹', err);
+    if (isUnityMode()) {
+      cppModelHandle = null;
+      cppEnumHandle = null;
+      csharpHandle = await directoryHandle.getDirectoryHandle("csharpDate", { create: true });
+      try {
+        editorHandle = await directoryHandle.getDirectoryHandle("Editor", { create: true });
+      } catch (err) {
+        console.warn('无法创建或访问 Editor 文件夹', err);
+        editorHandle = null;
+      }
+      for await (const entry of csharpHandle.values()) {
+        if (entry.kind === "file" && shouldIgnoreFileEntry(entry.name)) {
+          continue;
+        }
+        if (entry.kind === "file" && !entry.name.toLowerCase().endsWith(".cs")) {
+          showMessage(`csharpDate 文件夹内仅允许 .cs 文件：${entry.name}`);
+          throw new Error("Invalid file in csharpDate");
+        }
+        if (entry.kind === "file") {
+          const file = await entry.getFile();
+          const text = await file.text();
+          const hasMethod = /\bvoid\b|\bpublic\b|\bprivate\b/.test(text);
+          if (hasMethod) {
+            showMessage(`检测到已有 cs 文件包含方法，跳过读取：${entry.name}`);
+          }
+        }
+      }
+    } else {
+      csharpHandle = null;
       editorHandle = null;
-    }
-    // 检查文件类型
-    for await (const entry of csharpHandle.values()) {
-      if (entry.kind === "file" && shouldIgnoreFileEntry(entry.name)) {
-        continue;
+      cppModelHandle = await directoryHandle.getDirectoryHandle("cppmodel", { create: true });
+      try {
+        cppEnumHandle = await cppModelHandle.getDirectoryHandle("enum", { create: true });
+      } catch (err) {
+        console.warn('无法创建或访问 enum 目录', err);
+        cppEnumHandle = null;
       }
-      if (entry.kind === "file" && !entry.name.toLowerCase().endsWith(".cs")) {
-        showMessage(`csharpDate 文件夹内仅允许 .cs 文件：${entry.name}`);
-        throw new Error("Invalid file in csharpDate");
-      }
-      if (entry.kind === "file") {
-        const file = await entry.getFile();
-        const text = await file.text();
-        // 简单检测是否包含方法定义
-        const hasMethod = /\bvoid\b|\bpublic\b|\bprivate\b/.test(text);
-        if (hasMethod) {
-          showMessage(`检测到已有 cs 文件包含方法，跳过读取：${entry.name}`);
+      for await (const entry of cppModelHandle.values()) {
+        if (entry.kind === 'directory') continue;
+        if (entry.kind === "file" && shouldIgnoreFileEntry(entry.name)) {
+          continue;
+        }
+        if (entry.kind === "file" && !entry.name.toLowerCase().endsWith(".h")) {
+          showMessage(`cppmodel 文件夹内仅允许 .h 文件：${entry.name}`);
+          throw new Error("Invalid file in cppmodel");
         }
       }
     }
@@ -3324,6 +3626,17 @@
         throw new Error("Invalid file in dataEntity");
       }
     }
+  }
+  async function ensureCppEnumDirectory() {
+    if (cppEnumHandle) return cppEnumHandle;
+    if (!cppModelHandle) return null;
+    try {
+      cppEnumHandle = await cppModelHandle.getDirectoryHandle("enum", { create: true });
+    } catch (err) {
+      console.warn('无法创建或访问 enum 目录', err);
+      cppEnumHandle = null;
+    }
+    return cppEnumHandle;
   }
 
   /**
@@ -3478,7 +3791,10 @@
 
   function normalizeTemplateParameterIndexes(template) {
     if (!template || !Array.isArray(template.parameters)) return;
-    template.parameters.forEach((param) => normalizeParamIndexStructure(param));
+    template.parameters.forEach((param) => {
+      normalizeParamIndexStructure(param);
+      ensureParamElementType(param);
+    });
   }
 
   function populateMissingIndexFields(templatesList) {
@@ -3498,6 +3814,7 @@
   }
 
   async function generateRuntimeLoaderArtifacts() {
+    if (!isUnityMode()) return;
     if (!csharpHandle) return;
     if (!modelStructHandle) {
       await ensureModelStruct();
@@ -4700,9 +5017,9 @@ DataEntityRuntimeTester 使用说明
       name,
       payload: {},
     };
-    // 默认值
+    // 默认值␊
     tpl.parameters.forEach((p) => {
-      inst.payload[p.name] = getDefaultValueForType(p.type);
+      inst.payload[p.name] = getDefaultValueForType(p.type, getListElementTypeForParam(p));
     });
     inst.payload.template = tpl.name;
     inst.payload.id = nextId;
@@ -4930,6 +5247,7 @@ DataEntityRuntimeTester 使用说明
     if (isEnumTemplate(tpl)) {
       type = 'string';
     }
+    let listElementTypeValue = type === 'list' ? getSelectedListElementType() : null;
     let indexObj = null;
     const isEnumParamType = isEnumType(type);
     if (isEnumParamType) {
@@ -4973,7 +5291,7 @@ DataEntityRuntimeTester 使用说明
         showMessage('参数名称不能为纯数字');
         return;
       }
-      updateParamAtIndex(editingParamIndex, effectiveName, type, indexObj);
+      updateParamAtIndex(editingParamIndex, effectiveName, type, indexObj, listElementTypeValue);
       editingParamIndex = -1;
       selectedParams.clear();
       refreshParams();
@@ -5005,6 +5323,9 @@ DataEntityRuntimeTester 使用说明
         }
       : null;
     const param = { name, type };
+    if (type === 'list') {
+      param.elementType = listElementTypeValue;
+    }
     if (indexBinding) {
       param.parameterIndexes = indexBinding;
     }
@@ -5013,7 +5334,7 @@ DataEntityRuntimeTester 使用说明
       if (indexBinding) {
         inst.payload[name] = { template: indexBinding.template, by: indexBinding.param, value: '' };
       } else {
-        inst.payload[name] = getDefaultValueForType(type);
+        inst.payload[name] = getDefaultValueForType(type, getListElementTypeForParam(param));
       }
     });
     refreshParams();
@@ -5023,7 +5344,7 @@ DataEntityRuntimeTester 使用说明
   /**
    * 更新参数
    */
-  function updateParamAtIndex(index, newName, newType, newIndexObj) {
+  function updateParamAtIndex(index, newName, newType, newIndexObj, newElementType) {
     if (currentTemplateIndex < 0 || index < 0) return;
     const tpl = templates[currentTemplateIndex];
     const param = tpl.parameters[index];
@@ -5065,11 +5386,17 @@ DataEntityRuntimeTester 使用说明
     }
     const oldName = param.name;
     const oldType = param.type;
+    const normalizedElementType = newType === 'list' ? getValidListElementType(newElementType) : null;
     // 更新定义
     param.name = newName;
     param.type = newType;
     const oldIndex = param.parameterIndexes;
     param.parameterIndexes = newIndexObj;
+    if (newType === 'list') {
+      param.elementType = normalizedElementType;
+    } else {
+      delete param.elementType;
+    }
     // 对所有实例调整 payload
     tpl.instances.forEach((inst) => {
       // 如果重命名
@@ -5080,7 +5407,7 @@ DataEntityRuntimeTester 使用说明
       // 如果类型变化，尝试转换
       if (oldType !== newType) {
         const val = inst.payload[newName];
-        inst.payload[newName] = convertValueForType(val, newType);
+        inst.payload[newName] = convertValueForType(val, newType, normalizedElementType || 'string');
       }
       // 如果索引配置变化，规范化/还原值
       if (!oldIndex && newIndexObj) {
@@ -5091,7 +5418,7 @@ DataEntityRuntimeTester 使用说明
         // 取消索引：取引用对象中的 value 作为当前类型的值
         const ref = inst.payload[newName];
         const raw = ref && typeof ref === 'object' ? ref.value : ref;
-        inst.payload[newName] = convertValueForType(raw, newType);
+        inst.payload[newName] = convertValueForType(raw, newType, normalizedElementType || 'string');
       } else if (oldIndex && newIndexObj) {
         // 索引存在但定义变化：同步 template/by 保留 value
         const ref = inst.payload[newName];
@@ -5108,14 +5435,14 @@ DataEntityRuntimeTester 使用说明
   /**
    * 根据新类型转换现有值，简单处理
    */
-  function convertValueForType(val, type) {
+  function convertValueForType(val, type, elementType = 'string') {
     if (isEnumType(type)) {
       const enums = getEnumValues(type);
       const str = val == null ? '' : String(val);
       if (enums && enums.includes(str)) return str;
       return (enums && enums.length > 0) ? enums[0] : '';
     }
-    if (val === undefined || val === null) return getDefaultValueForType(type);
+    if (val === undefined || val === null) return getDefaultValueForType(type, elementType);
     switch (type) {
       case 'string':
         return String(val);
@@ -5128,8 +5455,7 @@ DataEntityRuntimeTester 使用说明
       case 'bool':
         return Boolean(val);
       case 'list':
-        if (Array.isArray(val)) return val.map(v => (v == null ? '' : String(v)));
-        return val ? String(val).split(/\s*,\s*/) : [];
+        return convertValueToList(val, elementType);
       case 'object':
         try {
           return typeof val === 'object' ? val : JSON.parse(val);
@@ -5155,7 +5481,7 @@ DataEntityRuntimeTester 使用说明
   /**
    * 根据类型获取默认值
    */
-  function getDefaultValueForType(type) {
+  function getDefaultValueForType(type, elementType = 'string') {
     if (isEnumType(type)) {
       const enums = getEnumValues(type);
       return (enums && enums.length > 0) ? enums[0] : '';
@@ -5170,12 +5496,124 @@ DataEntityRuntimeTester 使用说明
       case "bool":
         return false;
       case "list":
-        return [""];
+        return [getDefaultValueForElementType(elementType)];
       case "object":
         return {};
       default:
         return null;
     }
+  }
+
+  function getDefaultValueForElementType(elementType) {
+    switch (elementType) {
+      case 'int':
+      case 'long':
+        return 0;
+      case 'float':
+        return 0;
+      case 'bool':
+        return false;
+      case 'string':
+      default:
+        return '';
+    }
+  }
+
+  function convertValueToList(val, elementType) {
+    let arr;
+    if (Array.isArray(val)) {
+      arr = val.slice();
+    } else if (val == null || val === '') {
+      arr = [];
+    } else if (typeof val === 'string') {
+      arr = val.split(/\s*,\s*/);
+    } else {
+      arr = [val];
+    }
+    return arr.map((item) => coerceListElementValue(item, elementType));
+  }
+
+  function coerceListElementValue(value, elementType) {
+    if (value === null || value === undefined) {
+      return '';
+    }
+    if (elementType === 'string') {
+      return String(value);
+    }
+    if (elementType === 'bool') {
+      if (typeof value === 'boolean') return value;
+      const str = String(value).trim().toLowerCase();
+      if (str === 'true') return true;
+      if (str === 'false') return false;
+      return value;
+    }
+    if (elementType === 'float') {
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+      const parsed = parseFloat(value);
+      return Number.isFinite(parsed) ? parsed : value;
+    }
+    if (elementType === 'int' || elementType === 'long') {
+      if (typeof value === 'number' && Number.isInteger(value)) return value;
+      const str = String(value).trim();
+      if (/^-?\d+$/.test(str)) {
+        const parsed = parseInt(str, 10);
+        if (Number.isFinite(parsed)) return parsed;
+      }
+      return value;
+    }
+    return value;
+  }
+
+  function isListElementValueValid(value, elementType) {
+    if (value === null || value === undefined) return false;
+    if (elementType === 'string') return typeof value === 'string';
+    if (elementType === 'bool') return typeof value === 'boolean';
+    if (elementType === 'float') return typeof value === 'number' && Number.isFinite(value);
+    if (elementType === 'int' || elementType === 'long') {
+      return typeof value === 'number' && Number.isInteger(value);
+    }
+    return true;
+  }
+
+  function validateListValueAgainstType(value, elementType) {
+    if (!Array.isArray(value)) {
+      return { valid: false, invalidIndices: [], reason: '值不是列表' };
+    }
+    const invalidIndices = [];
+    value.forEach((item, idx) => {
+      if (!isListElementValueValid(item, elementType)) {
+        invalidIndices.push(idx);
+      }
+    });
+    return { valid: invalidIndices.length === 0, invalidIndices };
+  }
+
+  function collectListTypeViolations(tpl) {
+    const invalidInstances = new Map();
+    const invalidParams = new Map();
+    if (!tpl || !Array.isArray(tpl.parameters) || !Array.isArray(tpl.instances)) {
+      return { invalidInstances, invalidParams };
+    }
+    tpl.parameters.forEach((param) => {
+      if (!param || param.type !== 'list') return;
+      const elementType = getListElementTypeForParam(param);
+      const invalidForParam = new Map();
+      tpl.instances.forEach((inst, idx) => {
+        if (!inst || !inst.payload) return;
+        const currentValue = inst.payload[param.name];
+        const validation = validateListValueAgainstType(currentValue, elementType);
+        if (!validation.valid) {
+          invalidForParam.set(idx, validation);
+          const list = invalidInstances.get(idx) || [];
+          list.push({ paramName: param.name, elementType, invalidIndices: validation.invalidIndices });
+          invalidInstances.set(idx, list);
+        }
+      });
+      if (invalidForParam.size > 0) {
+        invalidParams.set(param.name, { elementType, invalidInstances: invalidForParam });
+      }
+    });
+    return { invalidInstances, invalidParams };
   }
 
   function isEnumTemplate(tpl) {
@@ -5290,6 +5728,11 @@ DataEntityRuntimeTester 使用说明
     return result || 'Member';
   }
 
+  function getBuiltinParamTypeOptionsForCurrentMode() {
+    
+    return builtinParamTypeOptions;
+  }
+
   function refreshParamTypeOptions() {
     if (!paramTypeSelect) return;
     const previousValue = paramTypeSelect.value;
@@ -5305,7 +5748,8 @@ DataEntityRuntimeTester 使用说明
       });
     });
     paramTypeSelect.innerHTML = '';
-    builtinParamTypeOptions.forEach((opt) => {
+    const builtinOptions = getBuiltinParamTypeOptionsForCurrentMode();
+    builtinOptions.forEach((opt) => {
       const optionEl = document.createElement('option');
       optionEl.value = opt.value;
       optionEl.textContent = opt.label;
@@ -5350,6 +5794,7 @@ DataEntityRuntimeTester 使用说明
     if (shouldDisable) {
       paramTypeSelect.value = 'string';
     }
+    updateListElementTypeSelectState();
   }
 
   function applyIndexDisabledState(message) {
@@ -5430,9 +5875,14 @@ DataEntityRuntimeTester 使用说明
         li.classList.remove('duplicate-id');
       }
       const hasInvalidReferences = doesTemplateHaveInvalidIndexReferences(tpl);
-      li.classList.toggle('invalid-reference', hasInvalidReferences);
+      const listValidation = collectListTypeViolations(tpl);
+      const hasListErrors = listValidation.invalidInstances.size > 0;
+      li.classList.toggle('invalid-reference', hasInvalidReferences || hasListErrors);
       if (hasInvalidReferences) {
         tooltipParts.push('存在无效的索引引用');
+      }
+      if (hasListErrors) {
+        tooltipParts.push('存在无效的列表数据');
       }
       if (tooltipParts.length > 0) {
         li.title = tooltipParts.join('\n');
@@ -5458,7 +5908,7 @@ DataEntityRuntimeTester 使用说明
       }
       const nameSpan = document.createElement('span');
       nameSpan.textContent = tpl.name;
-      setInvalidNameVisual(nameSpan, isPureNumericName(tpl.name));
+      setInvalidNameVisual(nameSpan, isTemplateNameInvalid(tpl.name));
       li.appendChild(nameSpan);
       if (exportSelectionMode) {
         const counts = getTemplateExportCounts(tpl);
@@ -5764,7 +6214,8 @@ DataEntityRuntimeTester 使用说明
     }
     const duplicateInfo = collectDuplicateIndexInfo(tpl);
     const duplicateIdInfo = collectDuplicateIdInfo(tpl);
-    const invalidInstanceMap = collectInstanceIndexInvalidReasons(tpl);
+     const invalidInstanceMap = collectInstanceIndexInvalidReasons(tpl);
+    const listValidation = collectListTypeViolations(tpl);
     lastDuplicateIndexInfo = { uid: tpl.__uid, info: duplicateInfo };
     const duplicatesByIndex = duplicateInfo.byIndex;
     const duplicatesById = duplicateIdInfo.byIndex;
@@ -5836,6 +6287,12 @@ DataEntityRuntimeTester 使用说明
         if (invalidDetails) {
           tooltipParts.push(`索引引用错误：${invalidDetails}`);
         }
+      }
+      const invalidListEntry = listValidation.invalidInstances.get(idx);
+      if (invalidListEntry && invalidListEntry.length > 0) {
+        li.classList.add('invalid-reference');
+        const listDetail = invalidListEntry.map((entry) => entry.paramName).join(', ');
+        tooltipParts.push(`列表类型错误：${listDetail}`);
       }
       if (tooltipParts.length > 0) {
         li.title = tooltipParts.join('\n');
@@ -5976,6 +6433,7 @@ DataEntityRuntimeTester 使用说明
     const tpl = templates[currentTemplateIndex];
     const inst = tpl.instances[currentInstanceIndex];
     const indexValidation = evaluateInstanceIndexValidation(tpl, inst);
+    const listValidation = collectListTypeViolations(tpl);
     if (indexValidation.hasInvalid) {
       const tooltip = Array.from(indexValidation.invalidParams.entries())
         .map(([name, reason]) => `${name}: ${reason}`)
@@ -6069,7 +6527,7 @@ DataEntityRuntimeTester 使用说明
         inputEl.style.flex = '1';
         inputEl.value = inst.payload && inst.payload[key] != null ? String(inst.payload[key]) : '';
         const updateEnumValueValidity = () => {
-          setInvalidNameVisual(inputEl, isPureNumericName(inputEl.value));
+          setInvalidNameVisual(inputEl, isEnumValueInvalid(inputEl.value));
         };
         updateEnumValueValidity();
         // 防止点击输入框触发父级选择逻辑，打断编辑
@@ -6131,7 +6589,12 @@ DataEntityRuntimeTester 使用说明
       const item = document.createElement("div");
       item.classList.add("param-item");
       const label = document.createElement('label');
-      label.textContent = p.name;
+      if (p.type === 'list') {
+        const elementTypeLabel = getListElementTypeLabel(getListElementTypeForParam(p));
+        label.textContent = `${p.name} (列表: ${elementTypeLabel})`;
+      } else {
+        label.textContent = p.name;
+      }
       setInvalidNameVisual(label, isPureNumericName(p.name));
       item.appendChild(label);
       if (selectedParams.has(idx)) item.classList.add('active');
@@ -6139,6 +6602,13 @@ DataEntityRuntimeTester 使用说明
       if (invalidReason) {
         item.classList.add('invalid-reference');
         item.title = invalidReason;
+      }
+      const invalidListInfo = listValidation.invalidParams.get(p.name);
+      if (invalidListInfo) {
+        item.classList.add('invalid-reference');
+        const instances = Array.from(invalidListInfo.invalidInstances.keys()).map((idx) => idx + 1);
+        const detail = `列表元素类型错误（实例 ${instances.join(', ')}）`;
+        item.title = item.title ? `${item.title}\n${detail}` : detail;
       }
       if (p.parameterIndexes) {
         const info = document.createElement('span');
@@ -6270,60 +6740,79 @@ DataEntityRuntimeTester 使用说明
               inputEl.type = 'checkbox';
               inputEl.checked = !!value;
               break;
-            case 'list':
-            // 列表类型：渲染为多个子输入 + 操作按钮
-            let arr = Array.isArray(value) ? value.slice() : [];
-            if (arr.length === 0) arr = [""];
-            inst.payload[p.name] = arr;
-            const listWrap = document.createElement('div');
-            listWrap.style.display = 'flex';
-            listWrap.style.flexDirection = 'column';
-            listWrap.style.flex = '1';
-            const renderList = () => {
-              listWrap.innerHTML = '';
-              arr.forEach((val, i) => {
-                const row = document.createElement('div');
-                row.style.display = 'flex';
-                row.style.gap = 'calc(4px * var(--row-scale))';
-                row.style.marginBottom = 'calc(4px * var(--row-scale))';
-                const inp = document.createElement('input');
-                inp.type = 'text';
-                inp.value = val ?? '';
-                inp.style.flex = '1';
-                inp.addEventListener('change', () => {
-                  inst.payload[p.name][i] = inp.value;
+            case 'list': {
+              const elementType = getListElementTypeForParam(p);
+              let arr = Array.isArray(value) ? value.slice() : [];
+              if (arr.length === 0) {
+                arr = [getDefaultValueForElementType(elementType)];
+              }
+              inst.payload[p.name] = arr;
+              const listWrap = document.createElement('div');
+              listWrap.classList.add('list-editor');
+              listWrap.style.display = 'flex';
+              listWrap.style.flexDirection = 'column';
+              listWrap.style.flex = '1';
+              const renderList = () => {
+                listWrap.innerHTML = '';
+                arr.forEach((val, i) => {
+                  const row = document.createElement('div');
+                  row.classList.add('list-row');
+                  row.style.display = 'flex';
+                  row.style.gap = 'calc(4px * var(--row-scale))';
+                  row.style.marginBottom = 'calc(4px * var(--row-scale))';
+                  const control = document.createElement('input');
+                  control.style.flex = '1';
+                  if (elementType === 'string') {
+                    control.type = 'text';
+                  } else if (elementType === 'bool') {
+                    control.type = 'text';
+                    control.setAttribute('placeholder', 'true / false');
+                  } else {
+                    control.type = 'number';
+                    if (elementType === 'float') {
+                      control.step = 'any';
+                    } else {
+                      control.step = '1';
+                    }
+                  }
+                  control.value = val == null ? '' : String(val);
+                  control.addEventListener('change', () => {
+                    const converted = coerceListElementValue(control.value, elementType);
+                    inst.payload[p.name][i] = converted;
+                    setInvalidNameVisual(control, !isListElementValueValid(converted, elementType));
+                  });
+                  setInvalidNameVisual(control, !isListElementValueValid(val, elementType));
+                  row.appendChild(control);
+                  listWrap.appendChild(row);
                 });
-                row.appendChild(inp);
-                listWrap.appendChild(row);
-              });
-            };
-            renderList();
-            item.appendChild(listWrap);
-            const addBtn = document.createElement('button');
-            addBtn.textContent = '增加元素';
-            addBtn.classList.add('list-control-btn');
-            addBtn.addEventListener('click', (e2) => {
-              e2.stopPropagation();
-              inst.payload[p.name].push('');
-              arr = inst.payload[p.name];
+              };
               renderList();
-            });
-            const removeBtn = document.createElement('button');
-            removeBtn.textContent = '删除元素';
-            removeBtn.classList.add('list-control-btn');
-            removeBtn.addEventListener('click', (e2) => {
-              e2.stopPropagation();
-              if (inst.payload[p.name].length > 1) {
-                inst.payload[p.name].pop();
+              item.appendChild(listWrap);
+              const addBtn = document.createElement('button');
+              addBtn.textContent = '增加元素';
+              addBtn.classList.add('list-control-btn');
+              addBtn.addEventListener('click', (e2) => {
+                e2.stopPropagation();
+                inst.payload[p.name].push(getDefaultValueForElementType(elementType));
                 arr = inst.payload[p.name];
                 renderList();
-              }
-            });
-            item.appendChild(addBtn);
-            item.appendChild(removeBtn);
-            // 跳过通用 inputEl 追加
-            inputEl = null;
-            break;
+              });
+              const removeBtn = document.createElement('button');
+              removeBtn.textContent = '删除元素';
+              removeBtn.classList.add('list-control-btn');
+              removeBtn.addEventListener('click', (e2) => {
+                e2.stopPropagation();
+                if (inst.payload[p.name].length > 1) {
+                  inst.payload[p.name].pop();
+                  arr = inst.payload[p.name];
+                  renderList();
+                }
+              });
+              item.appendChild(addBtn);
+              item.appendChild(removeBtn);
+              inputEl = null;
+              break;
+            }
           case 'object':
             inputEl = document.createElement('input');
             inputEl.type = 'text';
@@ -6499,8 +6988,10 @@ DataEntityRuntimeTester 使用说明
         inst.payload[param.name] = inputEl.checked;
         break;
       case "list":
-        // 不使用通用处理（列表已在专用 UI 内处理），这里保底支持逗号分隔
-        inst.payload[param.name] = inputEl.value ? inputEl.value.split(/\s*,\s*/) : [""];
+        {
+          const elementType = getListElementTypeForParam(param);
+          inst.payload[param.name] = convertValueToList(inputEl.value, elementType);
+        }
         break;
       case "object":
         try {
@@ -6534,6 +7025,7 @@ DataEntityRuntimeTester 使用说明
       // 没有选中，重置输入
       paramNameInput.value = '';
       paramTypeSelect.value = 'string';
+       updateListElementTypeSelectState();
       updateParamNameInputValidity();
       if (!indexTemplateSelect.disabled) {
         indexTemplateSelect.value = '';
@@ -6556,6 +7048,11 @@ DataEntityRuntimeTester 使用说明
     paramTypeSelect.value = p.type;
     if (isEnumTemplate(tpl)) {
       paramTypeSelect.value = 'string';
+    }
+    if (p.type === 'list') {
+      updateListElementTypeSelectState(getListElementTypeForParam(p));
+    } else {
+      updateListElementTypeSelectState();
     }
     updateIndexTemplateOptions();
     // 设置索引下拉
@@ -7087,8 +7584,14 @@ DataEntityRuntimeTester 使用说明
       return;
     }
     try {
-      if (!csharpHandle || !dataEntityHandle) {
-        await ensureSubFolders();
+      const consent = await ensureEngineGenerationConsent('保存并生成文件');
+      if (!consent) {
+        return;
+      }
+      await cleanConflictingEngineArtifacts();
+      await ensureSubFolders();
+      if (isUnityMode()) {
+        await ensureModelStruct();
       }
       await ensureTrashDirectory();
       const templateDecisions = new Map();
@@ -7097,38 +7600,43 @@ DataEntityRuntimeTester 使用说明
       const pendingStructureDecision = [];
       const trashFailures = [];
       const duplicateIdWarnings = [];
+      const listValidationWarnings = [];
+      let ueGenerationInfo = null;
+      let ueInvalidNameMessage = '';
 
-      for (const tpl of templates) {
-        ensureTemplateUid(tpl);
-        if (isEnumTemplate(tpl)) {
-          continue;
+      if (isUnityMode()) {
+        for (const tpl of templates) {
+          ensureTemplateUid(tpl);
+          if (isEnumTemplate(tpl)) {
+            continue;
+          }
+          const structureChanged = hasTemplateStructureChanged(tpl);
+          if (!structureChanged) {
+            templateDecisions.set(tpl.__uid, { decision: 'jsonOnly', structureChanged: false });
+            continue;
+          }
+          const csContent = generateCSContent(tpl);
+          const existingCs = await readTextFileIfExists(csharpHandle, `${tpl.name}.cs`);
+          csCache.set(tpl.__uid, csContent);
+          if (existingCs != null && normalizeContent(existingCs) === normalizeContent(csContent)) {
+            templateDecisions.set(tpl.__uid, { decision: 'jsonOnly', structureChanged: true });
+            continue;
+          }
+          pendingStructureDecision.push(tpl);
         }
-        const structureChanged = hasTemplateStructureChanged(tpl);
-        if (!structureChanged) {
-          templateDecisions.set(tpl.__uid, { decision: 'jsonOnly', structureChanged: false });
-          continue;
-        }
-        const csContent = generateCSContent(tpl);
-        const existingCs = await readTextFileIfExists(csharpHandle, `${tpl.name}.cs`);
-        csCache.set(tpl.__uid, csContent);
-        if (existingCs != null && normalizeContent(existingCs) === normalizeContent(csContent)) {
-          templateDecisions.set(tpl.__uid, { decision: 'jsonOnly', structureChanged: true });
-          continue;
-        }
-        pendingStructureDecision.push(tpl);
-      }
 
-      if (pendingStructureDecision.length > 0) {
-        const answer = askCSharpReplacementBulk(pendingStructureDecision.map((tpl) => tpl.name));
-        if (answer === 'cancel') {
-          showMessage('已取消保存');
-          return;
-        }
-        for (const tpl of pendingStructureDecision) {
-          templateDecisions.set(tpl.__uid, {
-            decision: answer === 'replace' ? 'replace' : 'jsonOnly',
-            structureChanged: true,
-          });
+        if (pendingStructureDecision.length > 0) {
+          const answer = askCSharpReplacementBulk(pendingStructureDecision.map((tpl) => tpl.name));
+          if (answer === 'cancel') {
+            showMessage('已取消保存');
+            return;
+          }
+          for (const tpl of pendingStructureDecision) {
+            templateDecisions.set(tpl.__uid, {
+              decision: answer === 'replace' ? 'replace' : 'jsonOnly',
+              structureChanged: true,
+            });
+          }
         }
       }
 
@@ -7151,8 +7659,10 @@ DataEntityRuntimeTester 使用说明
         }
         const duplicateIdInfo = collectDuplicateIdInfo(tpl);
         const duplicateIndices = new Set(duplicateIdInfo.byIndex.keys());
+        const listValidation = collectListTypeViolations(tpl);
+        const invalidListIndices = new Set(listValidation.invalidInstances.keys());
         const cleanedInstances = Array.isArray(tpl.instances)
-          ? tpl.instances.filter((_, idx) => !duplicateIndices.has(idx))
+          ? tpl.instances.filter((_, idx) => !duplicateIndices.has(idx) && !invalidListIndices.has(idx))
           : [];
         if (duplicateIndices.size > 0) {
           const values = Array.from(duplicateIdInfo.duplicates.keys()).map((key) => (key === '' ? '（空）' : key));
@@ -7160,6 +7670,12 @@ DataEntityRuntimeTester 使用说明
             name: tpl.name,
             count: duplicateIndices.size,
             values,
+          });
+        }
+        if (invalidListIndices.size > 0) {
+          listValidationWarnings.push({
+            name: tpl.name,
+            count: invalidListIndices.size,
           });
         }
         const json = JSON.stringify({
@@ -7198,7 +7714,16 @@ DataEntityRuntimeTester 使用说明
         }
       }
 
-      await generateEnumCSFiles(getEnumTemplate());
+      if (isUnityMode()) {
+        await generateEnumCSFiles(getEnumTemplate());
+      } else {
+        ueGenerationInfo = await generateUECppStructuresForCurrentTemplates();
+      }
+
+      if (ueGenerationInfo && ueGenerationInfo.invalidMessage) {
+        ueInvalidNameMessage = ueGenerationInfo.invalidMessage;
+        addLogEntry('warn', ueInvalidNameMessage);
+      }
 
       if (!enumTemplateSaved) {
         await clearEnumTemplateCache();
@@ -7206,7 +7731,10 @@ DataEntityRuntimeTester 使用说明
       }
 
       await writeManifestForTemplates();
-      await generateRuntimeLoaderArtifacts();
+      if (isUnityMode()) {
+        await generateRuntimeLoaderArtifacts();
+      }
+      await persistEditorConfig();
 
       lastSavedStructureSnapshot = captureCurrentStructureSnapshot();
       await refreshTrashButtonState();
@@ -7221,13 +7749,29 @@ DataEntityRuntimeTester 使用说明
           .join('\n');
         addLogEntry('warn', '部分实例因 ID 重复未写入 JSON', { detail });
       }
+      const warningMessages = [];
       if (trashFailures.length > 0) {
         const detail = trashFailures.join(', ');
         addLogEntry('warn', '以下模板移入垃圾箱失败', { detail });
-        showMessage('部分模板移入垃圾箱失败，请检查日志', 'warn');
-      } else if (duplicateIdWarnings.length > 0) {
+        warningMessages.push('部分模板移入垃圾箱失败，请检查日志');
+      }
+      if (duplicateIdWarnings.length > 0) {
         const names = duplicateIdWarnings.map((item) => item.name).join(', ');
-        showMessage(`保存完成，但以下模板存在重复 ID：${names}`, 'warn');
+        warningMessages.push(`以下模板存在重复 ID：${names}`);
+      }
+      if (listValidationWarnings.length > 0) {
+        const names = listValidationWarnings.map((item) => item.name).join(', ');
+        const detail = listValidationWarnings
+          .map((item) => `${item.name}: ${item.count}`)
+          .join(', ');
+        addLogEntry('warn', '以下模板包含无效的列表数据，相关实例已跳过', { detail });
+        warningMessages.push(`以下模板包含无效的列表数据：${names}`);
+      }
+      if (ueInvalidNameMessage) {
+        warningMessages.push(ueInvalidNameMessage);
+      }
+      if (warningMessages.length > 0) {
+        showMessage(warningMessages.join('；'), 'warn');
       } else {
         showMessage("已保存所有更改");
       }
@@ -7237,15 +7781,21 @@ DataEntityRuntimeTester 使用说明
     }
   }
 
-  async function regenerateCSharpStructures() {
+   async function regenerateCSharpStructures() {
     if (!directoryHandle) {
       alert('请先选择工作目录');
       return;
     }
+    if (!isUnityMode()) {
+      showMessage('请先切换到 Unity 模式再生成 C# 脚本', 'warn');
+      return;
+    }
     try {
-      if (!csharpHandle || !dataEntityHandle) {
-        await ensureSubFolders();
-      }
+      const consent = await ensureEngineGenerationConsent('生成 C# 数据结构脚本');
+      if (!consent) return;
+      await cleanConflictingEngineArtifacts();
+      await ensureSubFolders();
+      await ensureModelStruct();
       let updatedAny = false;
       for (const tpl of templates) {
         ensureTemplateUid(tpl);
@@ -7268,6 +7818,37 @@ DataEntityRuntimeTester 使用说明
     } catch (err) {
       console.error(err);
       showMessage('重新生成 C# 脚本失败，请检查权限');
+    }
+  }
+
+  async function regenerateCppStructures() {
+    if (!directoryHandle) {
+      alert('请先选择工作目录');
+      return;
+    }
+    if (!isUEMode()) {
+      showMessage('请先切换到 UE 模式再生成 C++ 脚本', 'warn');
+      return;
+    }
+    try {
+      const consent = await ensureEngineGenerationConsent('生成 C++ 数据结构脚本');
+      if (!consent) return;
+      await cleanConflictingEngineArtifacts();
+      await ensureSubFolders();
+      const result = await generateUECppStructuresForCurrentTemplates();
+      if (result.updatedAny) {
+        if (result.invalidMessage) {
+          addLogEntry('warn', result.invalidMessage);
+          showMessage(result.invalidMessage, 'warn');
+        } else {
+          showMessage('已重新生成 C++ 数据结构脚本');
+        }
+      } else {
+        showMessage('没有可生成的 C++ 数据结构脚本');
+      }
+    } catch (err) {
+      console.error(err);
+      showMessage('重新生成 C++ 脚本失败，请检查权限');
     }
   }
 
@@ -7355,7 +7936,7 @@ DataEntityRuntimeTester 使用说明
     else if (idxField === 'name') idxType = 'string';
     else {
       const pp = tpl.parameters.find(p => p.name === idxField);
-      if (pp) idxType = mapToCSharpType(pp.type);
+      if (pp) idxType = mapToCSharpType(pp.type, pp);
     }
     lines.push(`    public ${idxType} index;`);
     // 索引参数使用可复用的全局类型 DataRef（由 modelCsharpe.cs 提供）
@@ -7364,7 +7945,7 @@ DataEntityRuntimeTester 使用说明
       if (p.parameterIndexes) {
         lines.push(`    public DataRef ${p.name};`);
       } else {
-        const csType = mapToCSharpType(p.type);
+        const csType = mapToCSharpType(p.type, p);
         lines.push(`    public ${csType} ${p.name};`);
       }
     });
@@ -7375,10 +7956,19 @@ DataEntityRuntimeTester 使用说明
   /**
    * 类型映射
    */
-  function mapToCSharpType(type) {
+  function mapToCSharpType(type, param = null) {
     if (isEnumType(type)) {
       return getEnumCSharpTypeName(type);
     }
+    if (type === 'list') {
+      const elementType = getValidListElementType(param && param.elementType);
+      const inner = mapCSharpPrimitiveType(elementType);
+      return `List<${inner}>`;
+    }
+    return mapCSharpPrimitiveType(type);
+  }
+
+  function mapCSharpPrimitiveType(type) {
     switch (type) {
       case "string":
         return "string";
@@ -7390,13 +7980,406 @@ DataEntityRuntimeTester 使用说明
         return "float";
       case "bool":
         return "bool";
-      case "list":
-        return "List<object>";
       case "object":
         return "object";
       default:
         return "object";
     }
+  }
+
+  function createUEGenerationContext() {
+    return {
+      counters: {
+        template: 0,
+        enumType: 0,
+        enumValue: 0,
+      },
+      replacements: [],
+      enumTypeNames: new Map(),
+    };
+  }
+
+  function getUECounterKey(category) {
+    if (category === 'enumType') return 'enumType';
+    if (category === 'enumValue') return 'enumValue';
+    return 'template';
+  }
+
+
+  function registerUENameReplacement(context, category, originalName) {
+    if (!context) return 'filter0';
+    if (!context.counters) {
+      context.counters = { template: 0, enumType: 0, enumValue: 0 };
+    }
+    const key = getUECounterKey(category);
+    if (typeof context.counters[key] !== 'number') {
+      context.counters[key] = 0;
+    }
+    const replacement = `filter${context.counters[key]++}`;
+    context.replacements.push({
+      category: category || 'template',
+      original: originalName || '',
+      replacement,
+    });
+    return replacement;
+  }
+
+  function toPascalCaseFromIdentifier(value) {
+    const parts = String(value || '')
+      .split(/_+/)
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 0);
+    if (parts.length === 0) {
+      return '';
+    }
+    return parts
+      .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+      .join('');
+  }
+
+  function resolveUENameParts(name, context, category) {
+    const raw = String(name ?? '').trim();
+    let fileBase = raw;
+    let baseForPascal = raw;
+    let usedReplacement = false;
+    if (!raw || !isUENameCompliant(raw)) {
+      const replacement = registerUENameReplacement(context, category, raw);
+      fileBase = replacement;
+      baseForPascal = replacement;
+      usedReplacement = true;
+    }
+    let pascalBase = toPascalCaseFromIdentifier(baseForPascal);
+    if (!pascalBase) {
+      const fallback = usedReplacement ? baseForPascal : registerUENameReplacement(context, category, raw);
+      fileBase = fallback;
+      pascalBase = toPascalCaseFromIdentifier(fallback) || 'Data';
+    }
+    if (/^\d/.test(pascalBase)) {
+      pascalBase = `N${pascalBase}`;
+    }
+    if (!fileBase) {
+      fileBase = pascalBase;
+    }
+    if (fileBase.toLowerCase() === 'datareftypes') {
+      fileBase = `${fileBase}_Data`;
+    }
+    return { fileBase, pascalBase };
+  }
+
+  function formatUEInvalidNameMessage(records) {
+    if (!Array.isArray(records) || records.length === 0) return '';
+    const parts = records.map((item) => {
+      const categoryLabel =
+        item.category === 'enumValue'
+          ? '枚举项'
+          : item.category === 'enumType'
+          ? '枚举'
+          : '模板';
+      const original = item.original != null && item.original !== '' ? item.original : '（空）';
+      return `${categoryLabel}「${original}」→ ${item.replacement}`;
+    });
+    return `生成完成，但以下名称不合规：${parts.join('；')}`;
+  }
+
+  function mapPrimitiveToUEType(type) {
+    switch (type) {
+      case 'int':
+        return { type: 'int32', defaultValue: '0' };
+      case 'long':
+        return { type: 'int64', defaultValue: '0' };
+      case 'float':
+        return { type: 'float', defaultValue: '0.0f' };
+      case 'bool':
+        return { type: 'bool', defaultValue: 'false' };
+      case 'string':
+      case 'object':
+      default:
+        return { type: 'FString', defaultValue: 'TEXT("")' };
+    }
+  }
+
+  function mapParamToUETypeInfo(param, context) {
+    if (!param) {
+      return mapPrimitiveToUEType('string');
+    }
+    if (param.parameterIndexes) {
+      return { type: 'FDataRef', defaultValue: null };
+    }
+    if (param.type === 'list') {
+      const elementType = getListElementTypeForParam(param);
+      if (isEnumType(elementType)) {
+        const enumName = context?.enumTypeNames?.get(elementType);
+        if (enumName) {
+          return { type: `TArray<${enumName}>`, defaultValue: null };
+        }
+      }
+      const elementInfo = mapPrimitiveToUEType(elementType);
+      return { type: `TArray<${elementInfo.type}>`, defaultValue: null };
+    }
+    if (isEnumType(param.type)) {
+      const enumName = context?.enumTypeNames?.get(param.type);
+      if (enumName) {
+        return { type: enumName, defaultValue: null };
+      }
+    }
+    return mapPrimitiveToUEType(param.type);
+  }
+
+  function getUECategoryLabel(nameParts) {
+    return nameParts?.pascalBase || 'DataTable';
+  }
+
+  function buildUEHeaderContent(tpl, options, context) {
+    const { fileBase, structName, className, categoryLabel, indexFieldInfo } = options;
+    const includeName = `${fileBase}.generated.h`;
+    const lines = [];
+    lines.push('#pragma once');
+    lines.push('');
+    lines.push('#include "CoreMinimal.h"');
+    lines.push('#include "Engine/DataAsset.h"');
+    lines.push('#include "DataRefTypes.h"');
+    lines.push(`#include "${includeName}"`);
+    lines.push('');
+    lines.push('USTRUCT(BlueprintType)');
+    lines.push(`struct ${structName}`);
+    lines.push('{');
+    lines.push('    GENERATED_BODY();');
+    lines.push('');
+    const commonCategory = categoryLabel;
+    lines.push(`    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="${commonCategory}")`);
+    lines.push('    FString Template = TEXT("");');
+    lines.push('');
+    lines.push(`    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="${commonCategory}")`);
+    lines.push('    int32 Id = 0;');
+    lines.push('');
+    lines.push(`    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="${commonCategory}")`);
+    lines.push('    FString Name = TEXT("");');
+    lines.push('');
+    lines.push(`    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="${commonCategory}")`);
+    if (indexFieldInfo.defaultValue != null) {
+      lines.push(`    ${indexFieldInfo.type} Index = ${indexFieldInfo.defaultValue};`);
+    } else {
+      lines.push(`    ${indexFieldInfo.type} Index;`);
+    }
+    lines.push('');
+    const params = Array.isArray(tpl.parameters) ? tpl.parameters : [];
+    params.forEach((param, idx) => {
+      if (!param) return;
+      const typeInfo = mapParamToUETypeInfo(param, context);
+      lines.push(`    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="${commonCategory}")`);
+      if (typeInfo.defaultValue != null) {
+        lines.push(`    ${typeInfo.type} ${param.name} = ${typeInfo.defaultValue};`);
+      } else {
+        lines.push(`    ${typeInfo.type} ${param.name};`);
+      }
+      if (idx < params.length - 1) {
+        lines.push('');
+      }
+    });
+    lines.push('};');
+    lines.push('');
+    lines.push('UCLASS(BlueprintType)');
+    lines.push(`class ${className} : public UDataAsset`);
+    lines.push('{');
+    lines.push('    GENERATED_BODY()');
+    lines.push('');
+    lines.push('public:');
+    lines.push('');
+    lines.push(`    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="${commonCategory}")`);
+    lines.push(`    TMap<FName, ${structName}> Rows;`);
+    lines.push('};');
+    return lines.join('\n');
+  }
+
+  function buildUEEnumHeaderContent(enumName, fileBase, def, context) {
+    const lines = [];
+    lines.push('#pragma once');
+    lines.push('');
+    lines.push('#include "CoreMinimal.h"');
+    lines.push(`#include "${fileBase}.generated.h"`);
+    lines.push('');
+    lines.push('UENUM(BlueprintType)');
+    lines.push(`enum class ${enumName} : uint8`);
+    lines.push('{');
+    lines.push('    None UMETA(DisplayName="None"),');
+    const seen = new Set(['None']);
+    const members = def?.values || [];
+    members.forEach((raw, idx) => {
+      if (!raw) return;
+      let candidate = String(raw).trim();
+      if (!candidate) return;
+      let baseName = candidate;
+      let usedReplacement = false;
+      if (!isUENameCompliant(candidate)) {
+        baseName = registerUENameReplacement(context, 'enumValue', candidate);
+        usedReplacement = true;
+      }
+      let finalName = usedReplacement ? baseName : toPascalCaseFromIdentifier(baseName);
+      if (!finalName) {
+        const fallback = registerUENameReplacement(context, 'enumValue', candidate);
+        finalName = fallback || `Member${idx + 1}`;
+        usedReplacement = true;
+      }
+      if (!usedReplacement && /^\d/.test(finalName)) {
+        finalName = `N${finalName}`;
+      }
+      const baseFinalName = finalName;
+      let suffix = 1;
+      while (seen.has(finalName)) {
+        finalName = `${baseFinalName}_${suffix++}`;
+      }
+      seen.add(finalName);
+      const displayName = candidate.replace(/"/g, '\\"');
+      lines.push(`    ${finalName} UMETA(DisplayName="${displayName}"),`);
+    });
+    lines.push('};');
+    return lines.join('\n');
+  }
+
+  function computeIndexFieldInfo(tpl, context) {
+    const idxField = tpl.indexField || 'id';
+    if (idxField === 'id') {
+      return mapPrimitiveToUEType('int');
+    }
+    if (idxField === 'name') {
+      return mapPrimitiveToUEType('string');
+    }
+    const targetParam = Array.isArray(tpl.parameters)
+      ? tpl.parameters.find((param) => param && param.name === idxField)
+      : null;
+    if (targetParam) {
+      return mapParamToUETypeInfo(targetParam, context);
+    }
+    return mapPrimitiveToUEType('string');
+  }
+
+  async function generateUEEnumHeaderFiles(context, enumFiles) {
+    if (!context) return { updatedAny: false };
+    const enumDir = await ensureCppEnumDirectory();
+    if (!enumDir) return { updatedAny: false };
+    const definitions = getEnumDefinitions();
+    context.enumTypeNames.clear();
+    if (definitions.length === 0) {
+      return { updatedAny: false };
+    }
+    let updatedAny = false;
+    for (const def of definitions) {
+      const nameInfo = resolveUENameParts(def.name, context, 'enumType');
+      const enumName = `E${nameInfo.pascalBase}`;
+      context.enumTypeNames.set(def.name, enumName);
+      let fileName = `${nameInfo.fileBase}.h`;
+      let attempt = 1;
+      while (enumFiles && enumFiles.has(fileName)) {
+        fileName = `${nameInfo.fileBase}_${attempt++}.h`;
+      }
+      const baseName = fileName.replace(/\.h$/, '');
+      const includeBase = enumDir === cppEnumHandle && cppEnumHandle ? `enum/${baseName}` : baseName;
+      const content = buildUEEnumHeaderContent(enumName, includeBase, def, context);
+      await writeTextFile(enumDir, fileName, content);
+      if (enumFiles) {
+        enumFiles.add(fileName);
+      }
+      updatedAny = true;
+    }
+    return { updatedAny };
+  }
+
+  async function cleanupCppModelDirectory(validFiles) {
+    if (!cppModelHandle) return;
+    for await (const entry of cppModelHandle.values()) {
+      if (entry.kind !== 'file') continue;
+      if (shouldIgnoreFileEntry(entry.name)) continue;
+      if (!validFiles.has(entry.name)) {
+        try {
+          await cppModelHandle.removeEntry(entry.name);
+        } catch (err) {
+          console.warn(`删除无效的 C++ 文件失败：${entry.name}`, err);
+        }
+      }
+    }
+  }
+
+  async function cleanupCppEnumDirectory(validFiles) {
+    if (!cppEnumHandle) return;
+    for await (const entry of cppEnumHandle.values()) {
+      if (entry.kind !== 'file') continue;
+      if (shouldIgnoreFileEntry(entry.name)) continue;
+      if (!validFiles.has(entry.name)) {
+        try {
+          await cppEnumHandle.removeEntry(entry.name);
+        } catch (err) {
+          console.warn(`删除无效的枚举 C++ 文件失败：${entry.name}`, err);
+        }
+      }
+    }
+  }
+
+  async function generateUECppStructuresForCurrentTemplates() {
+    if (!isUEMode()) {
+      return { updatedAny: false, invalidMessage: '', invalidNames: [] };
+    }
+    if (!cppModelHandle) {
+      await ensureSubFolders();
+    }
+    if (!cppModelHandle) {
+      throw new Error('无法访问 cppmodel 目录');
+    }
+    const context = createUEGenerationContext();
+    const generatedFiles = new Set();
+    const generatedEnumFiles = new Set();
+    const dataRefContent = [
+      '#pragma once',
+      '',
+      '#include "CoreMinimal.h"',
+      '#include "DataRefTypes.generated.h"',
+      '',
+      'USTRUCT(BlueprintType)',
+      'struct FDataRef',
+      '{',
+      '    GENERATED_BODY();',
+      '',
+      '    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="DataRef")',
+      '    FString Template;',
+      '',
+      '    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="DataRef")',
+      '    FString By;',
+      '',
+      '    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="DataRef")',
+      '    FString Value;',
+      '};',
+      '',
+    ].join('\n');
+    await writeTextFile(cppModelHandle, 'DataRefTypes.h', dataRefContent);
+    generatedFiles.add('DataRefTypes.h');
+    const enumResult = await generateUEEnumHeaderFiles(context, generatedEnumFiles);
+    let updatedAny = enumResult.updatedAny;
+    for (const tpl of templates) {
+      if (!tpl || isEnumTemplate(tpl)) continue;
+      const nameInfo = resolveUENameParts(tpl.name, context, 'template');
+      let fileName = `${nameInfo.fileBase}.h`;
+      let suffix = 1;
+      while (generatedFiles.has(fileName)) {
+        fileName = `${nameInfo.fileBase}_${suffix++}.h`;
+      }
+      const structName = `F${nameInfo.pascalBase}`;
+      const className = `U${nameInfo.pascalBase}`;
+      const categoryLabel = getUECategoryLabel(nameInfo);
+      const indexFieldInfo = computeIndexFieldInfo(tpl, context);
+      const content = buildUEHeaderContent(
+        tpl,
+        { fileBase: fileName.replace(/\.h$/, ''), structName, className, categoryLabel, indexFieldInfo },
+        context
+      );
+      await writeTextFile(cppModelHandle, fileName, content);
+      generatedFiles.add(fileName);
+      updatedAny = true;
+    }
+    await cleanupCppEnumDirectory(generatedEnumFiles);
+    return {
+      updatedAny,
+      invalidNames: context.replacements.slice(),
+      invalidMessage: formatUEInvalidNameMessage(context.replacements),
+    };
   }
 
   /**
@@ -7453,7 +8436,7 @@ DataEntityRuntimeTester 使用说明
         try {
           if (navigator.storage && navigator.storage.persist) { try { await navigator.storage.persist(); } catch {} }
           if (directoryHandle) { await saveLastDirectoryHandle(directoryHandle); }
-        } catch {}
+        } catch (_err) {}
       });
     }
     // 自动恢复
