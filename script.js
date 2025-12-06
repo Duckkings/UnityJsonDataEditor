@@ -7996,6 +7996,7 @@ DataEntityRuntimeTester 使用说明
       },
       replacements: [],
       enumTypeNames: new Map(),
+      enumHeaderIncludes: new Map(),
     };
   }
 
@@ -8125,6 +8126,35 @@ DataEntityRuntimeTester 使用说明
     return mapPrimitiveToUEType(param.type);
   }
 
+  function collectUEEnumIncludePaths(tpl, context) {
+    if (!tpl || !context || !context.enumHeaderIncludes) return [];
+    const includeSet = new Set();
+    const includeMap = context.enumHeaderIncludes;
+    if (!(includeMap instanceof Map) || includeMap.size === 0) {
+      return [];
+    }
+    const addInclude = (enumType) => {
+      if (!enumType) return;
+      const path = includeMap.get(enumType);
+      if (path) {
+        includeSet.add(path);
+      }
+    };
+    const params = Array.isArray(tpl.parameters) ? tpl.parameters : [];
+    params.forEach((param) => {
+      if (!param || param.parameterIndexes) return;
+      if (param.type === 'list') {
+        const elementType = getListElementTypeForParam(param);
+        if (isEnumType(elementType)) {
+          addInclude(elementType);
+        }
+      } else if (isEnumType(param.type)) {
+        addInclude(param.type);
+      }
+    });
+    return Array.from(includeSet);
+  }
+
   function getUECategoryLabel(nameParts) {
     return nameParts?.pascalBase || 'DataTable';
   }
@@ -8138,12 +8168,16 @@ DataEntityRuntimeTester 使用说明
     lines.push('#include "CoreMinimal.h"');
     lines.push('#include "Engine/DataAsset.h"');
     lines.push('#include "DataRefTypes.h"');
+    const enumIncludes = collectUEEnumIncludePaths(tpl, context);
+    enumIncludes.forEach((includePath) => {
+      lines.push(`#include "${includePath}"`);
+    });
     lines.push(`#include "${includeName}"`);
     lines.push('');
     lines.push('USTRUCT(BlueprintType)');
     lines.push(`struct ${structName}`);
     lines.push('{');
-    lines.push('    GENERATED_BODY();');
+    lines.push('    GENERATED_BODY()');
     lines.push('');
     const commonCategory = categoryLabel;
     lines.push(`    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="${commonCategory}")`);
@@ -8259,6 +8293,9 @@ DataEntityRuntimeTester 使用说明
     if (!enumDir) return { updatedAny: false };
     const definitions = getEnumDefinitions();
     context.enumTypeNames.clear();
+    if (context.enumHeaderIncludes instanceof Map) {
+      context.enumHeaderIncludes.clear();
+    }
     if (definitions.length === 0) {
       return { updatedAny: false };
     }
@@ -8273,9 +8310,15 @@ DataEntityRuntimeTester 使用说明
         fileName = `${nameInfo.fileBase}_${attempt++}.h`;
       }
       const baseName = fileName.replace(/\.h$/, '');
-      const includeBase = enumDir === cppEnumHandle && cppEnumHandle ? `enum/${baseName}` : baseName;
+      const useEnumSubDir = Boolean(enumDir === cppEnumHandle && cppEnumHandle);
+      const prefix = useEnumSubDir ? 'enum/' : '';
+      const includeBase = baseName;
+      const headerIncludePath = `${prefix}${fileName}`;
       const content = buildUEEnumHeaderContent(enumName, includeBase, def, context);
       await writeTextFile(enumDir, fileName, content);
+      if (context.enumHeaderIncludes instanceof Map) {
+        context.enumHeaderIncludes.set(def.name, headerIncludePath);
+      }
       if (enumFiles) {
         enumFiles.add(fileName);
       }
@@ -8336,7 +8379,7 @@ DataEntityRuntimeTester 使用说明
       'USTRUCT(BlueprintType)',
       'struct FDataRef',
       '{',
-      '    GENERATED_BODY();',
+      '    GENERATED_BODY()',
       '',
       '    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="DataRef")',
       '    FString Template;',
@@ -8361,7 +8404,8 @@ DataEntityRuntimeTester 使用说明
       while (generatedFiles.has(fileName)) {
         fileName = `${nameInfo.fileBase}_${suffix++}.h`;
       }
-      const structName = `F${nameInfo.pascalBase}`;
+      const structBaseName = nameInfo.pascalBase.endsWith('Row') ? nameInfo.pascalBase : `${nameInfo.pascalBase}Row`;
+      const structName = `F${structBaseName}`;
       const className = `U${nameInfo.pascalBase}`;
       const categoryLabel = getUECategoryLabel(nameInfo);
       const indexFieldInfo = computeIndexFieldInfo(tpl, context);
