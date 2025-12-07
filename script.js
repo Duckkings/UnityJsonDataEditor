@@ -6866,8 +6866,8 @@ DataEntityRuntimeTester 使用说明
         info.textContent = `索引：${p.parameterIndexes.template} → ${p.parameterIndexes.param}`;
         info.style.marginRight = '8px';
         item.appendChild(info);
-
-        // 为索引参数提供可编辑的 value 输入框（并规范化存储结构）
+      }
+      if (p.parameterIndexes && p.type !== 'list') {
         let refObj = inst.payload[p.name];
         if (refObj == null) {
           refObj = { template: p.parameterIndexes.template, by: p.parameterIndexes.param, value: '' };
@@ -6880,9 +6880,7 @@ DataEntityRuntimeTester 使用说明
           refObj.by = p.parameterIndexes.param;
           if (refObj.value == null) refObj.value = '';
         }
-
-        // datalist 建议（来自目标模板对应字段的值）
-        const suggestId = `idx-suggest-${p.name}`;
+        const suggestId = `idx-suggest-${p.name}-${idx}`;
         const dataList = document.createElement('datalist');
         dataList.id = suggestId;
         const targetTpl = templates.find(t => t.name === p.parameterIndexes.template);
@@ -6910,7 +6908,6 @@ DataEntityRuntimeTester 使用说明
           });
         }
         item.appendChild(dataList);
-
         const inputElIdx = document.createElement('input');
         inputElIdx.type = 'text';
         inputElIdx.style.flex = '1';
@@ -6923,7 +6920,6 @@ DataEntityRuntimeTester 使用说明
             obj = { template: p.parameterIndexes.template, by: p.parameterIndexes.param, value: '' };
             inst.payload[p.name] = obj;
           }
-          // 若索引目标是 enum，阻止写入
           const tt = templates.find(t => t.name === p.parameterIndexes.template);
           if (tt && isEnumTemplate(tt)) {
             showMessage('索引目标不能是 enum 模板');
