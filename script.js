@@ -95,14 +95,15 @@
     label: opt.textContent,
   }));
   const builtinParamTypeSet = new Set(builtinParamTypeOptions.map((opt) => opt.value));
-  const LIST_ELEMENT_TYPE_OPTIONS = [
+  let listElementTypeOptions = [
     { value: 'string', label: '字符串' },
     { value: 'int', label: '整数' },
     { value: 'float', label: '浮点数' },
     { value: 'long', label: '长整型' },
     { value: 'bool', label: '布尔' },
+    { value: 'object', label: '对象' },
   ];
-  const LIST_ELEMENT_TYPE_SET = new Set(LIST_ELEMENT_TYPE_OPTIONS.map((opt) => opt.value));
+  let listElementTypeSet = new Set(listElementTypeOptions.map((opt) => opt.value));
   const indexTemplateSelect = $("indexTemplate");
   const indexParamSelect = $("indexParam");
   const INDEXABLE_PARAM_TYPES = new Set(["int", "long", "float", "string"]);
@@ -151,7 +152,10 @@
   }
 
   function getValidListElementType(value) {
-    return LIST_ELEMENT_TYPE_SET.has(value) ? value : 'string';
+    if (!value && value !== 0) return 'string';
+    const normalized = String(value).trim();
+    if (!normalized) return 'string';
+    return listElementTypeSet.has(normalized) ? normalized : normalized;
   }
 
   function ensureParamElementType(param) {
@@ -174,7 +178,7 @@
   }
 
   function getListElementTypeLabel(value) {
-    const target = LIST_ELEMENT_TYPE_OPTIONS.find((opt) => opt.value === value);
+    const target = listElementTypeOptions.find((opt) => opt.value === value);
     return target ? target.label : value;
   }
 
@@ -199,14 +203,101 @@
 
   function updateListElementTypeSelectState(customValue) {
     if (!listElementTypeSelect) return;
-    const shouldShow = paramTypeSelect && paramTypeSelect.value === 'list';
-    listElementTypeSelect.style.display = shouldShow ? '' : 'none';
-    listElementTypeSelect.disabled = !shouldShow;
-    if (!shouldShow) return;
-    const value = customValue ? getValidListElementType(customValue) : getValidListElementType(listElementTypeSelect.value);
-    if (listElementTypeSelect.value !== value) {
-      listElementTypeSelect.value = value;
+    const shouldEnable = paramTypeSelect && paramTypeSelect.value === 'list';
+    listElementTypeSelect.disabled = !shouldEnable;
+    listElementTypeSelect.style.opacity = shouldEnable ? '' : '0.55';
+    listElementTypeSelect.title = shouldEnable ? '' : '列表类型时可选择元素类型';
+    const desiredValue = customValue
+      ? getValidListElementType(customValue)
+      : getValidListElementType(listElementTypeSelect.value);
+    if (!Array.from(listElementTypeSelect.options).some((opt) => opt.value === desiredValue)) {
+      const optEl = document.createElement('option');
+      optEl.value = desiredValue;
+      optEl.textContent = desiredValue;
+      listElementTypeSelect.appendChild(optEl);
     }
+    if (listElementTypeSelect.value !== desiredValue) {
+      listElementTypeSelect.value = desiredValue;
+    }
+  }
+
+  function createDefaultReferenceValue(binding) {
+    if (!binding) {
+      return { template: '', by: '', value: '' };
+    }
+    return {
+      template: binding.template || '',
+      by: binding.param || '',
+      value: '',
+    };
+  }
+
+  function normalizeReferenceValue(raw, binding) {
+    if (!binding) return raw;
+    const template = binding.template || '';
+    const by = binding.param || '';
+    const source = Array.isArray(raw) ? (raw.length > 0 ? raw[0] : null) : raw;
+    if (!source || typeof source !== 'object' || Array.isArray(source)) {
+      return {
+        template,
+        by,
+        value: source == null ? '' : String(source),
+      };
+    }
+    return {
+      template,
+      by,
+      value: source.value == null ? '' : String(source.value),
+    };
+  }
+
+  function normalizeReferenceList(raw, binding) {
+    const arrayValue = Array.isArray(raw) ? raw : (raw == null ? [] : [raw]);
+    const normalized = arrayValue.map((item) => normalizeReferenceValue(item, binding));
+    return normalized.length > 0 ? normalized : [createDefaultReferenceValue(binding)];
+  }
+
+  function unwrapReferencePayload(value, binding, asList) {
+    if (!binding) return value;
+    if (asList) {
+      const normalized = normalizeReferenceList(value, binding);
+      return normalized.map((entry) => (entry && typeof entry === 'object' ? entry.value : ''));
+    }
+    const normalized = normalizeReferenceValue(value, binding);
+    if (normalized && typeof normalized === 'object') {
+      return normalized.value;
+    }
+    return normalized;
+  }
+
+  function wrapReferencePayload(value, binding, asList, elementType = 'string') {
+    if (!binding) return value;
+    const template = binding.template || '';
+    const by = binding.param || '';
+    if (asList) {
+      let list = [];
+      if (Array.isArray(value) && value.every((item) => item && typeof item === 'object' && !Array.isArray(item))) {
+        list = value.map((item) => normalizeReferenceValue(item, binding));
+      } else {
+        const base = convertValueToList(value, elementType);
+        list = base.map((item) => ({
+          template,
+          by,
+          value: item == null ? '' : String(item),
+        }));
+      }
+      if (list.length === 0) {
+        list = [createDefaultReferenceValue(binding)];
+      }
+      return list;
+    }
+    const normalized = normalizeReferenceValue(value, binding);
+    if (normalized && typeof normalized === 'object' && !Array.isArray(normalized)) {
+      return normalized;
+    }
+    const wrapped = createDefaultReferenceValue(binding);
+    wrapped.value = normalized == null ? '' : String(normalized);
+    return wrapped;
   }
 
   function getCurrentEngineLabel() {
@@ -5332,7 +5423,12 @@ DataEntityRuntimeTester 使用说明
     tpl.parameters.push(param);
     tpl.instances.forEach((inst) => {
       if (indexBinding) {
-        inst.payload[name] = { template: indexBinding.template, by: indexBinding.param, value: '' };
+        if (!inst.payload) inst.payload = {};
+        if (type === 'list') {
+          inst.payload[name] = normalizeReferenceList([], indexBinding);
+        } else {
+          inst.payload[name] = createDefaultReferenceValue(indexBinding);
+        }
       } else {
         inst.payload[name] = getDefaultValueForType(type, getListElementTypeForParam(param));
       }
@@ -5386,6 +5482,7 @@ DataEntityRuntimeTester 使用说明
     }
     const oldName = param.name;
     const oldType = param.type;
+    const oldElementType = oldType === 'list' ? getValidListElementType(param.elementType) : null;
     const normalizedElementType = newType === 'list' ? getValidListElementType(newElementType) : null;
     // 更新定义
     param.name = newName;
@@ -5399,36 +5496,46 @@ DataEntityRuntimeTester 使用说明
     }
     // 对所有实例调整 payload
     tpl.instances.forEach((inst) => {
-      // 如果重命名
+      if (!inst || typeof inst !== 'object') return;
+      if (!inst.payload) inst.payload = {};
       if (oldName !== newName) {
         inst.payload[newName] = inst.payload[oldName];
         delete inst.payload[oldName];
       }
-      // 如果类型变化，尝试转换
-      if (oldType !== newType) {
-        const val = inst.payload[newName];
-        inst.payload[newName] = convertValueForType(val, newType, normalizedElementType || 'string');
+      let currentValue = inst.payload[newName];
+      if (oldIndex && !newIndexObj) {
+        currentValue = unwrapReferencePayload(currentValue, oldIndex, oldType === 'list');
       }
-      // 如果索引配置变化，规范化/还原值
-      if (!oldIndex && newIndexObj) {
-        // 变为索引：把原值包进引用对象
-        const prev = inst.payload[newName];
-        inst.payload[newName] = { template: newIndexObj.template, by: newIndexObj.param, value: prev == null ? '' : String(prev) };
-      } else if (oldIndex && !newIndexObj) {
-        // 取消索引：取引用对象中的 value 作为当前类型的值
-        const ref = inst.payload[newName];
-        const raw = ref && typeof ref === 'object' ? ref.value : ref;
-        inst.payload[newName] = convertValueForType(raw, newType, normalizedElementType || 'string');
-      } else if (oldIndex && newIndexObj) {
-        // 索引存在但定义变化：同步 template/by 保留 value
-        const ref = inst.payload[newName];
-        if (!ref || typeof ref !== 'object') {
-          inst.payload[newName] = { template: newIndexObj.template, by: newIndexObj.param, value: ref == null ? '' : String(ref) };
-        } else {
-          ref.template = newIndexObj.template;
-          ref.by = newIndexObj.param;
+      if (!newIndexObj) {
+        if (newType === 'list') {
+          currentValue = convertValueToList(currentValue, normalizedElementType || 'string');
+        } else if (oldType !== newType || oldIndex) {
+          currentValue = convertValueForType(currentValue, newType, normalizedElementType || 'string');
         }
       }
+      if (newIndexObj) {
+        currentValue = wrapReferencePayload(
+          currentValue,
+          newIndexObj,
+          newType === 'list',
+          normalizedElementType || 'string'
+        );
+      } else if (newType === 'list' && oldElementType && normalizedElementType && oldElementType !== normalizedElementType) {
+        currentValue = convertValueToList(currentValue, normalizedElementType);
+      }
+      if (newIndexObj && newType === 'list' && oldElementType && normalizedElementType && oldElementType !== normalizedElementType) {
+        const refList = Array.isArray(currentValue)
+          ? currentValue
+          : wrapReferencePayload(currentValue, newIndexObj, true, normalizedElementType);
+        refList.forEach((entry) => {
+          if (entry && typeof entry === 'object') {
+            const coerced = coerceListElementValue(entry.value, normalizedElementType);
+            entry.value = coerced == null ? '' : String(coerced);
+          }
+        });
+        currentValue = refList;
+      }
+      inst.payload[newName] = currentValue;
     });
   }
 
@@ -5505,6 +5612,10 @@ DataEntityRuntimeTester 使用说明
   }
 
   function getDefaultValueForElementType(elementType) {
+    if (isEnumType(elementType)) {
+      const enums = getEnumValues(elementType);
+      return (enums && enums.length > 0) ? enums[0] : '';
+    }
     switch (elementType) {
       case 'int':
       case 'long':
@@ -5513,6 +5624,8 @@ DataEntityRuntimeTester 使用说明
         return 0;
       case 'bool':
         return false;
+      case 'object':
+        return {};
       case 'string':
       default:
         return '';
@@ -5561,33 +5674,76 @@ DataEntityRuntimeTester 使用说明
       }
       return value;
     }
+    if (elementType === 'object') {
+      if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+      try {
+        const parsed = JSON.parse(value);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed;
+        }
+      } catch (_err) {}
+      return value;
+    }
+    if (isEnumType(elementType)) {
+      const enums = getEnumValues(elementType) || [];
+      const str = String(value);
+      if (enums.includes(str)) return str;
+      return enums.length > 0 ? enums[0] : str;
+    }
     return value;
   }
 
   function isListElementValueValid(value, elementType) {
-    if (value === null || value === undefined) return false;
-    if (elementType === 'string') return typeof value === 'string';
-    if (elementType === 'bool') return typeof value === 'boolean';
-    if (elementType === 'float') return typeof value === 'number' && Number.isFinite(value);
-    if (elementType === 'int' || elementType === 'long') {
-      return typeof value === 'number' && Number.isInteger(value);
+    if (value === null || value === undefined) return { valid: false, reason: '值为空' };
+    if (isEnumType(elementType)) {
+      const enums = getEnumValues(elementType) || [];
+      const str = String(value);
+      return { valid: enums.includes(str), reason: 必须为枚举  };
     }
-    return true;
+    if (elementType === 'string') {
+      return { valid: typeof value === 'string', reason: '必须为字符串' };
+    }
+    if (elementType === 'bool') {
+      return { valid: typeof value === 'boolean', reason: '必须为布尔值' };
+    }
+    if (elementType === 'float') {
+      return { valid: typeof value === 'number' && Number.isFinite(value), reason: '必须为数字' };
+    }
+    if (elementType === 'int' || elementType === 'long') {
+      return { valid: typeof value === 'number' && Number.isInteger(value), reason: '必须为整数' };
+    }
+    if (elementType === 'object') {
+      const ok = value && typeof value === 'object' && !Array.isArray(value);
+      return { valid: ok, reason: '必须为对象' };
+    }
+    return { valid: true, reason: '' };
   }
 
-  function validateListValueAgainstType(value, elementType) {
+  function validateListValueAgainstType(value, elementType, param) {
     if (!Array.isArray(value)) {
-      return { valid: false, invalidIndices: [], reason: '值不是列表' };
+      return { valid: false, errors: [{ index: -1, reason: '值不是列表' }] };
     }
-    const invalidIndices = [];
+    const errors = [];
+    if (param && param.parameterIndexes) {
+      const normalized = normalizeReferenceList(value, param.parameterIndexes);
+      normalized.forEach((entry, idx) => {
+        const raw = entry && typeof entry === 'object' ? entry.value : entry;
+        const converted = coerceListElementValue(raw, elementType);
+        const validation = isListElementValueValid(converted, elementType);
+        if (!validation.valid) {
+          errors.push({ index: idx, reason: validation.reason });
+        }
+      });
+      return { valid: errors.length === 0, errors };
+    }
     value.forEach((item, idx) => {
-      if (!isListElementValueValid(item, elementType)) {
-        invalidIndices.push(idx);
+      const validation = isListElementValueValid(item, elementType);
+      if (!validation.valid) {
+        errors.push({ index: idx, reason: validation.reason });
       }
     });
-    return { valid: invalidIndices.length === 0, invalidIndices };
+    return { valid: errors.length === 0, errors };
   }
-
   function collectListTypeViolations(tpl) {
     const invalidInstances = new Map();
     const invalidParams = new Map();
@@ -5601,11 +5757,11 @@ DataEntityRuntimeTester 使用说明
       tpl.instances.forEach((inst, idx) => {
         if (!inst || !inst.payload) return;
         const currentValue = inst.payload[param.name];
-        const validation = validateListValueAgainstType(currentValue, elementType);
+        const validation = validateListValueAgainstType(currentValue, elementType, param);
         if (!validation.valid) {
-          invalidForParam.set(idx, validation);
+          invalidForParam.set(idx, validation.errors);
           const list = invalidInstances.get(idx) || [];
-          list.push({ paramName: param.name, elementType, invalidIndices: validation.invalidIndices });
+          list.push({ paramName: param.name, elementType, errors: validation.errors });
           invalidInstances.set(idx, list);
         }
       });
@@ -5733,15 +5889,86 @@ DataEntityRuntimeTester 使用说明
     return builtinParamTypeOptions;
   }
 
+  function rebuildListElementTypeCollections(enumDefs, missingTypes, usedElementTypes) {
+    const builtinOptions = getBuiltinParamTypeOptionsForCurrentMode();
+    const nextOptions = [];
+    const seen = new Set();
+    const appendOption = (value, label) => {
+      if (!value && value !== 0) return;
+      const normalized = String(value).trim();
+      if (!normalized || normalized === 'list' || seen.has(normalized)) return;
+      seen.add(normalized);
+      nextOptions.push({ value: normalized, label });
+    };
+    builtinOptions.forEach((opt) => {
+      if (opt.value === 'list') return;
+      appendOption(opt.value, opt.label);
+    });
+    if (Array.isArray(enumDefs)) {
+      enumDefs.forEach((def) => appendOption(def.name, def.name));
+    }
+    if (missingTypes instanceof Set && missingTypes.size > 0) {
+      Array.from(missingTypes)
+        .sort()
+        .forEach((typeName) => appendOption(typeName, `${typeName} (缺失)`));
+    }
+    if (usedElementTypes instanceof Set && usedElementTypes.size > 0) {
+      Array.from(usedElementTypes)
+        .sort()
+        .forEach((typeName) => {
+          if (!seen.has(typeName)) {
+            appendOption(typeName, `${typeName} (存在数据)`);
+          }
+        });
+    }
+    if (nextOptions.length === 0) {
+      nextOptions.push({ value: 'string', label: '字符串' });
+      seen.add('string');
+    }
+    listElementTypeOptions = nextOptions;
+    listElementTypeSet = seen;
+  }
+
+  function refreshListElementTypeSelect(customValue) {
+    if (!listElementTypeSelect) return;
+    const previousValue = customValue != null ? customValue : listElementTypeSelect.value;
+    listElementTypeSelect.innerHTML = '';
+    listElementTypeOptions.forEach((opt) => {
+      const optionEl = document.createElement('option');
+      optionEl.value = opt.value;
+      optionEl.textContent = opt.label;
+      listElementTypeSelect.appendChild(optionEl);
+    });
+    const normalized = previousValue != null ? String(previousValue).trim() : '';
+    if (normalized && !Array.from(listElementTypeSelect.options).some((opt) => opt.value === normalized)) {
+      const fallback = document.createElement('option');
+      fallback.value = normalized;
+      fallback.textContent = `${normalized} (缺失)`;
+      listElementTypeSelect.appendChild(fallback);
+    }
+    if (normalized && Array.from(listElementTypeSelect.options).some((opt) => opt.value === normalized)) {
+      listElementTypeSelect.value = normalized;
+    } else if (listElementTypeSelect.options.length > 0) {
+      listElementTypeSelect.value = listElementTypeSelect.options[0].value;
+    } else {
+      listElementTypeSelect.value = 'string';
+    }
+  }
+
   function refreshParamTypeOptions() {
     if (!paramTypeSelect) return;
     const previousValue = paramTypeSelect.value;
+    const previousElementValue = listElementTypeSelect ? listElementTypeSelect.value : 'string';
     const enumDefs = getEnumDefinitions();
     const missingTypes = new Set();
+    const usedElementTypes = new Set();
     templates.forEach((tpl) => {
       if (!tpl || !Array.isArray(tpl.parameters)) return;
       tpl.parameters.forEach((p) => {
         if (!p || !p.type) return;
+        if (p.type === 'list' && p.elementType) {
+          usedElementTypes.add(String(p.elementType));
+        }
         if (builtinParamTypeSet.has(p.type)) return;
         if (enumDefs.some((def) => def.name === p.type)) return;
         missingTypes.add(p.type);
@@ -5785,6 +6012,9 @@ DataEntityRuntimeTester 使用说明
     } else {
       paramTypeSelect.value = 'string';
     }
+    rebuildListElementTypeCollections(enumDefs, missingTypes, usedElementTypes);
+    refreshListElementTypeSelect(previousElementValue);
+    updateListElementTypeSelectState();
   }
 
   function updateParamTypeSelectEnabledState() {
@@ -6291,7 +6521,18 @@ DataEntityRuntimeTester 使用说明
       const invalidListEntry = listValidation.invalidInstances.get(idx);
       if (invalidListEntry && invalidListEntry.length > 0) {
         li.classList.add('invalid-reference');
-        const listDetail = invalidListEntry.map((entry) => entry.paramName).join(', ');
+        const listDetail = invalidListEntry
+          .map((entry) => {
+            const reasons = Array.isArray(entry.errors) ? entry.errors : [];
+            const positions = reasons
+              .filter((err) => err && Number.isInteger(err.index) && err.index >= 0)
+              .map((err) => err.index + 1)
+              .join(', ');
+            const reasonLabel = reasons.length > 0 ? reasons[0].reason : '类型不匹配';
+            const positionLabel = positions ? `（位置 ${positions}）` : '';
+            return `${entry.paramName}: ${reasonLabel}${positionLabel}`;
+          })
+          .join('；');
         tooltipParts.push(`列表类型错误：${listDetail}`);
       }
       if (tooltipParts.length > 0) {
@@ -6606,8 +6847,18 @@ DataEntityRuntimeTester 使用说明
       const invalidListInfo = listValidation.invalidParams.get(p.name);
       if (invalidListInfo) {
         item.classList.add('invalid-reference');
-        const instances = Array.from(invalidListInfo.invalidInstances.keys()).map((idx) => idx + 1);
-        const detail = `列表元素类型错误（实例 ${instances.join(', ')}）`;
+        const instanceDetails = Array.from(invalidListInfo.invalidInstances.entries()).map(([instIdx, errors]) => {
+          const idxLabel = `#${instIdx + 1}`;
+          const reasons = Array.isArray(errors) ? errors : [];
+          const baseReason = reasons.length > 0 ? reasons[0].reason : '类型不匹配';
+          const positions = reasons
+            .filter((err) => err && Number.isInteger(err.index) && err.index >= 0)
+            .map((err) => err.index + 1)
+            .join(', ');
+          const positionLabel = positions ? `，位置 ${positions}` : '';
+          return `${idxLabel}（${baseReason}${positionLabel}）`;
+        });
+        const detail = `列表元素类型错误：${instanceDetails.join('；')}`;
         item.title = item.title ? `${item.title}\n${detail}` : detail;
       }
       if (p.parameterIndexes) {
@@ -6742,8 +6993,11 @@ DataEntityRuntimeTester 使用说明
               break;
             case 'list': {
               const elementType = getListElementTypeForParam(p);
-              let arr = Array.isArray(value) ? value.slice() : [];
-              if (arr.length === 0) {
+              const hasReferenceBinding = Boolean(p.parameterIndexes);
+              let arr = hasReferenceBinding
+                ? normalizeReferenceList(inst.payload[p.name], p.parameterIndexes)
+                : convertValueToList(value, elementType);
+              if (!hasReferenceBinding && arr.length === 0) {
                 arr = [getDefaultValueForElementType(elementType)];
               }
               inst.payload[p.name] = arr;
@@ -6760,29 +7014,164 @@ DataEntityRuntimeTester 使用说明
                   row.style.display = 'flex';
                   row.style.gap = 'calc(4px * var(--row-scale))';
                   row.style.marginBottom = 'calc(4px * var(--row-scale))';
-                  const control = document.createElement('input');
-                  control.style.flex = '1';
-                  if (elementType === 'string') {
-                    control.type = 'text';
-                  } else if (elementType === 'bool') {
-                    control.type = 'text';
-                    control.setAttribute('placeholder', 'true / false');
+                  let control = null;
+                  if (hasReferenceBinding) {
+                    const refObj = normalizeReferenceValue(arr[i], p.parameterIndexes);
+                    arr[i] = refObj;
+                    const input = document.createElement('input');
+                    input.type = 'text';
+                    input.style.flex = '1';
+                    input.value = refObj.value || '';
+                    const suggestId = `idx-suggest-${p.name}-${idx}-${i}`;
+                    input.setAttribute('list', suggestId);
+                    const dataList = document.createElement('datalist');
+                    dataList.id = suggestId;
+                    const targetTpl = templates.find((t) => t.name === p.parameterIndexes.template);
+                    if (targetTpl && !isEnumTemplate(targetTpl)) {
+                      targetTpl.instances.forEach((it, instIdx) => {
+                        const v = it.payload ? it.payload[p.parameterIndexes.param] : undefined;
+                        const sv = v == null ? '' : String(v);
+                        if (!sv) return;
+                        const rawName = getInstanceFieldValue(it, 'name', targetTpl.name);
+                        const instName = rawName != null && String(rawName).trim() !== ''
+                          ? String(rawName).trim()
+                          : (() => {
+                              const idxBased = instIdx + 1;
+                              return `#${idxBased}`;
+                            })();
+                        const opt = document.createElement('option');
+                        opt.value = sv;
+                        opt.textContent = `${sv}（${instName}）`;
+                        dataList.appendChild(opt);
+                      });
+                    }
+                    input.addEventListener('change', () => {
+                      refObj.value = input.value;
+                      const converted = coerceListElementValue(input.value, elementType);
+                      const validation = isListElementValueValid(converted, elementType);
+                      setInvalidNameVisual(input, !validation.valid);
+                    });
+                    const currentValidation = isListElementValueValid(
+                      coerceListElementValue(refObj.value, elementType),
+                      elementType
+                    );
+                    setInvalidNameVisual(input, !currentValidation.valid);
+                    row.appendChild(input);
+                    row.appendChild(dataList);
+                    control = input;
+                  } else if (isEnumType(elementType)) {
+                    const def = getEnumDefinition(elementType);
+                    const enumValues = def ? def.values : [];
+                    const select = document.createElement('select');
+                    select.style.flex = '1';
+                    if (enumValues && enumValues.length > 0) {
+                      enumValues.forEach((enumVal) => {
+                        const opt = document.createElement('option');
+                        opt.value = enumVal;
+                        opt.textContent = enumVal;
+                        select.appendChild(opt);
+                      });
+                    }
+                    if (val && (!enumValues || !enumValues.includes(val))) {
+                      const opt = document.createElement('option');
+                      opt.value = val;
+                      opt.textContent = val;
+                      select.appendChild(opt);
+                    }
+                    select.value = val ?? '';
+                    select.addEventListener('change', () => {
+                      arr[i] = select.value;
+                    });
+                    control = select;
+                    row.appendChild(select);
                   } else {
-                    control.type = 'number';
-                    if (elementType === 'float') {
-                      control.step = 'any';
-                    } else {
-                      control.step = '1';
+                    switch (elementType) {
+                      case 'string': {
+                        const input = document.createElement('input');
+                        input.type = 'text';
+                        input.style.flex = '1';
+                        input.value = val == null ? '' : String(val);
+                        input.addEventListener('change', () => {
+                          arr[i] = input.value;
+                        });
+                        control = input;
+                        row.appendChild(input);
+                        break;
+                      }
+                      case 'bool': {
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.checked = !!val;
+                        checkbox.addEventListener('change', () => {
+                          arr[i] = checkbox.checked;
+                        });
+                        control = checkbox;
+                        row.appendChild(checkbox);
+                        break;
+                      }
+                      case 'float':
+                      case 'int':
+                      case 'long': {
+                        const input = document.createElement('input');
+                        input.type = 'number';
+                        input.style.flex = '1';
+                        input.value = val == null ? '' : String(val);
+                        input.step = elementType === 'float' ? 'any' : '1';
+                        input.addEventListener('change', () => {
+                          const converted = coerceListElementValue(input.value, elementType);
+                          arr[i] = converted;
+                          const validation = isListElementValueValid(converted, elementType);
+                          setInvalidNameVisual(input, !validation.valid);
+                        });
+                        const validation = isListElementValueValid(val, elementType);
+                        setInvalidNameVisual(input, !validation.valid);
+                        control = input;
+                        row.appendChild(input);
+                        break;
+                      }
+                      case 'object': {
+                        const textarea = document.createElement('textarea');
+                        textarea.style.flex = '1';
+                        textarea.rows = 1;
+                        textarea.value = val && typeof val === 'object' ? JSON.stringify(val) : '';
+                        textarea.addEventListener('change', () => {
+                          if (!textarea.value.trim()) {
+                            arr[i] = {};
+                            setInvalidNameVisual(textarea, false);
+                            return;
+                          }
+                          try {
+                            const parsed = JSON.parse(textarea.value);
+                            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                              arr[i] = parsed;
+                              setInvalidNameVisual(textarea, false);
+                            } else {
+                              setInvalidNameVisual(textarea, true);
+                            }
+                          } catch (_err) {
+                            setInvalidNameVisual(textarea, true);
+                          }
+                        });
+                        const validObject = val && typeof val === 'object' && !Array.isArray(val);
+                        setInvalidNameVisual(textarea, !validObject);
+                        control = textarea;
+                        row.appendChild(textarea);
+                        break;
+                      }
+                      default: {
+                        const input = document.createElement('input');
+                        input.type = 'text';
+                        input.style.flex = '1';
+                        input.value = val == null ? '' : String(val);
+                        input.addEventListener('change', () => {
+                          arr[i] = input.value;
+                        });
+                        control = input;
+                        row.appendChild(input);
+                        break;
+                      }
                     }
                   }
-                  control.value = val == null ? '' : String(val);
-                  control.addEventListener('change', () => {
-                    const converted = coerceListElementValue(control.value, elementType);
-                    inst.payload[p.name][i] = converted;
-                    setInvalidNameVisual(control, !isListElementValueValid(converted, elementType));
-                  });
-                  setInvalidNameVisual(control, !isListElementValueValid(val, elementType));
-                  row.appendChild(control);
                   listWrap.appendChild(row);
                 });
               };
@@ -6793,7 +7182,11 @@ DataEntityRuntimeTester 使用说明
               addBtn.classList.add('list-control-btn');
               addBtn.addEventListener('click', (e2) => {
                 e2.stopPropagation();
-                inst.payload[p.name].push(getDefaultValueForElementType(elementType));
+                if (hasReferenceBinding) {
+                  inst.payload[p.name].push(createDefaultReferenceValue(p.parameterIndexes));
+                } else {
+                  inst.payload[p.name].push(getDefaultValueForElementType(elementType));
+                }
                 arr = inst.payload[p.name];
                 renderList();
               });
@@ -7661,6 +8054,17 @@ DataEntityRuntimeTester 使用说明
         const duplicateIndices = new Set(duplicateIdInfo.byIndex.keys());
         const listValidation = collectListTypeViolations(tpl);
         const invalidListIndices = new Set(listValidation.invalidInstances.keys());
+        const skippedListEntries = [];
+        listValidation.invalidInstances.forEach((paramErrors, instIdx) => {
+          if (!invalidListIndices.has(instIdx)) return;
+          const inst = tpl.instances[instIdx];
+          skippedListEntries.push({
+            index: instIdx,
+            id: inst && Object.prototype.hasOwnProperty.call(inst, 'id') ? inst.id : '',
+            name: inst && inst.name,
+            params: paramErrors,
+          });
+        });
         const cleanedInstances = Array.isArray(tpl.instances)
           ? tpl.instances.filter((_, idx) => !duplicateIndices.has(idx) && !invalidListIndices.has(idx))
           : [];
@@ -7676,6 +8080,7 @@ DataEntityRuntimeTester 使用说明
           listValidationWarnings.push({
             name: tpl.name,
             count: invalidListIndices.size,
+            instances: skippedListEntries,
           });
         }
         const json = JSON.stringify({
@@ -7762,9 +8167,30 @@ DataEntityRuntimeTester 使用说明
       if (listValidationWarnings.length > 0) {
         const names = listValidationWarnings.map((item) => item.name).join(', ');
         const detail = listValidationWarnings
-          .map((item) => `${item.name}: ${item.count}`)
-          .join(', ');
-        addLogEntry('warn', '以下模板包含无效的列表数据，相关实例已跳过', { detail });
+          .map((item) => {
+            const instanceLines = (item.instances || []).map((info) => {
+              const headerParts = ['序号 ' + (info.index + 1)];
+              if (info.id !== undefined && info.id !== null && info.id !== '') {
+                headerParts.push('ID ' + info.id);
+              }
+              if (info.name) {
+                headerParts.push('名称 ' + info.name);
+              }
+              const paramLines = (info.params || []).map((paramError) => {
+                const errorDetails = (paramError.errors || []).map((err) => {
+                  if (err && Number.isInteger(err.index) && err.index >= 0) {
+                    return (err.reason || '类型不匹配') + ' @' + (err.index + 1);
+                  }
+                  return err && err.reason ? err.reason : '类型不匹配';
+                }).join(' / ');
+                return paramError.paramName + ': ' + (errorDetails || '类型不匹配');
+              }).join('；');
+              return headerParts.join('，') + ' -> ' + (paramLines || '类型不匹配');
+            }).join('\n    ');
+            return item.name + ':\n    ' + (instanceLines || '无实例信息');
+          })
+          .join('\n');
+        addLogEntry('warn', '以下模板包含无效的列表数据，相关实例已跳过保存', { detail });
         warningMessages.push(`以下模板包含无效的列表数据：${names}`);
       }
       if (ueInvalidNameMessage) {
@@ -7943,7 +8369,11 @@ DataEntityRuntimeTester 使用说明
     tpl.parameters.forEach((p) => {
       if (!p) return;
       if (p.parameterIndexes) {
-        lines.push(`    public DataRef ${p.name};`);
+        if (p.type === 'list') {
+          lines.push(`    public List<DataRef> ${p.name};`);
+        } else {
+          lines.push(`    public DataRef ${p.name};`);
+        }
       } else {
         const csType = mapToCSharpType(p.type, p);
         lines.push(`    public ${csType} ${p.name};`);
@@ -7962,6 +8392,9 @@ DataEntityRuntimeTester 使用说明
     }
     if (type === 'list') {
       const elementType = getValidListElementType(param && param.elementType);
+      if (isEnumType(elementType)) {
+        return `List<${getEnumCSharpTypeName(elementType)}>`;
+      }
       const inner = mapCSharpPrimitiveType(elementType);
       return `List<${inner}>`;
     }
@@ -8104,6 +8537,9 @@ DataEntityRuntimeTester 使用说明
       return mapPrimitiveToUEType('string');
     }
     if (param.parameterIndexes) {
+      if (param.type === 'list') {
+        return { type: 'TArray<FDataRef>', defaultValue: null };
+      }
       return { type: 'FDataRef', defaultValue: null };
     }
     if (param.type === 'list') {
