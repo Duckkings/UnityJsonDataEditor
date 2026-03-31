@@ -20,7 +20,9 @@
         <span id="currentDir" class="dir-label"></span>
         <button id="saveBtn">保存</button>
         <button id="toggleEditMode" data-mode="classic">表格模式</button>
+        <button id="engineModeToggle">切换引擎模式</button>
         <button id="regenerateCs">重新生成C#数据结构脚本</button>
+        <button id="regenerateCpp" style="display:none">重新生成C++数据结构脚本</button>
         <button id="exportCsv">导出为CSV</button>
         <button id="confirmExportCsv" style="display:none">导出</button>
         <button id="cancelExportCsv" style="display:none">退出选择</button>
@@ -77,6 +79,13 @@
               <option value="bool">布尔</option>
               <option value="list">列表</option>
               <option value="object">对象</option>
+            </select>
+            <select id="listElementType">
+              <option value="string">字符</option>
+              <option value="int">整数</option>
+              <option value="float">浮点</option>
+              <option value="long">长整</option>
+              <option value="bool">布尔</option>
             </select>
             <button id="newParam" class="primary">新建参数</button>
             <button id="toggleCompareValues" class="compare-toggle">对比值</button>
