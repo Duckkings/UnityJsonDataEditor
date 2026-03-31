@@ -1,7 +1,77 @@
+// Legacy runtime implementation. The active entry is `src/main.js`.
+import {
+  createDefaultReferenceValue,
+  ensureParamElementType,
+  getListElementTypeForParam,
+  getValidListElementType,
+  isEnumValueInvalid as isEnumValueInvalidPure,
+  isPureNumericName,
+  isTemplateNameInvalid as isTemplateNameInvalidPure,
+  isUENameCompliant,
+  normalizeReferenceList,
+  normalizeReferenceValue,
+  unwrapReferencePayload,
+  wrapReferencePayload as wrapReferencePayloadPure,
+} from './src/core/form-and-reference.js';
+import {
+  captureCurrentStructureSnapshot as captureCurrentStructureSnapshotPure,
+  ensureTemplateUid as ensureTemplateUidPure,
+  hasTemplateStructureChanged as hasTemplateStructureChangedPure,
+  normalizeContent as normalizeContentPure,
+  normalizeTemplateParameterIndexes as normalizeTemplateParameterIndexesPure,
+  populateMissingIndexFields as populateMissingIndexFieldsPure,
+  snapshotTemplateStructure as snapshotTemplateStructurePure,
+  structuresEqual as structuresEqualPure,
+} from './src/domain/template-normalizer.js';
+import {
+  buildListElementTypeCollections as buildListElementTypeCollectionsPure,
+  chooseDuplicateNavigationTarget as chooseDuplicateNavigationTargetPure,
+  collectDuplicateIdInfo as collectDuplicateIdInfoPure,
+  collectDuplicateIndexInfo as collectDuplicateIndexInfoPure,
+  collectInstanceIndexInvalidReasons as collectInstanceIndexInvalidReasonsPure,
+  computeExpectedIndexValue as computeExpectedIndexValuePure,
+  doesTemplateContainValue,
+  doesTemplateHaveField,
+  doesTemplateHaveInvalidIndexReferences as doesTemplateHaveInvalidIndexReferencesPure,
+  enforceEnumIndexField as enforceEnumIndexFieldPure,
+  ensureEnumParamNaming as ensureEnumParamNamingPure,
+  evaluateInstanceIndexValidation as evaluateInstanceIndexValidationPure,
+  findTemplateByName as findTemplateByNamePure,
+  formatIndexCell as formatIndexCellPure,
+  getEnumCSharpTypeName as getEnumCSharpTypeNamePure,
+  getEnumDefinition as getEnumDefinitionPure,
+  getEnumDefinitions as getEnumDefinitionsPure,
+  getEnumParamKeysForInstance as getEnumParamKeysForInstancePure,
+  getEnumTemplate as getEnumTemplatePure,
+  getEnumValues as getEnumValuesPure,
+  getInstanceFieldValue,
+  getNumericInstanceId as getNumericInstanceIdPure,
+  isEnumTemplate as isEnumTemplatePure,
+  isEnumType as isEnumTypePure,
+  parseIndexDataCell as parseIndexDataCellPure,
+  parseIndexTypeCell as parseIndexTypeCellPure,
+  resolveIndexFieldMeta as resolveIndexFieldMetaPure,
+  sanitizeCSharpMemberName as sanitizeCSharpMemberNamePure,
+  sanitizeCSharpTypeName as sanitizeCSharpTypeNamePure,
+} from './src/domain/index-enum-validation.js';
+import {
+  coerceListElementValue as coerceListElementValuePure,
+  collectListTypeViolations as collectListTypeViolationsPure,
+  convertValueForType as convertValueForTypePure,
+  convertValueToList as convertValueToListPure,
+  getDefaultValueForElementType as getDefaultValueForElementTypePure,
+  getDefaultValueForType as getDefaultValueForTypePure,
+  isListElementValueValid as isListElementValueValidPure,
+  validateListValueAgainstType as validateListValueAgainstTypePure,
+} from './src/domain/editor-actions.js';
+import { createAppModeModule } from './src/core/app-mode.js';
+import { createWorkspaceStorageModule } from './src/services/workspace-storage.js';
+import { createTemplatePersistenceModule } from './src/services/template-persistence.js';
+
 (() => {
   // 数据结构：模板列表
   const templates = [];
-  let templateUidCounter = 0;
+  const templateUidState = { counter: 0 };
   let lastSavedStructureSnapshot = new Map();
   let currentTemplateIndex = -1;
   let currentInstanceIndex = -1;
@@ -49,13 +119,17 @@
   };
   const CONFIG_DIR_NAME = 'dataEditorConfig';
   const CONFIG_FILE_NAME = 'config.json';
+  let appModeModule = null;
+  let workspaceStorageModule = null;
+  let templatePersistenceModule = null;
+  let appBootstrapped = false;
 
   function isUnityMode() {
-    return currentEngineMode === ENGINE_MODES.UNITY;
+    return appModeModule ? appModeModule.isUnityMode() : currentEngineMode === ENGINE_MODES.UNITY;
   }
 
   function isUEMode() {
-    return currentEngineMode === ENGINE_MODES.UE;
+    return appModeModule ? appModeModule.isUEMode() : currentEngineMode === ENGINE_MODES.UE;
   }
   // 缓存当前模板的索引重复信息，便于在索引跳转时复用
   let lastDuplicateIndexInfo = null;
@@ -127,49 +201,12 @@
     }
   }
 
-  const NUMERIC_NAME_PATTERN = /^\d+$/;
-  const UE_NAME_PATTERN = /^[A-Za-z0-9_]+$/;
-
-  function isPureNumericName(name) {
-    return NUMERIC_NAME_PATTERN.test(String(name || "").trim());
-  }
-
-  function isUENameCompliant(name) {
-    if (name == null) return false;
-    return UE_NAME_PATTERN.test(String(name).trim());
-  }
-
   function isTemplateNameInvalid(name) {
-    if (isPureNumericName(name)) return true;
-    if (isUEMode() && !isUENameCompliant(name)) return true;
-    return false;
+    return isTemplateNameInvalidPure(name, { isUEMode: isUEMode() });
   }
 
   function isEnumValueInvalid(value) {
-    if (isPureNumericName(value)) return true;
-    if (isUEMode() && !isUENameCompliant(value)) return true;
-    return false;
-  }
-
-  function getValidListElementType(value) {
-    if (!value && value !== 0) return 'string';
-    const normalized = String(value).trim();
-    if (!normalized) return 'string';
-    return listElementTypeSet.has(normalized) ? normalized : normalized;
-  }
-
-  function ensureParamElementType(param) {
-    if (!param) return;
-    if (param.type === 'list') {
-      param.elementType = getValidListElementType(param.elementType);
-    } else if (param.elementType) {
-      delete param.elementType;
-    }
-  }
-
-  function getListElementTypeForParam(param) {
-    if (!param || param.type !== 'list') return 'string';
-    return getValidListElementType(param.elementType);
+    return isEnumValueInvalidPure(value, { isUEMode: isUEMode() });
   }
 
   function getSelectedListElementType() {
@@ -221,87 +258,14 @@
     }
   }
 
-  function createDefaultReferenceValue(binding) {
-    if (!binding) {
-      return { template: '', by: '', value: '' };
-    }
-    return {
-      template: binding.template || '',
-      by: binding.param || '',
-      value: '',
-    };
-  }
-
-  function normalizeReferenceValue(raw, binding) {
-    if (!binding) return raw;
-    const template = binding.template || '';
-    const by = binding.param || '';
-    const source = Array.isArray(raw) ? (raw.length > 0 ? raw[0] : null) : raw;
-    if (!source || typeof source !== 'object' || Array.isArray(source)) {
-      return {
-        template,
-        by,
-        value: source == null ? '' : String(source),
-      };
-    }
-    return {
-      template,
-      by,
-      value: source.value == null ? '' : String(source.value),
-    };
-  }
-
-  function normalizeReferenceList(raw, binding) {
-    const arrayValue = Array.isArray(raw) ? raw : (raw == null ? [] : [raw]);
-    const normalized = arrayValue.map((item) => normalizeReferenceValue(item, binding));
-    return normalized.length > 0 ? normalized : [createDefaultReferenceValue(binding)];
-  }
-
-  function unwrapReferencePayload(value, binding, asList) {
-    if (!binding) return value;
-    if (asList) {
-      const normalized = normalizeReferenceList(value, binding);
-      return normalized.map((entry) => (entry && typeof entry === 'object' ? entry.value : ''));
-    }
-    const normalized = normalizeReferenceValue(value, binding);
-    if (normalized && typeof normalized === 'object') {
-      return normalized.value;
-    }
-    return normalized;
-  }
-
   function wrapReferencePayload(value, binding, asList, elementType = 'string') {
-    if (!binding) return value;
-    const template = binding.template || '';
-    const by = binding.param || '';
-    if (asList) {
-      let list = [];
-      if (Array.isArray(value) && value.every((item) => item && typeof item === 'object' && !Array.isArray(item))) {
-        list = value.map((item) => normalizeReferenceValue(item, binding));
-      } else {
-        const base = convertValueToList(value, elementType);
-        list = base.map((item) => ({
-          template,
-          by,
-          value: item == null ? '' : String(item),
-        }));
-      }
-      if (list.length === 0) {
-        list = [createDefaultReferenceValue(binding)];
-      }
-      return list;
-    }
-    const normalized = normalizeReferenceValue(value, binding);
-    if (normalized && typeof normalized === 'object' && !Array.isArray(normalized)) {
-      return normalized;
-    }
-    const wrapped = createDefaultReferenceValue(binding);
-    wrapped.value = normalized == null ? '' : String(normalized);
-    return wrapped;
+    return wrapReferencePayloadPure(value, binding, asList, elementType, { convertValueToList });
   }
 
   function getCurrentEngineLabel() {
-    return ENGINE_LABELS[currentEngineMode] || '';
+    return appModeModule
+      ? appModeModule.getCurrentEngineLabel()
+      : ENGINE_LABELS[currentEngineMode] || '';
   }
 
   function updateEngineModeUIState() {
@@ -319,6 +283,10 @@
   }
 
   function setEngineMode(newMode) {
+    if (appModeModule) {
+      appModeModule.setEngineMode(newMode);
+      return;
+    }
     if (!Object.values(ENGINE_MODES).includes(newMode)) return;
     if (newMode === currentEngineMode) return;
     currentEngineMode = newMode;
@@ -328,9 +296,16 @@
   }
 
   function toggleEngineMode() {
+    if (appModeModule) {
+      appModeModule.toggleEngineMode();
+      return;
+    }
     setEngineMode(isUnityMode() ? ENGINE_MODES.UE : ENGINE_MODES.UNITY);
   }
   async function getConfigDirectoryHandle(options = {}) {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.getConfigDirectoryHandle(options);
+    }
     if (!directoryHandle) return null;
     const create = Boolean(options.create);
     if (configDirHandle) return configDirHandle;
@@ -351,6 +326,9 @@
   }
 
   async function readEditorConfig() {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.readEditorConfig();
+    }
     try {
       const dir = await getConfigDirectoryHandle({ create: false });
       if (!dir) return null;
@@ -364,6 +342,9 @@
   }
 
   async function persistEditorConfig() {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.persistEditorConfig();
+    }
     if (!directoryHandle) return;
     try {
       const dir = await getConfigDirectoryHandle({ create: true });
@@ -378,6 +359,9 @@
   }
 
   async function loadEditorConfigState() {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.loadEditorConfigState();
+    }
     if (!directoryHandle) {
       updateEngineModeUIState();
       return;
@@ -405,6 +389,9 @@
 
 
   async function ensureEngineGenerationConsent(actionLabel = '生成操作') {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.ensureEngineGenerationConsent(actionLabel);
+    }
     if (!engineModeNeedsConfirmation[currentEngineMode]) {
       return true;
     }
@@ -471,10 +458,16 @@
   }
 
   function isSheetModeActive() {
-    return currentEditMode === EDIT_MODES.SHEET;
+    return appModeModule
+      ? appModeModule.isSheetModeActive()
+      : currentEditMode === EDIT_MODES.SHEET;
   }
 
   function normalizeSheetSelection() {
+    if (appModeModule) {
+      appModeModule.normalizeSheetSelection();
+      return;
+    }
     if (!templates.length) {
       sheetActiveTemplateIndex = -1;
       sheetActiveInstanceIndex = -1;
@@ -502,48 +495,7 @@
   }
 
   function findTemplateByName(name) {
-    if (!name) return null;
-    return templates.find((tpl) => tpl && tpl.name === name) || null;
-  }
-
-  function doesTemplateHaveField(tpl, fieldName) {
-    if (!tpl || !fieldName) return false;
-    if (RESERVED_INDEX_FIELDS.has(fieldName)) return true;
-    const params = Array.isArray(tpl.parameters) ? tpl.parameters : [];
-    return params.some((p) => p && p.name === fieldName);
-  }
-
-  function getInstanceFieldValue(inst, fieldName, fallbackTemplateName = '') {
-    if (!inst || !fieldName) return '';
-    const payload = inst.payload || {};
-    switch (fieldName) {
-      case 'id':
-        return inst.id != null ? inst.id : payload.id;
-      case 'name':
-        return inst.name != null ? inst.name : payload.name;
-      case 'template':
-        return payload.template != null ? payload.template : fallbackTemplateName;
-      case 'index':
-        return payload.index != null ? payload.index : '';
-      default:
-        return payload[fieldName];
-    }
-  }
-
-  function doesTemplateContainValue(tpl, fieldName, value) {
-    if (!tpl || !fieldName) return false;
-    const normalized = value == null ? '' : String(value).trim();
-    if (normalized === '') return false;
-    const instList = Array.isArray(tpl.instances) ? tpl.instances : [];
-    for (const instance of instList) {
-      if (!instance) continue;
-      const candidate = getInstanceFieldValue(instance, fieldName, tpl.name);
-      if (candidate == null) continue;
-      if (String(candidate).trim() === normalized) {
-        return true;
-      }
-    }
-    return false;
+    return findTemplateByNamePure(templates, name);
   }
 
   function evaluateInstanceIndexValidation(tpl, inst) {
@@ -1410,6 +1362,213 @@
   const searchParamsInput = $("searchParams");
   const toggleCompareValuesBtn = $("toggleCompareValues");
 
+  const appState = {
+    templates,
+    templateUidState,
+    pendingTemplateDeletions,
+    selectedTemplates,
+    selectedInstances,
+    selectedParams,
+    exportSelections,
+    sheetRenderedSheetIds,
+    sheetDuplicateIdRows,
+    sheetTemplateValidation,
+    engineModeNeedsConfirmation,
+    ENGINE_MODES,
+    ENGINE_LABELS,
+    EDIT_MODES,
+    TRASH_FOLDER_NAME,
+    CONFIG_DIR_NAME,
+    CONFIG_FILE_NAME,
+  };
+
+  function bindAppStateProperty(name, getter, setter) {
+    Object.defineProperty(appState, name, {
+      enumerable: true,
+      get: getter,
+      set: setter,
+    });
+  }
+
+  bindAppStateProperty('lastSavedStructureSnapshot', () => lastSavedStructureSnapshot, (value) => {
+    lastSavedStructureSnapshot = value;
+  });
+  bindAppStateProperty('currentTemplateIndex', () => currentTemplateIndex, (value) => {
+    currentTemplateIndex = value;
+  });
+  bindAppStateProperty('currentInstanceIndex', () => currentInstanceIndex, (value) => {
+    currentInstanceIndex = value;
+  });
+  bindAppStateProperty('directoryHandle', () => directoryHandle, (value) => {
+    directoryHandle = value;
+  });
+  bindAppStateProperty('csharpHandle', () => csharpHandle, (value) => {
+    csharpHandle = value;
+  });
+  bindAppStateProperty('dataEntityHandle', () => dataEntityHandle, (value) => {
+    dataEntityHandle = value;
+  });
+  bindAppStateProperty('modelStructHandle', () => modelStructHandle, (value) => {
+    modelStructHandle = value;
+  });
+  bindAppStateProperty('editorHandle', () => editorHandle, (value) => {
+    editorHandle = value;
+  });
+  bindAppStateProperty('cppModelHandle', () => cppModelHandle, (value) => {
+    cppModelHandle = value;
+  });
+  bindAppStateProperty('cppEnumHandle', () => cppEnumHandle, (value) => {
+    cppEnumHandle = value;
+  });
+  bindAppStateProperty('configDirHandle', () => configDirHandle, (value) => {
+    configDirHandle = value;
+  });
+  bindAppStateProperty('trashHandle', () => trashHandle, (value) => {
+    trashHandle = value;
+  });
+  bindAppStateProperty('trashButtonBaseLabel', () => trashButtonBaseLabel, (value) => {
+    trashButtonBaseLabel = value;
+  });
+  bindAppStateProperty('trashSelectedTemplateName', () => trashSelectedTemplateName, (value) => {
+    trashSelectedTemplateName = value;
+  });
+  bindAppStateProperty('exportSelectionMode', () => exportSelectionMode, (value) => {
+    exportSelectionMode = value;
+  });
+  bindAppStateProperty('exportTemplateAnchorIndex', () => exportTemplateAnchorIndex, (value) => {
+    exportTemplateAnchorIndex = value;
+  });
+  bindAppStateProperty('anchorTemplate', () => anchorTemplate, (value) => {
+    anchorTemplate = value;
+  });
+  bindAppStateProperty('anchorInstance', () => anchorInstance, (value) => {
+    anchorInstance = value;
+  });
+  bindAppStateProperty('anchorParam', () => anchorParam, (value) => {
+    anchorParam = value;
+  });
+  bindAppStateProperty('lastSelectedCategory', () => lastSelectedCategory, (value) => {
+    lastSelectedCategory = value;
+  });
+  bindAppStateProperty('editingParamIndex', () => editingParamIndex, (value) => {
+    editingParamIndex = value;
+  });
+  bindAppStateProperty('currentEngineMode', () => currentEngineMode, (value) => {
+    currentEngineMode = value;
+  });
+  bindAppStateProperty('currentEditMode', () => currentEditMode, (value) => {
+    currentEditMode = value;
+  });
+  bindAppStateProperty('sheetActiveTemplateIndex', () => sheetActiveTemplateIndex, (value) => {
+    sheetActiveTemplateIndex = value;
+  });
+  bindAppStateProperty('sheetActiveInstanceIndex', () => sheetActiveInstanceIndex, (value) => {
+    sheetActiveInstanceIndex = value;
+  });
+  bindAppStateProperty('sheetRenderedTemplateIndex', () => sheetRenderedTemplateIndex, (value) => {
+    sheetRenderedTemplateIndex = value;
+  });
+  bindAppStateProperty('sheetRenderedInstanceIndex', () => sheetRenderedInstanceIndex, (value) => {
+    sheetRenderedInstanceIndex = value;
+  });
+  bindAppStateProperty('sheetRenderedInstanceCount', () => sheetRenderedInstanceCount, (value) => {
+    sheetRenderedInstanceCount = value;
+  });
+  bindAppStateProperty('sheetRenderedParameterSignature', () => sheetRenderedParameterSignature, (value) => {
+    sheetRenderedParameterSignature = value;
+  });
+  bindAppStateProperty(
+    'sheetRenderedTemplatesFingerprint',
+    () => sheetRenderedTemplatesFingerprint,
+    (value) => {
+      sheetRenderedTemplatesFingerprint = value;
+    },
+  );
+  bindAppStateProperty('sheetModeDirty', () => sheetModeDirty, (value) => {
+    sheetModeDirty = value;
+  });
+  bindAppStateProperty('luckysheetInitialized', () => luckysheetInitialized, (value) => {
+    luckysheetInitialized = value;
+  });
+
+  appModeModule = createAppModeModule({
+    appState,
+    updateEngineModeUIState,
+    refreshTemplates,
+  });
+
+  workspaceStorageModule = createWorkspaceStorageModule({
+    appState,
+    setCurrentDirectoryLabel: (label) => {
+      if (currentDirLabel) {
+        currentDirLabel.textContent = label || '';
+      }
+    },
+    updateEngineModeUIState,
+    setEngineMode: (...args) => appModeModule.setEngineMode(...args),
+    getCurrentEngineLabel: (...args) => appModeModule.getCurrentEngineLabel(...args),
+    isUnityMode: (...args) => appModeModule.isUnityMode(...args),
+    showMessage,
+    loadAllTemplates: (...args) => templatePersistenceModule.loadAllTemplates(...args),
+    refreshTemplates,
+    updateIndexTemplateOptions,
+    generateRuntimeLoaderArtifacts,
+    ensureModelStruct,
+  });
+
+  templatePersistenceModule = createTemplatePersistenceModule({
+    appState,
+    isUnityMode: (...args) => appModeModule.isUnityMode(...args),
+    isSheetModeActive: (...args) => appModeModule.isSheetModeActive(...args),
+    updateSheetTemplateNav,
+    commitActiveSheetEdits,
+    ensureEngineGenerationConsent: (...args) =>
+      workspaceStorageModule.ensureEngineGenerationConsent(...args),
+    cleanConflictingEngineArtifacts: (...args) =>
+      workspaceStorageModule.cleanConflictingEngineArtifacts(...args),
+    ensureSubFolders: (...args) => workspaceStorageModule.ensureSubFolders(...args),
+    ensureModelStruct,
+    ensureTrashDirectory,
+    saveEnumTemplateCache: (...args) => workspaceStorageModule.saveEnumTemplateCache(...args),
+    loadEnumTemplateCache: (...args) => workspaceStorageModule.loadEnumTemplateCache(...args),
+    clearEnumTemplateCache: (...args) => workspaceStorageModule.clearEnumTemplateCache(...args),
+    readTextFileIfExists: (...args) => workspaceStorageModule.readTextFileIfExists(...args),
+    writeTextFile: (...args) => workspaceStorageModule.writeTextFile(...args),
+    deleteDataEntityFileIfExists: (...args) =>
+      workspaceStorageModule.deleteDataEntityFileIfExists(...args),
+    deleteCSharpFileIfExists: (...args) =>
+      workspaceStorageModule.deleteCSharpFileIfExists(...args),
+    moveTemplateJsonToTrash: (...args) => workspaceStorageModule.moveTemplateJsonToTrash(...args),
+    persistEditorConfig: (...args) => workspaceStorageModule.persistEditorConfig(...args),
+    refreshTrashButtonState,
+    refreshTrashOverlayContents,
+    refreshTemplates,
+    refreshInstances,
+    refreshParams,
+    updateIndexTemplateOptions,
+    updateTemplateNameInputValidity,
+    updateInstanceNameInputValidity,
+    updateParamNameInputValidity,
+    addLogEntry,
+    showMessage,
+    generateCSContent,
+    generateEnumCSFiles,
+    generateRuntimeLoaderArtifacts,
+    generateUECppStructuresForCurrentTemplates,
+    collectDuplicateIdInfo,
+    collectListTypeViolations,
+    ensureTemplateUid,
+    normalizeTemplateParameterIndexes,
+    populateMissingIndexFields,
+    captureCurrentStructureSnapshot,
+    hasTemplateStructureChanged,
+    normalizeContent,
+    snapshotTemplateStructure,
+    isEnumTemplate,
+    ensureEnumParamNaming,
+    getEnumTemplate,
+  });
+
   // 拖拽选择状态
   const dragSelect = {
     isDragging: false,
@@ -1745,6 +1904,9 @@
   }
 
   async function restoreTemplateFromTrash(templateName) {
+    if (templatePersistenceModule) {
+      return templatePersistenceModule.restoreTemplateFromTrash(templateName);
+    }
     if (!templateName) return;
     if (!directoryHandle) {
       showMessage('请先选择工作目录', 'warn');
@@ -2146,48 +2308,19 @@
   }
 
   function resolveIndexFieldMeta(tpl) {
-    let field = tpl && tpl.indexField ? tpl.indexField : 'id';
-    if (field === 'id') {
-      return { field: 'id', type: 'int' };
-    }
-    if (field === 'name') {
-      return { field: 'name', type: 'string' };
-    }
-    const param = (tpl.parameters || []).find((p) => p && p.name === field);
-    if (param && INDEXABLE_PARAM_TYPES.has(param.type)) {
-      return { field, type: param.type };
-    }
-    return { field: 'id', type: 'int' };
+    return resolveIndexFieldMetaPure(tpl, INDEXABLE_PARAM_TYPES);
   }
 
   function formatIndexCell(field, type, value) {
-    const safeField = field || 'id';
-    const safeType = type || (safeField === 'name' ? 'string' : 'int');
-    const safeValue = value == null ? '' : String(value);
-    return `${safeField}/${safeType}/${safeValue}`;
+    return formatIndexCellPure(field, type, value);
   }
 
   function parseIndexTypeCell(cell) {
-    const raw = String(cell ?? '').trim();
-    if (!raw) {
-      return { field: 'id', type: 'int' };
-    }
-    const parts = raw.split('/');
-    const field = (parts[0] || '').trim() || 'id';
-    const type = (parts[1] || '').trim() || (field === 'name' ? 'string' : 'int');
-    return { field, type };
+    return parseIndexTypeCellPure(cell);
   }
 
   function parseIndexDataCell(cell, fallbackField, fallbackType) {
-    const raw = String(cell ?? '').trim();
-    if (!raw) {
-      return { field: fallbackField, type: fallbackType, value: '' };
-    }
-    const parts = raw.split('/');
-    const field = (parts[0] || '').trim() || fallbackField;
-    const type = (parts[1] || '').trim() || fallbackType;
-    const value = parts.length >= 3 ? parts.slice(2).join('/') : '';
-    return { field, type, value };
+    return parseIndexDataCellPure(cell, fallbackField, fallbackType);
   }
 
   function buildCsvRowsForTemplate(tpl, instances) {
@@ -2535,140 +2668,28 @@
   }
 
   function computeExpectedIndexValue(tpl, inst, fieldName) {
-    if (!inst || !inst.payload) return '';
-    if (fieldName === 'id') {
-      return String(inst.id ?? '');
-    }
-    if (fieldName === 'name') {
-      return inst.name != null ? String(inst.name) : '';
-    }
-    const value = inst.payload[fieldName];
-    return value == null ? '' : String(value);
+    return computeExpectedIndexValuePure(tpl, inst, fieldName);
   }
 
   function enforceEnumIndexField(tpl) {
-    if (!tpl || !isEnumTemplate(tpl)) return false;
-    let changed = false;
-    if (tpl.indexField !== 'id') {
-      tpl.indexField = 'id';
-      changed = true;
-    }
-    const instList = Array.isArray(tpl.instances) ? tpl.instances : [];
-    instList.forEach((inst) => {
-      const expected = computeExpectedIndexValue(tpl, inst, 'id');
-      if (!inst) return;
-      if (!inst.payload) inst.payload = {};
-      if (inst.payload.index !== expected) {
-        inst.payload.index = expected;
-        changed = true;
-      }
-    });
-    return changed;
+    return enforceEnumIndexFieldPure(tpl, { isEnumTemplate });
   }
 
 
   function collectDuplicateIdInfo(tpl) {
-    if (!tpl) {
-      return { duplicates: new Map(), byIndex: new Map() };
-    }
-    const instList = Array.isArray(tpl.instances) ? tpl.instances : [];
-    const buckets = new Map();
-    instList.forEach((inst, idx) => {
-      const raw = inst && inst.id != null ? String(inst.id) : '';
-      const trimmed = raw.trim();
-      let key = trimmed;
-      if (trimmed !== '') {
-        const num = Number(trimmed);
-        if (Number.isFinite(num)) {
-          key = String(Math.trunc(num));
-        }
-      }
-      if (!buckets.has(key)) {
-        buckets.set(key, []);
-      }
-      buckets.get(key).push({ idx, inst, value: key });
-    });
-    const duplicates = new Map();
-    const byIndex = new Map();
-    buckets.forEach((entries, key) => {
-      if (entries.length > 1) {
-        duplicates.set(key, entries);
-        entries.forEach((entry) => {
-          byIndex.set(entry.idx, { value: key, entries });
-        });
-      }
-    });
-    return { duplicates, byIndex };
+    return collectDuplicateIdInfoPure(tpl);
   }
 
   function getNumericInstanceId(inst) {
-    if (!inst) return Number.NaN;
-    const raw = inst.id;
-    if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
-    if (typeof raw === 'string' && raw.trim() !== '') {
-      const parsed = Number(raw);
-      if (Number.isFinite(parsed)) return parsed;
-    }
-    return Number.NaN;
+    return getNumericInstanceIdPure(inst);
   }
 
   function collectDuplicateIndexInfo(tpl) {
-    if (!tpl) {
-      return { field: 'id', duplicates: new Map(), byIndex: new Map() };
-    }
-    const field = tpl.indexField || 'id';
-    const instList = Array.isArray(tpl.instances) ? tpl.instances : [];
-    const buckets = new Map();
-    instList.forEach((inst, idx) => {
-      const rawValue = computeExpectedIndexValue(tpl, inst, field);
-      const key = rawValue == null ? '' : String(rawValue);
-      if (!buckets.has(key)) {
-        buckets.set(key, []);
-      }
-      buckets.get(key).push({
-        idx,
-        inst,
-        id: getNumericInstanceId(inst),
-        value: key,
-      });
-    });
-    const duplicates = new Map();
-    const byIndex = new Map();
-    buckets.forEach((entries, key) => {
-      if (entries.length > 1) {
-        duplicates.set(key, entries);
-        entries.forEach((entry) => {
-          byIndex.set(entry.idx, { value: key, entries });
-        });
-      }
-    });
-    return { field, duplicates, byIndex };
+    return collectDuplicateIndexInfoPure(tpl);
   }
 
   function chooseDuplicateNavigationTarget(group, currentInst) {
-    if (!Array.isArray(group) || group.length <= 1) return null;
-    const currentEntry = group.find((entry) => entry.inst === currentInst);
-    const others = group.filter((entry) => entry.inst !== currentInst);
-    if (others.length === 0) return null;
-    if (!currentEntry) {
-      return others.slice().sort((a, b) => a.idx - b.idx)[0];
-    }
-    const currentId = currentEntry.id;
-    const greater = others
-      .filter((entry) => Number.isFinite(entry.id) && Number.isFinite(currentId)
-        && entry.id > currentId)
-      .sort((a, b) => a.id - b.id);
-    if (greater.length > 0) {
-      return greater[0];
-    }
-    const smaller = others
-      .filter((entry) => Number.isFinite(entry.id) && Number.isFinite(currentId)
-        && entry.id < currentId)
-      .sort((a, b) => a.id - b.id);
-    if (smaller.length > 0) {
-      return smaller[0];
-    }
-    return others.slice().sort((a, b) => a.idx - b.idx)[0];
+    return chooseDuplicateNavigationTargetPure(group, currentInst);
   }
 
   function jumpToDuplicateIndexInstance(tpl, inst) {
@@ -3048,61 +3069,40 @@
   });
 
   function ensureTemplateUid(tpl) {
-    if (!tpl) return;
-    if (!tpl.__uid) {
-      templateUidCounter += 1;
-      tpl.__uid = `tpl_${templateUidCounter}`;
-    }
+    return ensureTemplateUidPure(tpl, templateUidState);
   }
 
   function snapshotTemplateStructure(tpl) {
-    return {
-      name: tpl.name,
-      indexField: tpl.indexField || 'id',
-      parameters: (tpl.parameters || []).map((p) => {
-        if (!p) return null;
-        return {
-          name: p.name,
-          type: p.type,
-          parameterIndexes: p.parameterIndexes
-            ? {
-                template: p.parameterIndexes.template || '',
-                param: p.parameterIndexes.param || '',
-                indexField: p.parameterIndexes.indexField || '',
-              }
-            : null,
-        };
-      }),
-      isEnum: Boolean(isEnumTemplate(tpl)),
-    };
+    return snapshotTemplateStructurePure(tpl, { isEnumTemplate });
   }
 
   function structuresEqual(a, b) {
-    return JSON.stringify(a) === JSON.stringify(b);
+    return structuresEqualPure(a, b);
   }
 
   function hasTemplateStructureChanged(tpl) {
-    ensureTemplateUid(tpl);
-    const prev = lastSavedStructureSnapshot.get(tpl.__uid);
-    if (!prev) return true;
-    const current = snapshotTemplateStructure(tpl);
-    return !structuresEqual(prev, current);
+    return hasTemplateStructureChangedPure(tpl, {
+      lastSavedStructureSnapshot,
+      ensureTemplateUid,
+      snapshotTemplateStructure,
+    });
   }
 
   function captureCurrentStructureSnapshot() {
-    const map = new Map();
-    templates.forEach((tpl) => {
-      ensureTemplateUid(tpl);
-      map.set(tpl.__uid, snapshotTemplateStructure(tpl));
+    return captureCurrentStructureSnapshotPure(templates, {
+      ensureTemplateUid,
+      snapshotTemplateStructure,
     });
-    return map;
   }
 
   function normalizeContent(content) {
-    return (content || "").replace(/\r\n/g, "\n").trimEnd();
+    return normalizeContentPure(content);
   }
 
   async function readTextFileIfExists(dirHandle, fileName) {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.readTextFileIfExists(dirHandle, fileName);
+    }
     if (!dirHandle) return null;
     try {
       const fileHandle = await dirHandle.getFileHandle(fileName, { create: false });
@@ -3114,6 +3114,9 @@
   }
 
   async function writeTextFile(dirHandle, fileName, content) {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.writeTextFile(dirHandle, fileName, content);
+    }
     if (!dirHandle) return;
     const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
     const writable = await fileHandle.createWritable({ keepExistingData: false });
@@ -3317,12 +3320,6 @@
   //   renameInstance(instanceNameInput.value.trim());
   // });
 
-  // 初始化
-  window.addEventListener("DOMContentLoaded", () => {
-    refreshTemplates();
-    updateIndexTemplateOptions();
-  });
-
   // 点击空白区域取消选中
   function setupClearOnBlank(listEl, type) {
     listEl.addEventListener('click', (e) => {
@@ -3441,6 +3438,9 @@
   const DB_STORE = 'handles';
   const ENUM_CACHE_PREFIX = 'enumCache:';
   function openDB() {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.openDB();
+    }
     return new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, 1);
       req.onupgradeneeded = () => {
@@ -3454,10 +3454,16 @@
     });
   }
   function getEnumCacheKey() {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.getEnumCacheKey();
+    }
     if (!directoryHandle || !directoryHandle.name) return null;
     return `${ENUM_CACHE_PREFIX}${directoryHandle.name}`;
   }
   async function saveLastDirectoryHandle(handle) {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.saveLastDirectoryHandle(handle);
+    }
     try {
       const db = await openDB();
       await new Promise((resolve, reject) => {
@@ -3471,6 +3477,9 @@
     }
   }
   async function getLastDirectoryHandle() {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.getLastDirectoryHandle();
+    }
     try {
       const db = await openDB();
       return await new Promise((resolve, reject) => {
@@ -3484,6 +3493,9 @@
     }
   }
   async function saveEnumTemplateCache(tpl) {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.saveEnumTemplateCache(tpl);
+    }
     const key = getEnumCacheKey();
     if (!key) return;
     try {
@@ -3505,6 +3517,9 @@
     }
   }
   async function loadEnumTemplateCache() {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.loadEnumTemplateCache();
+    }
     const key = getEnumCacheKey();
     if (!key) return null;
     try {
@@ -3524,6 +3539,9 @@
     }
   }
   async function clearEnumTemplateCache() {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.clearEnumTemplateCache();
+    }
     const key = getEnumCacheKey();
     if (!key) return;
     try {
@@ -3539,6 +3557,9 @@
     }
   }
   async function verifyPermission(handle, readWrite = false) {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.verifyPermission(handle, readWrite);
+    }
     if (!handle) return false;
     const opts = { mode: readWrite ? 'readwrite' : 'read' };
     try {
@@ -3555,6 +3576,9 @@
     return true;
   }
   async function autoRestoreLastDirectory() {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.autoRestoreLastDirectory();
+    }
     try {
       const handle = await getLastDirectoryHandle();
       if (!handle) return;
@@ -3586,6 +3610,9 @@
    * 选择工作目录
    */
   async function chooseDirectory() {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.chooseDirectory();
+    }
     try {
       directoryHandle = await window.showDirectoryPicker();
       configDirHandle = null;
@@ -3613,6 +3640,9 @@
   const IGNORED_FILE_NAMES = [".ds_store", "thumbs.db"];
 
   function shouldIgnoreFileEntry(entryName) {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.shouldIgnoreFileEntry(entryName);
+    }
     if (!entryName) return false;
     const lower = entryName.toLowerCase();
     if (IGNORED_FILE_NAMES.includes(lower)) return true;
@@ -3620,6 +3650,9 @@
   }
 
   async function removeDirectoryIfExists(parentHandle, name) {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.removeDirectoryIfExists(parentHandle, name);
+    }
     if (!parentHandle || typeof parentHandle.removeEntry !== 'function' || !name) return false;
     try {
       await parentHandle.removeEntry(name, { recursive: true });
@@ -3634,6 +3667,9 @@
   }
 
   async function cleanConflictingEngineArtifacts() {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.cleanConflictingEngineArtifacts();
+    }
     if (!directoryHandle) return;
     let removed = false;
     if (isUnityMode()) {
@@ -3652,6 +3688,9 @@
   }
 
   async function ensureSubFolders() {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.ensureSubFolders();
+    }
     if (!directoryHandle) return;
     dataEntityHandle = await directoryHandle.getDirectoryHandle("dataEntity", { create: true });
     try {
@@ -3719,6 +3758,9 @@
     }
   }
   async function ensureCppEnumDirectory() {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.ensureCppEnumDirectory();
+    }
     if (cppEnumHandle) return cppEnumHandle;
     if (!cppModelHandle) return null;
     try {
@@ -3881,27 +3923,11 @@
   }
 
   function normalizeTemplateParameterIndexes(template) {
-    if (!template || !Array.isArray(template.parameters)) return;
-    template.parameters.forEach((param) => {
-      normalizeParamIndexStructure(param);
-      ensureParamElementType(param);
-    });
+    return normalizeTemplateParameterIndexesPure(template, { ensureParamElementType });
   }
 
   function populateMissingIndexFields(templatesList) {
-    if (!Array.isArray(templatesList)) return;
-    templatesList.forEach((tpl) => {
-      if (!tpl || !Array.isArray(tpl.parameters)) return;
-      tpl.parameters.forEach((param) => {
-        if (!param || !param.parameterIndexes || typeof param.parameterIndexes !== 'object') return;
-        if (!param.parameterIndexes.indexField) {
-          const target = templatesList.find((item) => item && item.name === param.parameterIndexes.template);
-          if (target) {
-            param.parameterIndexes.indexField = target.indexField || 'id';
-          }
-        }
-      });
-    });
+    return populateMissingIndexFieldsPure(templatesList);
   }
 
   async function generateRuntimeLoaderArtifacts() {
@@ -4919,10 +4945,13 @@ DataEntityRuntimeTester 使用说明
    * 从 dataEntity 读取所有模板文件
    */
   async function loadAllTemplates() {
+    if (templatePersistenceModule) {
+      return templatePersistenceModule.loadAllTemplates();
+    }
     templates.length = 0;
     currentTemplateIndex = -1;
     currentInstanceIndex = -1;
-    templateUidCounter = 0;
+    templateUidState.counter = 0;
     lastSavedStructureSnapshot = new Map();
     pendingTemplateDeletions.clear();
     let enumLoadedFromJson = false;
@@ -5543,35 +5572,12 @@ DataEntityRuntimeTester 使用说明
    * 根据新类型转换现有值，简单处理
    */
   function convertValueForType(val, type, elementType = 'string') {
-    if (isEnumType(type)) {
-      const enums = getEnumValues(type);
-      const str = val == null ? '' : String(val);
-      if (enums && enums.includes(str)) return str;
-      return (enums && enums.length > 0) ? enums[0] : '';
-    }
-    if (val === undefined || val === null) return getDefaultValueForType(type, elementType);
-    switch (type) {
-      case 'string':
-        return String(val);
-      case 'int':
-        return parseInt(val) || 0;
-      case 'long':
-        return parseInt(val) || 0;
-      case 'float':
-        return parseFloat(val) || 0;
-      case 'bool':
-        return Boolean(val);
-      case 'list':
-        return convertValueToList(val, elementType);
-      case 'object':
-        try {
-          return typeof val === 'object' ? val : JSON.parse(val);
-        } catch {
-          return {};
-        }
-      default:
-        return val;
-    }
+    return convertValueForTypePure(val, type, elementType, {
+      isEnumType,
+      getEnumValues,
+      getDefaultValueForType,
+      convertValueToList,
+    });
   }
 
   /**
@@ -5589,108 +5595,29 @@ DataEntityRuntimeTester 使用说明
    * 根据类型获取默认值
    */
   function getDefaultValueForType(type, elementType = 'string') {
-    if (isEnumType(type)) {
-      const enums = getEnumValues(type);
-      return (enums && enums.length > 0) ? enums[0] : '';
-    }
-    switch (type) {
-      case "string":
-        return "";
-      case "int":
-      case "long":
-      case "float":
-        return 0;
-      case "bool":
-        return false;
-      case "list":
-        return [getDefaultValueForElementType(elementType)];
-      case "object":
-        return {};
-      default:
-        return null;
-    }
+    return getDefaultValueForTypePure(type, elementType, {
+      isEnumType,
+      getEnumValues,
+      getDefaultValueForElementType,
+    });
   }
 
   function getDefaultValueForElementType(elementType) {
-    if (isEnumType(elementType)) {
-      const enums = getEnumValues(elementType);
-      return (enums && enums.length > 0) ? enums[0] : '';
-    }
-    switch (elementType) {
-      case 'int':
-      case 'long':
-        return 0;
-      case 'float':
-        return 0;
-      case 'bool':
-        return false;
-      case 'object':
-        return {};
-      case 'string':
-      default:
-        return '';
-    }
+    return getDefaultValueForElementTypePure(elementType, {
+      isEnumType,
+      getEnumValues,
+    });
   }
 
   function convertValueToList(val, elementType) {
-    let arr;
-    if (Array.isArray(val)) {
-      arr = val.slice();
-    } else if (val == null || val === '') {
-      arr = [];
-    } else if (typeof val === 'string') {
-      arr = val.split(/\s*,\s*/);
-    } else {
-      arr = [val];
-    }
-    return arr.map((item) => coerceListElementValue(item, elementType));
+    return convertValueToListPure(val, elementType, { coerceListElementValue });
   }
 
   function coerceListElementValue(value, elementType) {
-    if (value === null || value === undefined) {
-      return '';
-    }
-    if (elementType === 'string') {
-      return String(value);
-    }
-    if (elementType === 'bool') {
-      if (typeof value === 'boolean') return value;
-      const str = String(value).trim().toLowerCase();
-      if (str === 'true') return true;
-      if (str === 'false') return false;
-      return value;
-    }
-    if (elementType === 'float') {
-      if (typeof value === 'number' && Number.isFinite(value)) return value;
-      const parsed = parseFloat(value);
-      return Number.isFinite(parsed) ? parsed : value;
-    }
-    if (elementType === 'int' || elementType === 'long') {
-      if (typeof value === 'number' && Number.isInteger(value)) return value;
-      const str = String(value).trim();
-      if (/^-?\d+$/.test(str)) {
-        const parsed = parseInt(str, 10);
-        if (Number.isFinite(parsed)) return parsed;
-      }
-      return value;
-    }
-    if (elementType === 'object') {
-      if (value && typeof value === 'object' && !Array.isArray(value)) return value;
-      try {
-        const parsed = JSON.parse(value);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          return parsed;
-        }
-      } catch (_err) {}
-      return value;
-    }
-    if (isEnumType(elementType)) {
-      const enums = getEnumValues(elementType) || [];
-      const str = String(value);
-      if (enums.includes(str)) return str;
-      return enums.length > 0 ? enums[0] : str;
-    }
-    return value;
+    return coerceListElementValuePure(value, elementType, {
+      isEnumType,
+      getEnumValues,
+    });
   }
 
   function isListElementValueValid(value, elementType) {
@@ -5773,24 +5700,18 @@ DataEntityRuntimeTester 使用说明
   }
 
   function isEnumTemplate(tpl) {
-    return tpl && tpl.name === 'enum';
+    return isEnumTemplatePure(tpl);
   }
 
   // enum 新规则：参数与实例对应，因此该函数改为空实现（兼容旧调用）
-  function ensureEnumParamNaming(tpl) { return; }
+  function ensureEnumParamNaming(tpl) { return ensureEnumParamNamingPure(tpl); }
 
   function getEnumParamKeysForInstance(tpl, inst) {
-    if (!tpl || !inst || !inst.payload) return [];
-    const reserved = new Set(['template','id','name','index']);
-    return Object.keys(inst.payload)
-      .filter(k => !reserved.has(k) && /^\d+$/.test(k))
-      .map(k => parseInt(k, 10))
-      .sort((a,b)=>a-b)
-      .map(n => String(n));
+    return getEnumParamKeysForInstancePure(tpl, inst);
   }
 
   function getEnumTemplate() {
-    return templates.find((tpl) => isEnumTemplate(tpl));
+    return getEnumTemplatePure(templates);
   }
 
   function getEnumDefinitions() {
@@ -5839,49 +5760,27 @@ DataEntityRuntimeTester 使用说明
   }
 
   function getEnumDefinition(type) {
-    if (!type) return null;
-    const defs = getEnumDefinitions();
-    return defs.find((def) => def.name === type) || null;
+    return getEnumDefinitionPure(templates, type);
   }
 
   function isEnumType(type) {
-    return Boolean(getEnumDefinition(type));
+    return isEnumTypePure(templates, type);
   }
 
   function getEnumValues(type) {
-    const def = getEnumDefinition(type);
-    return def ? def.values.slice() : null;
+    return getEnumValuesPure(templates, type);
   }
 
   function getEnumCSharpTypeName(type) {
-    const def = getEnumDefinition(type);
-    return def ? def.csharpName : type;
+    return getEnumCSharpTypeNamePure(templates, type);
   }
 
   function sanitizeCSharpTypeName(name, fallback) {
-    const base = (name || '').split(/[^A-Za-z0-9]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join('');
-    let result = base || fallback || 'EnumType';
-    result = result.replace(/[^A-Za-z0-9_]/g, '_');
-    if (/^[0-9]/.test(result)) {
-      result = `_${result}`;
-    }
-    return result || 'EnumType';
+    return sanitizeCSharpTypeNamePure(name, fallback);
   }
 
   function sanitizeCSharpMemberName(name, fallback) {
-    let result = (name == null ? '' : String(name)).trim();
-    if (!result) {
-      result = fallback || 'Member';
-    }
-    result = result.replace(/[\s]+/g, '_');
-    result = result.replace(/[^\p{L}\p{Nd}_]/gu, '_');
-    if (!result) {
-      result = fallback || 'Member';
-    }
-    if (/^[\p{Nd}]/u.test(result)) {
-      result = `_${result}`;
-    }
-    return result || 'Member';
+    return sanitizeCSharpMemberNamePure(name, fallback);
   }
 
   function getBuiltinParamTypeOptionsForCurrentMode() {
@@ -7823,6 +7722,9 @@ DataEntityRuntimeTester 使用说明
   }
 
   async function deleteDataEntityFileIfExists(fileName) {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.deleteDataEntityFileIfExists(fileName);
+    }
     if (!dataEntityHandle || typeof dataEntityHandle.removeEntry !== 'function') return;
     try {
       await dataEntityHandle.removeEntry(fileName);
@@ -7835,6 +7737,9 @@ DataEntityRuntimeTester 使用说明
   }
 
   async function deleteCSharpFileIfExists(templateName) {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.deleteCSharpFileIfExists(templateName);
+    }
     if (!templateName || !csharpHandle || typeof csharpHandle.removeEntry !== 'function') return;
     const fileName = `${templateName}.cs`;
     try {
@@ -7848,6 +7753,9 @@ DataEntityRuntimeTester 使用说明
   }
 
   async function moveTemplateJsonToTrash(templateName) {
+    if (workspaceStorageModule) {
+      return workspaceStorageModule.moveTemplateJsonToTrash(templateName);
+    }
     if (!templateName || !dataEntityHandle) return { moved: false, reason: 'no-data-entity' };
     const handle = await ensureTrashDirectory();
     if (!handle) return { moved: false, reason: 'no-trash' };
@@ -7874,6 +7782,9 @@ DataEntityRuntimeTester 使用说明
   }
 
   function buildEnumTemplateJson(tpl) {
+    if (templatePersistenceModule) {
+      return templatePersistenceModule.buildEnumTemplateJson(tpl);
+    }
     if (!tpl || !isEnumTemplate(tpl)) return null;
     const indexField = 'id';
     const parameters = Array.isArray(tpl.parameters)
@@ -7926,6 +7837,9 @@ DataEntityRuntimeTester 使用说明
   }
 
   async function writeManifestForTemplates() {
+    if (templatePersistenceModule) {
+      return templatePersistenceModule.writeManifestForTemplates();
+    }
     if (!dataEntityHandle) return;
     const manifest = templates
       .filter((tpl) => !isEnumTemplate(tpl))
@@ -7941,6 +7855,9 @@ DataEntityRuntimeTester 使用说明
    * 保存所有模板到文件
    */
   function askCSharpReplacementBulk(templateNames) {
+    if (templatePersistenceModule) {
+      return templatePersistenceModule.askCSharpReplacementBulk(templateNames);
+    }
     const readableList = templateNames.join('、');
     const lines = [
       '以下模板的结构发生变化，检测到 C# 脚本内容可能发生变化：',
@@ -7961,6 +7878,9 @@ DataEntityRuntimeTester 使用说明
   }
 
   async function saveAll() {
+    if (templatePersistenceModule) {
+      return templatePersistenceModule.saveAll();
+    }
     const commitResult = commitActiveSheetEdits();
     if (commitResult && commitResult.ok === false) {
       if (isSheetModeActive()) {
@@ -8899,23 +8819,38 @@ DataEntityRuntimeTester 使用说明
     }
   }
   
-  // 默认使用暗色主题并自动恢复上次工作目录
-  window.addEventListener('DOMContentLoaded', async () => {
-    // 默认暗色
+  async function bootstrapLegacyApp() {
+    if (appBootstrapped) return;
+    appBootstrapped = true;
     document.body.classList.add('dark');
-    // 重新绑定选择目录按钮，选择完成后保存句柄
-    const btn = document.getElementById('chooseDir');
-    if (btn) {
-      try { btn.removeEventListener('click', chooseDirectory); } catch {}
-      btn.addEventListener('click', async () => {
-        await chooseDirectory();
-        try {
-          if (navigator.storage && navigator.storage.persist) { try { await navigator.storage.persist(); } catch {} }
-          if (directoryHandle) { await saveLastDirectoryHandle(directoryHandle); }
-        } catch (_err) {}
-      });
-    }
-    // 自动恢复
+    refreshTemplates();
+    updateIndexTemplateOptions();
     await autoRestoreLastDirectory();
-  });
+  }
+
+  window.LegacyApp = {
+    state: appState,
+    bootstrap: bootstrapLegacyApp,
+    modules: {
+      appMode: appModeModule,
+      formAndReference: {
+        isPureNumericName, isUENameCompliant, isTemplateNameInvalid, isEnumValueInvalid,
+        getValidListElementType, ensureParamElementType, getListElementTypeForParam, getSelectedListElementType, getListElementTypeLabel,
+        setInvalidNameVisual, updateTemplateNameInputValidity, updateInstanceNameInputValidity, updateListElementTypeSelectState, updateInstanceIdInputState, updateParamNameInputValidity,
+        createDefaultReferenceValue, normalizeReferenceValue, normalizeReferenceList, unwrapReferencePayload, wrapReferencePayload,
+      },
+      templateNormalizer: { ensureTemplateUid, snapshotTemplateStructure, structuresEqual, hasTemplateStructureChanged, captureCurrentStructureSnapshot, normalizeContent, normalizeParamIndexStructure, normalizeTemplateParameterIndexes, populateMissingIndexFields },
+      workspaceStorage: workspaceStorageModule,
+      indexEnumValidation: { findTemplateByName, doesTemplateHaveField, getInstanceFieldValue, doesTemplateContainValue, evaluateInstanceIndexValidation, collectInstanceIndexInvalidReasons, doesTemplateHaveInvalidIndexReferences, resolveIndexFieldMeta, formatIndexCell, parseIndexTypeCell, parseIndexDataCell, computeExpectedIndexValue, enforceEnumIndexField, collectDuplicateIdInfo, getNumericInstanceId, collectDuplicateIndexInfo, chooseDuplicateNavigationTarget, jumpToDuplicateIndexInstance, enforceImportedIndexField, isEnumTemplate, ensureEnumParamNaming, getEnumParamKeysForInstance, getEnumTemplate, getEnumDefinitions, getEnumDefinition, isEnumType, getEnumValues, getEnumCSharpTypeName, sanitizeCSharpTypeName, sanitizeCSharpMemberName, getBuiltinParamTypeOptionsForCurrentMode, rebuildListElementTypeCollections, refreshListElementTypeSelect, refreshParamTypeOptions, updateParamTypeSelectEnabledState, applyIndexDisabledState },
+      sheetMode: { buildLuckysheetCell, buildLuckysheetSheetFromRows, applyLuckysheetDuplicateIdStyles, refreshActiveLuckysheetDuplicateStyles, activateLuckysheetSheet, getLuckysheetCell, extractLuckysheetCellText, readLuckysheetCell, compareTemplateParameters, markSheetTemplateValidation, getLuckysheetUsedRange, collectLuckysheetRows, normalizeSheetRowsForComparison, areSheetRowsEqual, getTemplateParameterSignature, computeSheetTemplatesFingerprint, commitActiveSheetEdits, updateSheetTemplateNav, updateSheetInstanceTabs, renderLuckysheetForActiveInstance, enterSheetMode, exitSheetMode, setEditMode },
+      csvService: { updateExportButtons, beginExportSelection, exitExportSelectionMode, ensureTemplateUidForExport, getExportRecord, cleanupExportRecord, getTemplateExportCounts, getTemplateExportState, applyTemplateExportAction, handleTemplateExportCheckbox, isInstanceSelectedForExport, applyInstanceExportSelection, handleInstanceExportCheckbox, collectTemplatesForExport, sanitizeCsvFileName, encodeCsvValue, rowsToCsv, serializeValueForCsv, buildCsvRowsForTemplate, performExportCsv, parseCsvText, normalizeCsvRowLength, parseBoolCell, convertCsvValueByType, parseDataRefCell, buildTemplateFromCsv, applyImportedTemplate, importFromCsv },
+      systemPanels: { addLogEntry, renderLogs, formatLogTimestamp, openLogOverlay, closeLogOverlay, clearLogEntries, showMessage, updateTrashButtonLabel, ensureTrashDirectory, formatTrashTimestampText, formatFileSize, listTrashEntries, updateTrashSelectionUI, setTrashSelection, renderTrashEntries, refreshTrashButtonState, refreshTrashOverlayContents, openTrashOverlayPanel, closeTrashOverlayPanel, deleteTrashEntry, deleteSelectedTrashEntry, emptyTrashFolder, restoreTemplateFromTrash },
+      templatePersistence: templatePersistenceModule,
+      csharpRuntimeGenerator: { generateRuntimeLoaderArtifacts, regenerateCSharpStructures, generateEnumCSFiles, generateCSContent, mapToCSharpType, mapCSharpPrimitiveType },
+      ueGenerator: { regenerateCppStructures, createUEGenerationContext, getUECounterKey, registerUENameReplacement, toPascalCaseFromIdentifier, resolveUENameParts, formatUEInvalidNameMessage, mapPrimitiveToUEType, mapParamToUETypeInfo, collectUEEnumIncludePaths, getUECategoryLabel, buildUEHeaderContent, buildUEEnumHeaderContent, computeIndexFieldInfo, generateUEEnumHeaderFiles, cleanupCppModelDirectory, cleanupCppEnumDirectory, generateUECppStructuresForCurrentTemplates },
+      editorActions: { newTemplate, renameTemplate, newInstance, renameInstance, commitInstanceIdChange, copyInstance, pasteInstance, deleteInstance, newParam, updateParamAtIndex, convertValueForType, deleteParam, getDefaultValueForType, getDefaultValueForElementType, convertValueToList, coerceListElementValue, isListElementValueValid, validateListValueAgainstType, collectListTypeViolations },
+      panels: { getValueByFieldForInstance, refreshTemplates, getSelectedInstanceIndices, updateCompareButtonState, deactivateCompareValues, buildCompareValueSnapshot, formatCompareDisplayValue, buildInstanceCompareText, handleToggleCompareValues, refreshInstances, refreshParams, updateParamValue, showSelectedParamDetails, updateIndexTemplateOptions, updateIndexParamOptions },
+      interaction: { pushParamHistory, navigateToParamSnapshot, setupDragSelection, setupClearOnBlank, handleCopy, handlePaste, handleDelete, copyTemplates, pasteTemplates, deleteTemplates, copyParams, pasteParams, deleteParams, filterList },
+    },
+  };
 })();
