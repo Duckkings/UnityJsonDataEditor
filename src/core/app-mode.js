@@ -20,6 +20,14 @@ export function createAppModeModule(context) {
     return appState.currentEngineMode === appState.ENGINE_MODES.UNITY;
   }
 
+  function isGodotMode() {
+    return appState.currentEngineMode === appState.ENGINE_MODES.GODOT;
+  }
+
+  function isCSharpMode() {
+    return isUnityMode() || isGodotMode();
+  }
+
   function isUEMode() {
     return appState.currentEngineMode === appState.ENGINE_MODES.UE;
   }
@@ -40,7 +48,14 @@ export function createAppModeModule(context) {
   }
 
   function toggleEngineMode() {
-    setEngineMode(isUnityMode() ? appState.ENGINE_MODES.UE : appState.ENGINE_MODES.UNITY);
+    const orderedModes = [
+      appState.ENGINE_MODES.UNITY,
+      appState.ENGINE_MODES.GODOT,
+      appState.ENGINE_MODES.UE,
+    ].filter(Boolean);
+    const currentIndex = orderedModes.indexOf(appState.currentEngineMode);
+    const nextMode = orderedModes[(currentIndex + 1) % orderedModes.length];
+    setEngineMode(nextMode);
   }
 
   function isSheetModeActive() {
@@ -87,6 +102,8 @@ export function createAppModeModule(context) {
 
   return {
     isUnityMode,
+    isGodotMode,
+    isCSharpMode,
     isUEMode,
     getCurrentEngineLabel,
     updateEngineModeUIState,

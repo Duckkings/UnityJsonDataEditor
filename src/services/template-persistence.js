@@ -13,6 +13,7 @@ export function createTemplatePersistenceModule(context) {
   const {
     appState,
     isUnityMode = () => true,
+    isGodotMode = () => false,
     isSheetModeActive = () => false,
     updateSheetTemplateNav = () => {},
     commitActiveSheetEdits = () => ({ ok: true }),
@@ -58,6 +59,8 @@ export function createTemplatePersistenceModule(context) {
     ensureEnumParamNaming = () => {},
     getEnumTemplate = () => null,
   } = context;
+
+  const isCSharpMode = () => isUnityMode() || isGodotMode();
 
   function buildEnumTemplateJson(tpl) {
     if (!tpl || !isEnumTemplate(tpl)) return null;
@@ -326,7 +329,7 @@ export function createTemplatePersistenceModule(context) {
         }
       }
       await writeManifestForTemplates();
-      if (isUnityMode()) {
+      if (isCSharpMode()) {
         if (!isEnumTemplate(template)) {
           const csContent = generateCSContent(template);
           await writeTextFile(appState.csharpHandle, `${template.name}.cs`, csContent);
@@ -357,7 +360,7 @@ export function createTemplatePersistenceModule(context) {
     await refreshTrashOverlayContents();
   }
 
-  async function collectUnitySavePlan() {
+  async function collectCSharpSavePlan() {
     const templateDecisions = new Map();
     const csCache = new Map();
     const pendingStructureDecision = [];
@@ -516,7 +519,7 @@ export function createTemplatePersistenceModule(context) {
   async function runPostSaveGenerators() {
     let ueGenerationInfo = null;
     let ueInvalidNameMessage = '';
-    if (isUnityMode()) {
+    if (isCSharpMode()) {
       await generateEnumCSFiles(getEnumTemplate());
     } else {
       ueGenerationInfo = await generateUECppStructuresForCurrentTemplates();
@@ -621,15 +624,15 @@ export function createTemplatePersistenceModule(context) {
 
       await cleanConflictingEngineArtifacts();
       await ensureSubFolders();
-      if (isUnityMode()) {
+      if (isCSharpMode()) {
         await ensureModelStruct();
       }
       await ensureTrashDirectory();
 
       let templateDecisions = new Map();
       let csCache = new Map();
-      if (isUnityMode()) {
-        const plan = await collectUnitySavePlan();
+      if (isCSharpMode()) {
+        const plan = await collectCSharpSavePlan();
         if (plan.canceled) {
           showMessage('已取消保存');
           return;
@@ -652,7 +655,7 @@ export function createTemplatePersistenceModule(context) {
       }
 
       await writeManifestForTemplates();
-      if (isUnityMode()) {
+      if (isCSharpMode()) {
         await generateRuntimeLoaderArtifacts();
       }
       await persistEditorConfig();

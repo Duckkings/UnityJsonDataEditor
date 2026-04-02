@@ -23,6 +23,7 @@ export function createWorkspaceStorageModule(context) {
     setEngineMode = () => {},
     getCurrentEngineLabel = () => '',
     isUnityMode = () => true,
+    isGodotMode = () => false,
     showMessage = () => {},
     loadAllTemplates = async () => {},
     refreshTemplates = () => {},
@@ -30,6 +31,58 @@ export function createWorkspaceStorageModule(context) {
     generateRuntimeLoaderArtifacts = async () => {},
     ensureModelStruct = async () => {},
   } = context;
+
+  const isCSharpMode = () => isUnityMode() || isGodotMode();
+  const SCRIPT_OUTPUT_ROOT_CANDIDATES = ['scripts', 'Script'];
+  const DEFAULT_SCRIPT_OUTPUT_ROOT = 'scripts';
+
+  async function getDirectoryHandleIfExists(parentHandle, name) {
+    if (!parentHandle || !name) return null;
+    try {
+      return await parentHandle.getDirectoryHandle(name, { create: false });
+    } catch (err) {
+      if (err && (err.name === 'NotFoundError' || err.name === 'TypeMismatchError')) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  async function resolveScriptOutputRootHandle(options = {}) {
+    if (!appState.directoryHandle) return null;
+    const create = Boolean(options.create);
+
+    for (const candidate of SCRIPT_OUTPUT_ROOT_CANDIDATES) {
+      const handle = await getDirectoryHandleIfExists(appState.directoryHandle, candidate);
+      if (handle) {
+        return handle;
+      }
+    }
+    if (!create) {
+      return null;
+    }
+
+    try {
+      return await appState.directoryHandle.getDirectoryHandle(DEFAULT_SCRIPT_OUTPUT_ROOT, {
+        create: true,
+      });
+    } catch (err) {
+      if (!err || err.name !== 'TypeMismatchError') {
+        throw err;
+      }
+    }
+
+    try {
+      return await appState.directoryHandle.getDirectoryHandle('Script', {
+        create: true,
+      });
+    } catch (err) {
+      if (!err || err.name !== 'TypeMismatchError') {
+        throw err;
+      }
+    }
+    return null;
+  }
 
   async function getConfigDirectoryHandle(options = {}) {
     if (!appState.directoryHandle) return null;
@@ -269,7 +322,7 @@ export function createWorkspaceStorageModule(context) {
     setCurrentDirectoryLabel(handle.name || '');
     await loadEditorConfigState();
     await ensureSubFolders();
-    if (isUnityMode()) {
+    if (isCSharpMode()) {
       await ensureModelStruct();
       await generateRuntimeLoaderArtifacts();
     }
@@ -337,14 +390,34 @@ export function createWorkspaceStorageModule(context) {
 
   async function cleanConflictingEngineArtifacts() {
     if (!appState.directoryHandle) return;
+    const scriptOutputRootHandle = await resolveScriptOutputRootHandle({ create: false });
+    const removeScriptOutputDirectoryIfExists = async (name) => {
+      if (!scriptOutputRootHandle) return false;
+      return removeDirectoryIfExists(scriptOutputRootHandle, name);
+    };
     if (isUnityMode()) {
+      await removeScriptOutputDirectoryIfExists('godotCsharpDate');
+      await removeDirectoryIfExists(appState.directoryHandle, 'godotCsharpDate');
       await removeDirectoryIfExists(appState.directoryHandle, 'cppmodel');
       appState.cppModelHandle = null;
       appState.cppEnumHandle = null;
       return;
     }
+    if (isGodotMode()) {
+      await removeScriptOutputDirectoryIfExists('csharpDate');
+      await removeDirectoryIfExists(appState.directoryHandle, 'csharpDate');
+      await removeDirectoryIfExists(appState.directoryHandle, 'cppmodel');
+      appState.csharpHandle = null;
+      appState.cppModelHandle = null;
+      appState.cppEnumHandle = null;
+      appState.editorHandle = null;
+      appState.modelStructHandle = null;
+      return;
+    }
+    await removeScriptOutputDirectoryIfExists('csharpDate');
+    await removeScriptOutputDirectoryIfExists('godotCsharpDate');
     await removeDirectoryIfExists(appState.directoryHandle, 'csharpDate');
-    await removeDirectoryIfExists(appState.directoryHandle, 'Editor');
+    await removeDirectoryIfExists(appState.directoryHandle, 'godotCsharpDate');
     appState.csharpHandle = null;
     appState.editorHandle = null;
     appState.modelStructHandle = null;
@@ -365,18 +438,28 @@ export function createWorkspaceStorageModule(context) {
       appState.trashHandle = null;
     }
 
-    if (isUnityMode()) {
+    if (isCSharpMode()) {
+      const csharpFolderName = isGodotMode() ? 'godotCsharpDate' : 'csharpDate';
+      const scriptOutputRootHandle = await resolveScriptOutputRootHandle({ create: true });
+      if (!scriptOutputRootHandle) {
+        throw new Error('Unable to access scripts output directory');
+      }
       appState.cppModelHandle = null;
       appState.cppEnumHandle = null;
-      appState.csharpHandle = await appState.directoryHandle.getDirectoryHandle('csharpDate', {
+      appState.csharpHandle = await scriptOutputRootHandle.getDirectoryHandle(csharpFolderName, {
         create: true,
       });
-      try {
-        appState.editorHandle = await appState.directoryHandle.getDirectoryHandle('Editor', {
-          create: true,
-        });
-      } catch (err) {
-        console.warn('无法创建或访问 Editor 文件夹', err);
+      appState.modelStructHandle = null;
+      if (isUnityMode()) {
+        try {
+          appState.editorHandle = await appState.csharpHandle.getDirectoryHandle('Editor', {
+            create: true,
+          });
+        } catch (err) {
+          console.warn('无法创建或访问 Editor 文件夹', err);
+          appState.editorHandle = null;
+        }
+      } else {
         appState.editorHandle = null;
       }
       for await (const entry of appState.csharpHandle.values()) {
@@ -384,7 +467,7 @@ export function createWorkspaceStorageModule(context) {
           continue;
         }
         if (entry.kind === 'file' && !entry.name.toLowerCase().endsWith('.cs')) {
-          showMessage(`csharpDate 文件夹内仅允许 .cs 文件：${entry.name}`);
+          showMessage(`${csharpFolderName} 文件夹内仅允许 .cs 文件：${entry.name}`);
           throw new Error('Invalid file in csharpDate');
         }
         if (entry.kind === 'file') {
@@ -399,6 +482,7 @@ export function createWorkspaceStorageModule(context) {
     } else {
       appState.csharpHandle = null;
       appState.editorHandle = null;
+      appState.modelStructHandle = null;
       appState.cppModelHandle = await appState.directoryHandle.getDirectoryHandle('cppmodel', {
         create: true,
       });
