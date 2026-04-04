@@ -4,13 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>数据表编辑器</title>
-    <link rel="stylesheet" href="./vendor/luckysheet/dist/plugins/plugins.css" />
-    <link rel="stylesheet" href="./vendor/luckysheet/dist/plugins/css/pluginsCss.css" />
-    <link rel="stylesheet" href="./vendor/luckysheet/dist/css/luckysheet.css" />
-    <link rel="stylesheet" href="style.css" />
-    <script src="./vendor/luckysheet/dist/plugins/js/plugin.js" defer></script>
-    <script src="./vendor/luckysheet/dist/luckysheet.umd.js" defer></script>
-    <script src="./script.js" defer></script>
+    <link rel="stylesheet" href="./database-editor/vendor/luckysheet/dist/plugins/plugins.css" />
+    <link rel="stylesheet" href="./database-editor/vendor/luckysheet/dist/plugins/css/pluginsCss.css" />
+    <link rel="stylesheet" href="./database-editor/vendor/luckysheet/dist/css/luckysheet.css" />
+    <link rel="stylesheet" href="./database-editor/style.css" />
+    <script src="./database-editor/vendor/luckysheet/dist/plugins/js/plugin.js" defer></script>
+    <script src="./database-editor/vendor/luckysheet/dist/luckysheet.umd.js" defer></script>
+    <script src="./database-editor/script.js" defer></script>
   </head>
   <body class="dark">
     <div id="app">
@@ -22,6 +22,7 @@
         <button id="toggleEditMode" data-mode="classic">表格模式</button>
         <button id="engineModeToggle">切换引擎模式</button>
         <button id="regenerateCs">重新生成C#数据结构脚本</button>
+        <button id="godotQuickInit" style="display:none">一键初始化配置</button>
         <button id="regenerateCpp" style="display:none">重新生成C++数据结构脚本</button>
         <button id="exportCsv">导出为CSV</button>
         <button id="confirmExportCsv" style="display:none">导出</button>

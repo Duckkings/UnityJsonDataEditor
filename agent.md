@@ -1,229 +1,185 @@
-# agent.md
+﻿# agent.md
 
-## 目的
+## 鐩殑
 
-这个文件给 AI 或维护者提供一个“从功能反查代码”的索引，基于当前 `index.html` 与 `script.js` 的实现整理。
+杩欎釜鏂囦欢缁?AI 鎴栫淮鎶よ€呮彁渚涗竴浠解€滄寜妯″潡鍙嶆煡瀹炵幇鈥濈殑绱㈠紩銆?
+褰撳墠椤圭洰宸茬粡浠庢棭鏈熺殑鍗曟枃浠惰剼鏈紨杩涗负锛?
+- 娴忚鍣ㄨ繍琛屽叆鍙ｏ細`index.html -> database-editor/script.js`
+- 婧愮爜缁存姢鍏ュ彛锛歚database-editor/src/main.js`
+- `database-editor/script.js` 鏄敱 `database-editor/src/main.js` 鍜?`database-editor/src/` 涓嬪悇妯″潡鎵撳寘鍑烘潵鐨勮繍琛?bundle锛屼笉鍐嶉€傚悎浣滀负鍞竴鐪熺浉鏉ユ簮
+- 浠撳簱鍐呰繕鍖呭惈 `Runtime/` 杩愯鏃舵鏋朵笌 `Docs/` 鍒嗙被鏂囨。
 
-项目当前是单页前端应用，核心行为几乎都在 `script.js` 中。
-
-## 入口文件
-
+濡傛灉瑕佹敼鍔熻兘锛屼紭鍏堣 `database-editor/src/`锛屽彧鍦ㄧ‘璁よ繍琛屾€佺粦瀹氭垨鍏煎闂鏃跺啀鍥炵湅鏍圭洰褰?`database-editor/script.js`銆?
+## 鍏ュ彛涓庤閰?
 - `index.html`
-  页面结构、按钮、面板、弹层和模式容器。
-- `script.js`
-  主要状态、文件系统访问、编辑逻辑、CSV、表格模式、生成逻辑、日志和垃圾箱。
-- `style.css`
-  样式和状态类，不负责核心业务逻辑。
+  椤甸潰缁撴瀯銆佹寜閽€侀潰鏉裤€佸脊灞傘€丩uckysheet 瀹瑰櫒銆?- `database-editor/src/main.js`
+  搴旂敤瑁呴厤鍏ュ彛銆傝礋璐ｏ細
+  - 缁存姢鍏ㄥ眬 `appState`
+  - 鍒涘缓鍚勬ā鍧楀疄渚?  - 涓茶仈妯″潡渚濊禆
+  - 缁戝畾 DOM 浜嬩欢
+  - 灏嗗吋瀹瑰眰鏆撮湶鍒?`window.LegacyApp.modules`
+- `database-editor/script.js`
+  娴忚鍣ㄥ疄闄呭姞杞界殑 bundle锛岀敤浜庣洿鎺ユ墦寮€ `index.html` 鐨勮繍琛屽満鏅€?- `database-editor/build-runtime.ps1`
+  浠?`database-editor/src/` 閲嶅缓鏍圭洰褰?`database-editor/script.js`銆?- `Runtime/`
+  宸插苟鍏ヤ粨搴撶殑 EventBus / TickRunner 杩愯鏃舵鏋躲€?- `Docs/`
+  缂栬緫鍣ㄣ€佽繍琛屾椂鍜屽弬鑰冭祫鏂欑殑鍒嗙被鏂囨。鐩綍銆?
+## 浠撳簱绾х洰褰?
+- `database-editor/src/`
+  缂栬緫鍣ㄥ疄鐜般€?- `Runtime/`
+  璺ㄥ紩鎿庤繍琛屾椂妗嗘灦锛?  - `Runtime/Shared`
+  - `Runtime/Unity`
+  - `Runtime/Godot`
+- `Docs/`
+  鍒嗙被鏂囨。锛?  - `Docs/editor`
+  - `Docs/editor/legacy`
+  - `Docs/editor/roadmap`
+  - `Docs/runtime`
+  - `Docs/reference`
 
-## 核心状态
+## 褰撳墠妯″潡鍒嗗眰
 
-以下变量是大多数功能的入口：
+### `database-editor/src/core`
 
-- `templates`
-  内存中的模板列表，核心数据源。
-- `currentTemplateIndex`
-  当前选中的模板索引。
-- `currentInstanceIndex`
-  当前选中的实例索引。
-- `currentEngineMode`
-  当前引擎模式，`unity` 或 `ue`。
-- `currentEditMode`
-  当前编辑模式，`classic` 或 `sheet`。
-- `copyBuffer`
-  复制粘贴缓冲区。
-- `compareValueState`
-  “对比值”功能的状态快照。
-- `pendingTemplateDeletions`
-  等待落入垃圾箱的模板集合。
+- `app-mode.js`
+  寮曟搸妯″紡涓庣紪杈戞ā寮忕殑鐘舵€佸垏鎹細
+  - `unity / godot / ue`
+  - `classic / sheet`
+  - 琛ㄦ牸妯″紡閫変腑椤瑰綊涓€鍖?- `form-and-reference.js`
+  琛ㄥ崟涓庡紩鐢ㄥ€煎熀纭€瑙勫垯锛?  - 鍚嶇О鍚堟硶鎬?  - `list.elementType`
+  - `DataRef` / 绱㈠紩寮曠敤鍖呰涓庤В鍖?
+### `database-editor/src/domain`
 
-## 功能树
+- `template-normalizer.js`
+  妯℃澘缁撴瀯蹇収銆佺粨鏋勫彉鏇村垽鏂€佹棫鏁版嵁鍏煎褰掍竴鍖栥€乣indexField` 琛ラ綈銆?- `index-enum-validation.js`
+  绱㈠紩瀛楁瑙ｆ瀽銆侀噸澶?ID / 閲嶅绱㈠紩妫€娴嬨€乣enum` 妯℃澘瑙勫垯銆佹灇涓惧畾涔夋彁鍙栥€佸弬鏁扮储寮曞悎娉曟€ф牎楠屻€?- `editor-actions.js`
+  鍙傛暟鍊煎眰闈㈢殑绾€昏緫锛?  - 榛樿鍊肩敓鎴?  - 绫诲瀷杞崲
+  - `list` 鍏冪礌鏍￠獙
+  - 鍒楄〃绫诲瀷閿欒鏀堕泦
 
-```text
-数据表编辑器
-├─ 启动与工作目录
-│  ├─ 目录选择
-│  │  ├─ UI: #chooseDir, #currentDir
-│  │  ├─ 核心函数: chooseDirectory, ensureSubFolders, verifyPermission
-│  │  └─ 搜索词: chooseDirectory / ensureSubFolders / dataEntityHandle
-│  ├─ 自动恢复
-│  │  ├─ 核心函数: saveLastDirectoryHandle, getLastDirectoryHandle, autoRestoreLastDirectory
-│  │  └─ 持久化: IndexedDB, DB_NAME=json-editor
-│  ├─ 工作区配置
-│  │  ├─ 核心函数: persistEditorConfig, loadEditorConfigState
-│  │  └─ 落盘位置: dataEditorConfig/config.json
-│  └─ 工作区校验
-│     ├─ Unity: csharpDate 只允许 .cs
-│     ├─ UE: cppmodel 只允许 .h
-│     └─ 搜索词: shouldIgnoreFileEntry / ensureSubFolders
-├─ 编辑模式
-│  ├─ 三列模式
-│  │  ├─ UI: #classicMode
-│  │  └─ 核心刷新: refreshTemplates, refreshInstances, refreshParams
-│  ├─ 表格模式
-│  │  ├─ UI: #sheetMode, #luckysheet, #sheetTemplateList
-│  │  ├─ 核心函数: setEditMode, renderLuckysheetForActiveInstance, commitActiveSheetEdits
-│  │  └─ 搜索词: EDIT_MODES / luckysheet / sheetModeDirty
-│  └─ 模式切换按钮
-│     └─ UI: #toggleEditMode
-├─ 引擎模式
-│  ├─ Unity / UE 切换
-│  │  ├─ UI: #engineModeToggle
-│  │  ├─ 核心函数: setEngineMode, toggleEngineMode, updateEngineModeUIState
-│  │  └─ 搜索词: ENGINE_MODES / currentEngineMode
-│  ├─ 冲突产物清理
-│  │  ├─ 核心函数: cleanConflictingEngineArtifacts
-│  │  └─ 行为: Unity 清 cppmodel, UE 清 csharpDate 和 Editor
-│  └─ 首次执行确认
-│     └─ 核心函数: ensureEngineGenerationConsent
-├─ 模板管理
-│  ├─ 新建 / 重命名 / 删除 / 复制 / 粘贴
-│  │  ├─ 核心函数: newTemplate, renameTemplate, copyTemplates, pasteTemplates
-│  │  └─ 删除链路: pendingTemplateDeletions, moveTemplateJsonToTrash
-│  ├─ 搜索与选择
-│  │  ├─ UI: #searchTemplates, #templateList
-│  │  └─ 核心函数: filterList, refreshTemplates
-│  └─ 特殊模板
-│     └─ enum 模板: isEnumTemplate, getEnumTemplate
-├─ 实例管理
-│  ├─ 新建 / 重命名 / 删除 / 复制 / 粘贴
-│  │  ├─ UI: #newInstance, #renameInstance, #copyInstance, #pasteInstance, #deleteInstance
-│  │  └─ 核心函数: newInstance, renameInstance, deleteInstance, copyInstance, pasteInstance
-│  ├─ 拖拽排序
-│  │  └─ 核心位置: refreshInstances 内部的 dragstart / drop
-│  ├─ 搜索与多选
-│  │  ├─ UI: #searchInstances, #instanceList
-│  │  └─ 核心函数: refreshInstances, getSelectedInstanceIndices
-│  └─ 对比值展示
-│     ├─ UI: #toggleCompareValues
-│     ├─ 核心函数: buildCompareValueSnapshot, buildInstanceCompareText, handleToggleCompareValues
-│     └─ 搜索词: compareValueState
-├─ 参数系统
-│  ├─ 参数创建与更新
-│  │  ├─ UI: #paramName, #paramType, #listElementType, #newParam
-│  │  ├─ 核心函数: newParam, updateParamAtIndex, deleteParam
-│  │  └─ 搜索词: paramType / listElementType / updateParamAtIndex
-│  ├─ 参数渲染
-│  │  ├─ 核心函数: refreshParams
-│  │  └─ 保留字段: template / id / name / index
-│  ├─ 列表参数
-│  │  ├─ 核心函数: convertValueToList, getListElementTypeForParam
-│  │  └─ 校验: collectListTypeViolations
-│  ├─ 索引参数
-│  │  ├─ UI: #indexTemplate, #indexParam
-│  │  ├─ 核心函数: updateIndexTemplateOptions, updateIndexParamOptions
-│  │  └─ 数据结构: parameterIndexes = { template, param, indexField }
-│  └─ 索引跳转
-│     └─ 搜索词: Alt+点击 / jump / parameterIndexes
-├─ enum 体系
-│  ├─ enum 模板识别
-│  │  └─ 核心函数: isEnumTemplate
-│  ├─ enum 值提取
-│  │  ├─ 核心函数: getEnumParamKeysForInstance, getEnumDefinitions, getEnumDefinition
-│  │  └─ 规则: 从 payload 的数字键 0,1,2... 提取
-│  ├─ enum 缓存
-│  │  ├─ 核心函数: saveEnumTemplateCache, loadEnumTemplateCache, clearEnumTemplateCache
-│  │  └─ 存储位置: IndexedDB
-│  └─ enum JSON
-│     └─ 核心函数: buildEnumTemplateJson
-├─ CSV
-│  ├─ 导出
-│  │  ├─ UI: #exportCsv, #confirmExportCsv, #cancelExportCsv
-│  │  ├─ 核心函数: beginExportSelection, performExportCsv, buildCsvRowsForTemplate
-│  │  └─ 落盘目录: dataEntity/csvoutput
-│  ├─ 导入
-│  │  ├─ UI: #importCsv
-│  │  ├─ 核心函数: importFromCsv, parseCsvText, buildTemplateFromCsv, applyImportedTemplate
-│  │  └─ 搜索词: CSV 必须包含 template / id / name / index
-│  └─ 索引列协议
-│     └─ 搜索词: parseIndexDataCell / parseIndexTypeCell / formatIndexCell
-├─ 保存与落盘
-│  ├─ 总入口
-│  │  └─ 核心函数: saveAll
-│  ├─ JSON 落盘
-│  │  ├─ 核心函数: writeManifestForTemplates
-│  │  └─ 输出: dataEntity/*.json + manifest.json
-│  ├─ 结构变更判断
-│  │  └─ 搜索词: hasTemplateStructureChanged / askCSharpReplacementBulk
-│  ├─ 保存期校验
-│  │  ├─ 重复 ID: collectDuplicateIdInfo
-│  │  ├─ 列表类型错误: collectListTypeViolations
-│  │  └─ 行为: 违规实例跳过写入并记日志
-│  └─ 垃圾箱联动
-│     └─ 搜索词: pendingTemplateDeletions / moveTemplateJsonToTrash
-├─ Unity 生成链路
-│  ├─ 普通模板 C#
-│  │  ├─ 核心函数: generateCSContent
-│  │  └─ 输出目录: csharpDate/
-│  ├─ 枚举 C#
-│  │  ├─ 核心函数: generateEnumCSFiles
-│  │  └─ 输出目录: csharpDate/enums/
-│  ├─ 运行时加载器
-│  │  ├─ 核心函数: generateRuntimeLoaderArtifacts
-│  │  └─ 输出: DataEntityRuntimeLoader.cs, DataEntityRuntimeTester.cs, DataEntityRuntimeTesterEditor.cs
-│  └─ 手动重生成
-│     ├─ UI: #regenerateCs
-│     └─ 核心函数: regenerateCSharpStructures
-├─ UE 生成链路
-│  ├─ 头文件生成
-│  │  ├─ 核心函数: generateUECppStructuresForCurrentTemplates
-│  │  └─ 输出目录: cppmodel/
-│  ├─ 枚举头文件
-│  │  ├─ 核心函数: generateUEEnumHeaderFiles, buildUEEnumHeaderContent
-│  │  └─ 输出目录: cppmodel/enum/
-│  ├─ UE 命名规整
-│  │  ├─ 核心函数: resolveUENameParts, registerUENameReplacement
-│  │  └─ 搜索词: UE_NAME_PATTERN / invalidMessage
-│  └─ 手动重生成
-│     ├─ UI: #regenerateCpp
-│     └─ 核心函数: regenerateCppStructures
-├─ 日志与垃圾箱
-│  ├─ 日志
-│  │  ├─ UI: #viewLogs, #logOverlay, #logList
-│  │  ├─ 核心函数: addLogEntry, renderLogs, clearLogEntries
-│  │  └─ 搜索词: operationLogs
-│  ├─ 垃圾箱
-│  │  ├─ UI: #openTrash, #trashOverlay, #trashList
-│  │  ├─ 核心函数: refreshTrashButtonState, openTrashOverlayPanel, restoreTemplateFromTrash
-│  │  └─ 实际目录: dataEntity/toilet/
-│  └─ 关闭/弹层行为
-│     └─ 搜索词: logOverlay / trashOverlay
-└─ 交互增强
-   ├─ 搜索自动选中
-   │  └─ 核心函数: filterList
-   ├─ 快捷键
-   │  └─ 搜索词: Ctrl+S / Ctrl+C / Ctrl+V / Delete / F1
-   ├─ 夜间模式
-   │  └─ UI: #toggleDark
-   └─ 面板比例
-      ├─ UI: #paramWidth, #rowHeight
-      └─ 搜索词: paramWidth / rowHeight
+### `database-editor/src/services`
+
+- `workspace-storage.js`
+  宸ヤ綔鍖轰笌鏂囦欢绯荤粺璁块棶锛?  - 鐩綍閫夋嫨涓庢潈闄愭鏌?  - `dataEntity` / `csharpDate` / `godotCsharpDate` / `cppmodel` / `scripts` / `Editor` 鍙ユ焺瑙ｆ瀽
+  - `dataEditorConfig/config.json`
+  - IndexedDB 涓殑鏈€杩戠洰褰曞彞鏌勪笌 `enum` 缂撳瓨
+  - 寮曟搸鍒囨崲鏃剁殑鐩綍鍑嗗涓庡啿绐佷骇鐗╂竻鐞?- `template-persistence.js`
+  妯℃澘钀界洏涓庡洖璇讳富閾捐矾锛?  - `loadAllTemplates`
+  - `saveAll`
+  - `manifest.json`
+  - `enum.json`
+  - 鍨冨溇绠辨仮澶?  - 淇濆瓨鏃剁殑缁撴瀯鍙樺寲纭
+  - 淇濆瓨鍚庤Е鍙戣繍琛屾椂浠ｇ爜鐢熸垚
+- `csv-service.js`
+  CSV 瀵煎叆瀵煎嚭锛?  - 瀵煎嚭閫夋嫨妯″紡
+  - `buildCsvRowsForTemplate`
+  - `buildTemplateFromCsv`
+  - 绱㈠紩鍒楀崗璁笌 `DataRef` 搴忓垪鍖?
+### `database-editor/src/generators`
+
+- `csharp-runtime-generator.js`
+  Unity / 閫氱敤 C# 杩愯鏃朵唬鐮佺敓鎴愶細
+  - `modelCsharpe.cs`
+  - `DataEntityRuntimeLoader.cs`
+  - `DataEntityRuntimeTester.cs`
+  - `DataEntityRuntimeTesterEditor.cs`
+  - Unity / Godot 鐨勮繍琛屾椂璇存槑鏂囨。鍐呭
+- `godot-runtime-generator.js`
+  Godot C# 杈撳嚭鐩綍涓庤鏄庢枃浠剁敓鎴愬皝瑁呫€?- `ue-generator.js`
+  UE `.h`銆佹灇涓惧ご銆乣DataRefTypes.h` 鐢熸垚涓庡懡鍚嶈鏁淬€?
+### `database-editor/src/ui`
+
+- `panels.js`
+  涓夊垪妯″紡涓绘覆鏌擄細
+  - 妯℃澘 / 瀹炰緥 / 鍙傛暟鍒楄〃鍒锋柊
+  - 鍙傛暟璇︽儏缂栬緫鍖?  - 瀵规瘮鍊煎睍绀?  - 绱㈠紩璺宠浆
+- `interaction.js`
+  浜や簰澧炲己锛?  - 澶嶅埗 / 绮樿创 / 鍒犻櫎
+  - 妗嗛€?/ Shift 鍖洪棿閫夋嫨
+  - 绌虹櫧澶勫彇娑堥€夋嫨
+  - 鍙傛暟鍘嗗彶鍥為€€
+  - 鎼滅储杩囨护
+- `sheet-mode.js`
+  Luckysheet 琛ㄦ牸妯″紡锛?  - 宸ヤ綔绨挎瀯寤?  - 琛ㄦ牸鎻愪氦鍥炴ā鏉?  - 閲嶅 ID 楂樹寒
+  - 琛ㄦ牸妯″紡鍒囨崲
+- `system-panels.js`
+  绯荤粺闈㈡澘涓庡弽棣堬細
+  - 娑堟伅鎻愮ず
+  - 鎿嶄綔鏃ュ織
+  - 鍨冨溇绠遍潰鏉?
+## 寤鸿闃呰椤哄簭
+
+### 鎯崇湅鈥滃簲鐢ㄦ槸鎬庝箞鍚姩鐨勨€?
+1. `database-editor/src/main.js`
+2. `database-editor/src/services/workspace-storage.js`
+3. `database-editor/src/services/template-persistence.js`
+
+閲嶇偣鍏抽敭璇嶏細
+
+- `createAppModeModule`
+- `createWorkspaceStorageModule`
+- `createTemplatePersistenceModule`
+- `bootstrapApp`
+- `chooseDirectory`
+- `loadAllTemplates`
+
+### 鎯崇湅鈥滀繚瀛樻椂鍒板簳浼氬啓浠€涔堚€?
+1. `database-editor/src/services/template-persistence.js`
+2. `database-editor/src/generators/csharp-runtime-generator.js`
+3. `database-editor/src/generators/godot-runtime-generator.js`
+4. `database-editor/src/generators/ue-generator.js`
+
+閲嶇偣鍏抽敭璇嶏細
+
+- `saveAll`
+- `writeManifestForTemplates`
+- `buildEnumTemplateJson`
+- `generateRuntimeLoaderArtifacts`
+- `generateUECppStructuresForCurrentTemplates`
+
+### 鎯崇湅鈥滅储寮曞弬鏁?/ enum / list 涓轰粈涔堣繖鏍疯〃鐜扳€?
+1. `database-editor/src/domain/index-enum-validation.js`
+2. `database-editor/src/domain/editor-actions.js`
+3. `database-editor/src/core/form-and-reference.js`
+4. `database-editor/src/ui/panels.js`
+
+閲嶇偣鍏抽敭璇嶏細
+
+- `parameterIndexes`
+- `isEnumTemplate`
+- `getEnumDefinitions`
+- `collectDuplicateIdInfo`
+- `collectListTypeViolations`
+- `wrapReferencePayload`
+
+### 鎯崇湅鈥淐SV 鍜岃〃鏍兼ā寮忊€?
+1. `database-editor/src/services/csv-service.js`
+2. `database-editor/src/ui/sheet-mode.js`
+
+閲嶇偣鍏抽敭璇嶏細
+
+- `buildCsvRowsForTemplate`
+- `buildTemplateFromCsv`
+- `performExportCsv`
+- `importFromCsv`
+- `commitActiveSheetEdits`
+
+## 涓庢棫缁撴瀯鐨勫叧绯?
+- 鏍圭洰褰?`database-editor/script.js` 浠嶄繚鐣欏畬鏁撮€昏緫锛屼絾瀹冩槸鎵撳寘缁撴灉銆?- `database-editor/src/ui/panels.js`銆乣database-editor/src/ui/interaction.js`銆乣database-editor/src/ui/sheet-mode.js`銆乣database-editor/src/services/csv-service.js` 涓嶆槸绌哄３锛屽凡缁忔壙杞界湡瀹炲疄鐜般€?- 濡傛灉鍙戠幇 `database-editor/script.js` 涓?`database-editor/src/` 琛屼负涓嶄竴鑷达紝浼樺厛淇?`database-editor/src/`锛岀劧鍚庢墽琛岋細
+
+```powershell
+.\database-editor/build-runtime.ps1
 ```
 
-## 常用检索建议
+## 蹇€熷畾浣嶅缓璁?
+- 宸ヤ綔鍖?/ 鐩綍璁块棶锛?  `database-editor/src/services/workspace-storage.js`
+- 妯℃澘璇诲啓 / 鍨冨溇绠?/ manifest锛?  `database-editor/src/services/template-persistence.js`
+- CSV锛?  `database-editor/src/services/csv-service.js`
+- 涓夊垪妯″紡 UI锛?  `database-editor/src/ui/panels.js`
+- 琛ㄦ牸妯″紡锛?  `database-editor/src/ui/sheet-mode.js`
+- 浜や簰涓庡揩鎹烽敭锛?  `database-editor/src/ui/interaction.js`
+- Unity / Godot 杩愯鏃惰鍙?API锛?  `database-editor/src/generators/csharp-runtime-generator.js`
+- UE 浠ｇ爜鐢熸垚锛?  `database-editor/src/generators/ue-generator.js`
 
-如果要快速定位某一类逻辑，优先在 `script.js` 里直接搜函数名或关键词：
+## AI 淇敼寤鸿
 
-- 工作区与启动：
-  `rg -n "chooseDirectory|autoRestoreLastDirectory|persistEditorConfig" script.js`
-- 模式切换：
-  `rg -n "ENGINE_MODES|setEngineMode|setEditMode" script.js`
-- 保存链路：
-  `rg -n "saveAll|writeManifestForTemplates|moveTemplateJsonToTrash" script.js`
-- CSV：
-  `rg -n "importFromCsv|performExportCsv|buildTemplateFromCsv" script.js`
-- enum：
-  `rg -n "isEnumTemplate|getEnumDefinitions|saveEnumTemplateCache" script.js`
-- Unity 生成：
-  `rg -n "generateCSContent|generateEnumCSFiles|generateRuntimeLoaderArtifacts" script.js`
-- UE 生成：
-  `rg -n "generateUECppStructuresForCurrentTemplates|buildUEHeaderContent|generateUEEnumHeaderFiles" script.js`
-- 日志和垃圾箱：
-  `rg -n "addLogEntry|renderLogs|refreshTrashButtonState|restoreTemplateFromTrash" script.js`
-
-## AI 阅读建议
-
-- 先读 `index.html`，确认 UI 入口和按钮 id。
-- 再读 `script.js` 里对应的事件绑定和核心函数。
-- 若目标是“保存或生成”，从 `saveAll` 向下追。
-- 若目标是“某个按钮做了什么”，从按钮 id 在事件绑定区反查。
-- 若目标是“某个参数类型或 enum 的行为”，从 `refreshParams`、`getEnumDefinitions` 和 `parameterIndexes` 反查。
+- 闇€瑕佹敼涓氬姟瑙勫垯鏃讹紝鍏堢湅 `domain` / `core` 鏄惁宸叉湁绾嚱鏁板彲浠ュ鐢ㄣ€?- 闇€瑕佹敼鏂囦欢绯荤粺涓庤惤鐩樿涓烘椂锛屼紭鍏堟敼 `services`銆?- 闇€瑕佹敼鎸夐挳琛ㄧ幇銆侀€夋嫨鎬併€侀潰鏉垮埛鏂版椂锛屼紭鍏堟敼 `ui`銆?- 闇€瑕佹敼杩愯鏃惰鍙?API銆佺敓鎴愪骇鐗╃粨鏋勬垨璇存槑鏂囨。鏃讹紝浼樺厛鏀?`generators`銆?- 鏀瑰畬 `database-editor/src/` 鍚庯紝鍒繕浜嗛噸寤?`database-editor/script.js`锛屽惁鍒欐祻瑙堝櫒鐩存帴鎵撳紑 `index.html` 鏃朵笉浼氭嬁鍒版渶鏂伴€昏緫銆?
