@@ -1,4 +1,4 @@
-import {
+﻿import {
   GODOT_GAME_ROOT_SCENE_NAME,
   GODOT_OBJECT_BASE_SCENE_NAME,
   GODOT_PREFAB_FOLDER_NAME,
@@ -12,8 +12,9 @@ import {
 const DB_NAME = 'json-editor';
 const DB_STORE = 'handles';
 const ENUM_CACHE_PREFIX = 'enumCache:';
-const IGNORED_FILE_SUFFIXES = ['.meta'];
+const IGNORED_FILE_SUFFIXES = ['.meta', '.uid'];
 const IGNORED_FILE_NAMES = ['.ds_store', 'thumbs.db'];
+const ALLOWED_CSHARP_ROOT_FILE_SUFFIXES = ['.cs', '.md', '.txt'];
 const PREFAB_SEARCH_IGNORED_DIRECTORIES = new Set([
   '.git',
   '.godot',
@@ -258,14 +259,26 @@ export function createWorkspaceStorageModule(context) {
     return { status: 'created', fileName };
   }
 
-  async function writeManagedRelativeFile(rootHandle, relativePath, content) {
+  async function overwriteManagedTextFile(dirHandle, fileName, content) {
+    const existing = await readTextFileIfExists(dirHandle, fileName);
+    if (existing != null && existing === content) {
+      return { status: 'unchanged', fileName };
+    }
+
+    await writeTextFile(dirHandle, fileName, content);
+    return { status: existing == null ? 'created' : 'updated', fileName };
+  }
+
+  async function writeManagedRelativeFile(rootHandle, relativePath, content, options = {}) {
     const normalizedPath = String(relativePath || '')
       .split('/')
       .map((part) => part.trim())
       .filter(Boolean);
     const fileName = normalizedPath.pop();
     const dirHandle = await ensureNestedDirectory(rootHandle, normalizedPath);
-    const result = await upsertManagedTextFile(dirHandle, fileName, content);
+    const result = options.overwrite
+      ? await overwriteManagedTextFile(dirHandle, fileName, content)
+      : await upsertManagedTextFile(dirHandle, fileName, content);
     return {
       ...result,
       relativePath: [...normalizedPath, fileName].join('/'),
@@ -282,7 +295,7 @@ export function createWorkspaceStorageModule(context) {
         summary[status] += 1;
         return summary;
       },
-      { created: 0, unchanged: 0, skipped: 0, unknown: 0 },
+      { created: 0, updated: 0, unchanged: 0, skipped: 0, unknown: 0 },
     );
   }
 
@@ -525,22 +538,39 @@ export function createWorkspaceStorageModule(context) {
     return true;
   }
 
+  function describeError(err) {
+    if (!err) return 'Unknown error';
+    if (typeof err === 'string') return err;
+    const parts = [];
+    if (err.name) parts.push(err.name);
+    if (err.message && err.message !== err.name) parts.push(err.message);
+    return parts.length > 0 ? parts.join(': ') : String(err);
+  }
+
   async function initializeWorkspaceFromHandle(handle, successMessage = '') {
     if (!handle) return;
-    appState.directoryHandle = handle;
-    appState.configDirHandle = null;
-    setCurrentDirectoryLabel(handle.name || '');
-    await loadEditorConfigState();
-    await ensureSubFolders();
-    if (isCSharpMode()) {
-      await ensureModelStruct();
-      await generateRuntimeLoaderArtifacts();
-    }
-    await loadAllTemplates();
-    refreshTemplates();
-    updateIndexTemplateOptions();
-    if (successMessage) {
-      showMessage(successMessage);
+    try {
+      appState.directoryHandle = handle;
+      appState.configDirHandle = null;
+      setCurrentDirectoryLabel(handle.name || '');
+      await loadEditorConfigState();
+      await ensureSubFolders();
+      if (isCSharpMode()) {
+        await ensureModelStruct();
+        await generateRuntimeLoaderArtifacts();
+      }
+      await loadAllTemplates();
+      refreshTemplates();
+      updateIndexTemplateOptions();
+      if (successMessage) {
+        showMessage(successMessage);
+      }
+    } catch (err) {
+      const detail = describeError(err);
+      addLogEntry('error', `初始化工作目录失败: ${detail}`, {
+        detail: err && err.stack ? err.stack : '',
+      });
+      throw new Error(detail);
     }
   }
 
@@ -572,8 +602,16 @@ export function createWorkspaceStorageModule(context) {
       await initializeWorkspaceFromHandle(handle, '工作目录已选择并加载完成');
       await saveLastDirectoryHandle(handle);
     } catch (err) {
+      if (err && err.name === 'AbortError') {
+        showMessage('已取消选择工作目录', 'warn');
+        return;
+      }
+      const detail = describeError(err);
       console.error(err);
-      showMessage('选择工作目录失败');
+      addLogEntry('error', `选择工作目录失败: ${detail}`, {
+        detail: err && err.stack ? err.stack : '',
+      });
+      showMessage(`选择工作目录失败：${detail}`, 'warn');
     }
   }
 
@@ -582,6 +620,12 @@ export function createWorkspaceStorageModule(context) {
     const lower = entryName.toLowerCase();
     if (IGNORED_FILE_NAMES.includes(lower)) return true;
     return IGNORED_FILE_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+  }
+
+  function isAllowedCSharpRootFile(entryName) {
+    if (!entryName) return false;
+    const lower = entryName.toLowerCase();
+    return ALLOWED_CSHARP_ROOT_FILE_SUFFIXES.some((suffix) => lower.endsWith(suffix));
   }
 
   async function removeDirectoryIfExists(parentHandle, name) {
@@ -676,8 +720,8 @@ export function createWorkspaceStorageModule(context) {
         if (entry.kind === 'file' && shouldIgnoreFileEntry(entry.name)) {
           continue;
         }
-        if (entry.kind === 'file' && !entry.name.toLowerCase().endsWith('.cs')) {
-          showMessage(`${csharpFolderName} 文件夹内仅允许 .cs 文件：${entry.name}`);
+        if (entry.kind === 'file' && !isAllowedCSharpRootFile(entry.name)) {
+          showMessage(`${csharpFolderName} 文件夹内仅允许 .cs/.md/.txt 文件：${entry.name}`);
           throw new Error('Invalid file in csharpDate');
         }
         if (entry.kind === 'file') {
@@ -804,11 +848,11 @@ export function createWorkspaceStorageModule(context) {
     }
   }
 
-  async function injectGodotRuntimeFiles(scriptOutputRootHandle) {
+  async function injectGodotRuntimeFiles(scriptOutputRootHandle, options = {}) {
     const results = [];
     for (const file of buildGodotRuntimeFiles()) {
       results.push(
-        await writeManagedRelativeFile(scriptOutputRootHandle, file.relativePath, file.content),
+        await writeManagedRelativeFile(scriptOutputRootHandle, file.relativePath, file.content, options),
       );
     }
     return results;
@@ -929,6 +973,9 @@ export function createWorkspaceStorageModule(context) {
     if (runtimeStats.created > 0) {
       parts.push(`created ${runtimeStats.created} runtime files`);
     }
+    if (runtimeStats.updated > 0) {
+      parts.push(`updated ${runtimeStats.updated} runtime files`);
+    }
     if (runtimeStats.unchanged > 0) {
       parts.push(`reused ${runtimeStats.unchanged} runtime files`);
     }
@@ -1002,7 +1049,7 @@ export function createWorkspaceStorageModule(context) {
         throw new Error('Unable to access script output directory');
       }
 
-      const runtimeResults = await injectGodotRuntimeFiles(scriptOutputRootHandle);
+      const runtimeResults = await injectGodotRuntimeFiles(scriptOutputRootHandle, { overwrite: true });
       const templateResult = await ensureSystemInitOrderTemplate();
       const prefabResult = await ensurePrefabDirectory();
       const sceneResult = await injectGameRootScene(prefabResult.handle, scriptOutputRootHandle.name);

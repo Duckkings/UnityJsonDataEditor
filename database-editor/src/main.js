@@ -4238,8 +4238,9 @@ import { createUEGeneratorModule } from './generators/ue-generator.js';
   /**
    * 保证工作目录下有 csharpDate 和 dataEntity 文件夹，并检测现有文件是否合法
    */
-  const IGNORED_FILE_SUFFIXES = [".meta"];
+  const IGNORED_FILE_SUFFIXES = [".meta", ".uid"];
   const IGNORED_FILE_NAMES = [".ds_store", "thumbs.db"];
+  const ALLOWED_CSHARP_ROOT_FILE_SUFFIXES = [".cs", ".md", ".txt"];
 
   function shouldIgnoreFileEntry(entryName) {
     if (workspaceStorageModule) {
@@ -4249,6 +4250,12 @@ import { createUEGeneratorModule } from './generators/ue-generator.js';
     const lower = entryName.toLowerCase();
     if (IGNORED_FILE_NAMES.includes(lower)) return true;
     return IGNORED_FILE_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+  }
+
+  function isAllowedCSharpRootFile(entryName) {
+    if (!entryName) return false;
+    const lower = entryName.toLowerCase();
+    return ALLOWED_CSHARP_ROOT_FILE_SUFFIXES.some((suffix) => lower.endsWith(suffix));
   }
 
   async function removeDirectoryIfExists(parentHandle, name) {
@@ -4315,8 +4322,8 @@ import { createUEGeneratorModule } from './generators/ue-generator.js';
         if (entry.kind === "file" && shouldIgnoreFileEntry(entry.name)) {
           continue;
         }
-        if (entry.kind === "file" && !entry.name.toLowerCase().endsWith(".cs")) {
-          showMessage(`csharpDate 文件夹内仅允许 .cs 文件：${entry.name}`);
+        if (entry.kind === "file" && !isAllowedCSharpRootFile(entry.name)) {
+          showMessage(`csharpDate 文件夹内仅允许 .cs/.md/.txt 文件：${entry.name}`);
           throw new Error("Invalid file in csharpDate");
         }
         if (entry.kind === "file") {

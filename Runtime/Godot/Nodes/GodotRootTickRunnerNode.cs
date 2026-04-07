@@ -94,6 +94,7 @@ namespace GameFramework.Adapters.Godot
                 return;
             }
 
+            EnsureCore().RegisterService("rootNodeName", Name.ToString());
             _eventBus.Init(_dataRuntime);
             EnsureCore().Initialize(_dataRuntime, _eventBus);
         }

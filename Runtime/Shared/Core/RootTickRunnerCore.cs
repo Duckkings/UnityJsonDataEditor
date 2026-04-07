@@ -6,6 +6,17 @@ namespace GameFramework.Core
 {
     public sealed class RootTickRunnerCore : IRootRuntime
     {
+        public const string AllModulesInitializedEventName = "tickrunner.all_modules_initialized";
+
+        public sealed class ModulesInitializedEventPayload
+        {
+            public string RootName { get; set; }
+
+            public int ModuleCount { get; set; }
+
+            public IReadOnlyList<string> ModuleNames { get; set; }
+        }
+
         private sealed class ModuleEntry
         {
             public int Order;
@@ -34,8 +45,9 @@ namespace GameFramework.Core
 
             RegisterService("eventbus", eventBus);
             RegisterService("database", dataRuntime);
+            _eventBus.RegisterCustomEvent(AllModulesInitializedEventName, string.Empty);
             LoadSystemInitOrder(initTableName);
-            _logger.Info("[RootTickRunner] 基础模块初始化完成");
+            _logger.Info("[RootTickRunner] Base services initialized.");
         }
 
         public void RegisterService(string name, object instance)
@@ -52,25 +64,25 @@ namespace GameFramework.Core
         {
             if (module == null)
             {
-                _logger.Error("[RootTickRunner] RegisterModule 参数为空");
+                _logger.Error("[RootTickRunner] RegisterModule received a null module.");
                 return;
             }
 
             if (!_moduleTable.TryGetValue(module.Name, out var entry))
             {
-                _logger.Error($"[RootTickRunner] 未在 systemInitOrder 表中找到模块 '{module.Name}'");
+                _logger.Error($"[RootTickRunner] Module '{module.Name}' was not declared in systemInitOrder.");
                 return;
             }
 
             if (entry.Registered)
             {
-                _logger.Warning($"[RootTickRunner] 模块 '{module.Name}' 已经注册，重复注册已忽略");
+                _logger.Warning($"[RootTickRunner] Module '{module.Name}' is already registered. Duplicate registration ignored.");
                 return;
             }
 
             entry.Module = module;
             entry.Registered = true;
-            _logger.Info($"[RootTickRunner] 模块 '{module.Name}' 已注册");
+            _logger.Info($"[RootTickRunner] Module '{module.Name}' registered.");
 
             RegisterService(module.Name, module);
             CheckAndInitAllModules();
@@ -102,13 +114,13 @@ namespace GameFramework.Core
             }
             catch (Exception ex)
             {
-                _logger.Error($"[RootTickRunner] 读取 {initTableName} 失败: {ex.Message}");
+                _logger.Error($"[RootTickRunner] Failed to load {initTableName}: {ex.Message}");
                 return;
             }
 
             if (schema == null || schema.instances == null)
             {
-                _logger.Error($"[RootTickRunner] 未找到 {initTableName} 表或表内没有实例");
+                _logger.Error($"[RootTickRunner] Table '{initTableName}' was not found or has no instances.");
                 return;
             }
 
@@ -121,13 +133,13 @@ namespace GameFramework.Core
                 var tickType = instance.GetInt("ticktype", 0);
                 if (string.IsNullOrEmpty(name))
                 {
-                    _logger.Warning("[RootTickRunner] systemInitOrder 表中存在空名称实例，已跳过");
+                    _logger.Warning("[RootTickRunner] Found a systemInitOrder entry with an empty name. It was skipped.");
                     continue;
                 }
 
                 if (_moduleTable.ContainsKey(name))
                 {
-                    _logger.Warning($"[RootTickRunner] systemInitOrder 表存在重复名称 '{name}'，已忽略后续条目");
+                    _logger.Warning($"[RootTickRunner] Duplicate module name '{name}' found in systemInitOrder. Later entries were skipped.");
                     continue;
                 }
 
@@ -162,20 +174,54 @@ namespace GameFramework.Core
         private void InitAllModules()
         {
             _modulesInitialised = true;
+            var initializedModuleNames = new List<string>();
+            var allModulesSucceeded = true;
+
             foreach (var entry in _moduleTable.Values.OrderBy(item => item.Order).ToList())
             {
                 try
                 {
                     entry.Module.Init(this, _eventBus);
-                    _logger.Info($"[RootTickRunner] 模块 '{entry.Module.Name}' 初始化完成");
+                    initializedModuleNames.Add(entry.Module.Name);
+                    _logger.Info($"[RootTickRunner] {ResolveRootNodeName()} {entry.Module.Name} initialized.");
                 }
                 catch (Exception ex)
                 {
-                    _logger.Error($"[RootTickRunner] 初始化模块 '{entry.Module.Name}' 时出现异常: {ex}");
+                    allModulesSucceeded = false;
+                    _logger.Error($"[RootTickRunner] Exception while initializing module '{entry.Module.Name}': {ex}");
                 }
             }
 
-            _logger.Info("[RootTickRunner] 所有业务模块初始化完成");
+            if (allModulesSucceeded)
+            {
+                _eventBus.PublishEvent(
+                    this,
+                    AllModulesInitializedEventName,
+                    new ModulesInitializedEventPayload
+                    {
+                        RootName = ResolveRootNodeName(),
+                        ModuleCount = initializedModuleNames.Count,
+                        ModuleNames = initializedModuleNames.AsReadOnly()
+                    });
+            }
+            else
+            {
+                _logger.Warning(
+                    $"[RootTickRunner] Event '{AllModulesInitializedEventName}' was not published because at least one module failed to initialize.");
+            }
+
+            _logger.Info("[RootTickRunner] All registered system modules finished initialization.");
+        }
+
+        private string ResolveRootNodeName()
+        {
+            var rootNodeName = GetService<string>("rootNodeName");
+            if (!string.IsNullOrEmpty(rootNodeName))
+            {
+                return rootNodeName;
+            }
+
+            return "Root";
         }
     }
 }

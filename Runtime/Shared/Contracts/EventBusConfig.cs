@@ -23,5 +23,7 @@ namespace GameFramework
         public bool AllowTriggerTagAtRuntime { get; set; }
 
         public bool LogVerbose { get; set; }
+
+        public bool LogPublishedEvents { get; set; }
     }
 }

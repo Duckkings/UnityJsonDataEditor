@@ -1,148 +1,381 @@
-﻿# agent.md
+# agent.md
 
-## 鐩殑
+## 目的
 
-杩欎釜鏂囦欢缁?AI 鎴栫淮鎶よ€呮彁渚涗竴浠解€滄寜妯″潡鍙嶆煡瀹炵幇鈥濈殑绱㈠紩銆?
-褰撳墠椤圭洰宸茬粡浠庢棭鏈熺殑鍗曟枃浠惰剼鏈紨杩涗负锛?
-- 娴忚鍣ㄨ繍琛屽叆鍙ｏ細`index.html -> database-editor/script.js`
-- 婧愮爜缁存姢鍏ュ彛锛歚database-editor/src/main.js`
-- `database-editor/script.js` 鏄敱 `database-editor/src/main.js` 鍜?`database-editor/src/` 涓嬪悇妯″潡鎵撳寘鍑烘潵鐨勮繍琛?bundle锛屼笉鍐嶉€傚悎浣滀负鍞竴鐪熺浉鏉ユ簮
-- 浠撳簱鍐呰繕鍖呭惈 `Runtime/` 杩愯鏃舵鏋朵笌 `Docs/` 鍒嗙被鏂囨。
+这个文件给 AI 或维护者一份“按当前工具能力反查实现”的索引。
 
-濡傛灉瑕佹敼鍔熻兘锛屼紭鍏堣 `database-editor/src/`锛屽彧鍦ㄧ‘璁よ繍琛屾€佺粦瀹氭垨鍏煎闂鏃跺啀鍥炵湅鏍圭洰褰?`database-editor/script.js`銆?
-## 鍏ュ彛涓庤閰?
-- `index.html`
-  椤甸潰缁撴瀯銆佹寜閽€侀潰鏉裤€佸脊灞傘€丩uckysheet 瀹瑰櫒銆?- `database-editor/src/main.js`
-  搴旂敤瑁呴厤鍏ュ彛銆傝礋璐ｏ細
-  - 缁存姢鍏ㄥ眬 `appState`
-  - 鍒涘缓鍚勬ā鍧楀疄渚?  - 涓茶仈妯″潡渚濊禆
-  - 缁戝畾 DOM 浜嬩欢
-  - 灏嗗吋瀹瑰眰鏆撮湶鍒?`window.LegacyApp.modules`
-- `database-editor/script.js`
-  娴忚鍣ㄥ疄闄呭姞杞界殑 bundle锛岀敤浜庣洿鎺ユ墦寮€ `index.html` 鐨勮繍琛屽満鏅€?- `database-editor/build-runtime.ps1`
-  浠?`database-editor/src/` 閲嶅缓鏍圭洰褰?`database-editor/script.js`銆?- `Runtime/`
-  宸插苟鍏ヤ粨搴撶殑 EventBus / TickRunner 杩愯鏃舵鏋躲€?- `Docs/`
-  缂栬緫鍣ㄣ€佽繍琛屾椂鍜屽弬鑰冭祫鏂欑殑鍒嗙被鏂囨。鐩綍銆?
-## 浠撳簱绾х洰褰?
+当前仓库不再是单一的 Unity 小工具，而是一套本地数据表编辑与运行时代码生成工具链，包含：
+
+- 浏览器中的数据表编辑器
+- Unity / Godot C# / UE 三种引擎模式
+- CSV 导入导出
+- 三列编辑模式 + Luckysheet 表格模式
+- 运行时代码生成
+- Godot 项目一键初始化
+- `Runtime/` 下的 EventBus / TickRunner 运行时框架
+- `Docs/` 下的编辑器、运行时与参考文档
+
+如果要改功能，优先查看 `database-editor/src/`；`database-editor/script.js` 只是打包产物，不应该作为主维护入口。
+
+## 运行入口
+
+- 浏览器运行入口：`index.html -> database-editor/script.js`
+- 源码维护入口：`database-editor/src/main.js`
+- 运行 bundle 重建脚本：`database-editor/build-runtime.ps1`
+
+如果修改了 `database-editor/src/`，需要重新执行：
+
+```powershell
+.\database-editor\build-runtime.ps1
+```
+
+## 仓库结构
+
 - `database-editor/src/`
-  缂栬緫鍣ㄥ疄鐜般€?- `Runtime/`
-  璺ㄥ紩鎿庤繍琛屾椂妗嗘灦锛?  - `Runtime/Shared`
-  - `Runtime/Unity`
-  - `Runtime/Godot`
+  编辑器源码
+- `database-editor/vendor/`
+  Luckysheet 等前端依赖
+- `Runtime/`
+  EventBus / TickRunner 运行时框架
 - `Docs/`
-  鍒嗙被鏂囨。锛?  - `Docs/editor`
-  - `Docs/editor/legacy`
-  - `Docs/editor/roadmap`
-  - `Docs/runtime`
-  - `Docs/reference`
+  编辑器说明、运行时文档、历史资料
+- `index.html`
+  浏览器 UI 容器与按钮入口
+- `agent.md`
+  当前这份维护索引
 
-## 褰撳墠妯″潡鍒嗗眰
+## 当前核心能力
+
+### 编辑器能力
+
+- 工作目录选择与自动恢复上次目录
+- 维护 `dataEntity/` 下的模板 JSON
+- 模板 / 实例 / 参数的新增、重命名、复制、粘贴、删除、多选
+- 参数类型支持：
+  - `string`
+  - `int`
+  - `float`
+  - `long`
+  - `bool`
+  - `list`
+  - `object`
+  - 来自 `enum` 模板的枚举类型
+- 索引参数配置与引用跳转
+- 对比值展示
+- 操作日志
+- 垃圾箱恢复
+- 暗色模式
+- 参数栏宽度 / 行高调整
+
+### 编辑视图
+
+- 三列模式
+  - 左列：模板
+  - 中列：实例
+  - 右列：参数
+- 表格模式
+  - 基于 Luckysheet
+  - 支持按模板批量查看和编辑实例
+  - 切换回三列模式或保存时会尝试提交表格改动
+  - 能标记重复 ID 行
+
+### 数据导入导出
+
+- 导出 CSV
+  - 支持按模板导出
+  - 支持仅导出选中实例
+- 导入 CSV
+  - 支持一次导入多个 CSV
+  - 通过 CSV 重建模板结构和实例数据
+
+### 引擎模式
+
+- `Unity`
+- `Godot C#`
+- `UE`
+
+引擎模式会影响：
+
+- 输出目录
+- 生成脚本类型
+- 按钮文案
+- 保存后的生成行为
+- 工作目录的校验规则
+- 冲突产物的清理策略
+
+## 当前工作目录约定
+
+选择工作目录后，编辑器会维护这些目录或文件：
+
+- `dataEntity/`
+  模板 JSON
+- `dataEntity/manifest.json`
+  模板到 JSON 文件的映射
+- `dataEntity/enum.json`
+  `enum` 模板的聚合产物
+- `dataEntity/toilet/`
+  垃圾箱目录
+- `dataEntity/csvoutput/`
+  CSV 导出目录
+- `dataEditorConfig/config.json`
+  编辑器配置，当前主要记录引擎模式
+
+### C# 输出目录
+
+脚本输出根目录优先使用：
+
+- `scripts/`
+- 如果不存在则兼容 `Script/`
+
+在 C# 模式下，具体输出为：
+
+- Unity：`scripts/csharpDate/`
+- Godot：`scripts/godotCsharpDate/`
+
+Unity 模式还会创建：
+
+- `scripts/csharpDate/Editor/`
+- `scripts/csharpDate/modelstruct/`
+
+Godot 模式还会创建：
+
+- `scripts/godotCsharpDate/modelstruct/`
+
+### UE 输出目录
+
+- `cppmodel/`
+- `cppmodel/enum/`
+
+## 模块分层
 
 ### `database-editor/src/core`
 
 - `app-mode.js`
-  寮曟搸妯″紡涓庣紪杈戞ā寮忕殑鐘舵€佸垏鎹細
-  - `unity / godot / ue`
-  - `classic / sheet`
-  - 琛ㄦ牸妯″紡閫変腑椤瑰綊涓€鍖?- `form-and-reference.js`
-  琛ㄥ崟涓庡紩鐢ㄥ€煎熀纭€瑙勫垯锛?  - 鍚嶇О鍚堟硶鎬?  - `list.elementType`
-  - `DataRef` / 绱㈠紩寮曠敤鍖呰涓庤В鍖?
+  维护引擎模式与编辑模式状态
+- `form-and-reference.js`
+  参数基础规则、引用值包装/解包、列表元素类型规则
+
 ### `database-editor/src/domain`
 
 - `template-normalizer.js`
-  妯℃澘缁撴瀯蹇収銆佺粨鏋勫彉鏇村垽鏂€佹棫鏁版嵁鍏煎褰掍竴鍖栥€乣indexField` 琛ラ綈銆?- `index-enum-validation.js`
-  绱㈠紩瀛楁瑙ｆ瀽銆侀噸澶?ID / 閲嶅绱㈠紩妫€娴嬨€乣enum` 妯℃澘瑙勫垯銆佹灇涓惧畾涔夋彁鍙栥€佸弬鏁扮储寮曞悎娉曟€ф牎楠屻€?- `editor-actions.js`
-  鍙傛暟鍊煎眰闈㈢殑绾€昏緫锛?  - 榛樿鍊肩敓鎴?  - 绫诲瀷杞崲
-  - `list` 鍏冪礌鏍￠獙
-  - 鍒楄〃绫诲瀷閿欒鏀堕泦
+  模板结构归一化、结构快照、结构变更判断、`indexField` 补齐
+- `index-enum-validation.js`
+  索引字段解析、重复 ID / 重复索引检测、`enum` 模板规则、枚举定义提取
+- `editor-actions.js`
+  参数值层面的纯逻辑，如默认值生成、类型转换、列表校验
 
 ### `database-editor/src/services`
 
 - `workspace-storage.js`
-  宸ヤ綔鍖轰笌鏂囦欢绯荤粺璁块棶锛?  - 鐩綍閫夋嫨涓庢潈闄愭鏌?  - `dataEntity` / `csharpDate` / `godotCsharpDate` / `cppmodel` / `scripts` / `Editor` 鍙ユ焺瑙ｆ瀽
-  - `dataEditorConfig/config.json`
-  - IndexedDB 涓殑鏈€杩戠洰褰曞彞鏌勪笌 `enum` 缂撳瓨
-  - 寮曟搸鍒囨崲鏃剁殑鐩綍鍑嗗涓庡啿绐佷骇鐗╂竻鐞?- `template-persistence.js`
-  妯℃澘钀界洏涓庡洖璇讳富閾捐矾锛?  - `loadAllTemplates`
-  - `saveAll`
-  - `manifest.json`
-  - `enum.json`
-  - 鍨冨溇绠辨仮澶?  - 淇濆瓨鏃剁殑缁撴瀯鍙樺寲纭
-  - 淇濆瓨鍚庤Е鍙戣繍琛屾椂浠ｇ爜鐢熸垚
+  工作目录访问、目录校验、配置存取、IndexedDB 句柄缓存、冲突产物清理、Godot 快速初始化
+- `template-persistence.js`
+  模板加载、保存、`manifest.json` / `enum.json` 写入、运行时代码生成触发、垃圾箱恢复
 - `csv-service.js`
-  CSV 瀵煎叆瀵煎嚭锛?  - 瀵煎嚭閫夋嫨妯″紡
-  - `buildCsvRowsForTemplate`
-  - `buildTemplateFromCsv`
-  - 绱㈠紩鍒楀崗璁笌 `DataRef` 搴忓垪鍖?
+  CSV 导入导出、CSV 与模板结构互转
+
 ### `database-editor/src/generators`
 
 - `csharp-runtime-generator.js`
-  Unity / 閫氱敤 C# 杩愯鏃朵唬鐮佺敓鎴愶細
-  - `modelCsharpe.cs`
-  - `DataEntityRuntimeLoader.cs`
-  - `DataEntityRuntimeTester.cs`
-  - `DataEntityRuntimeTesterEditor.cs`
-  - Unity / Godot 鐨勮繍琛屾椂璇存槑鏂囨。鍐呭
+  Unity / 通用 C# 数据结构、运行时加载器、测试器、说明文件生成
 - `godot-runtime-generator.js`
-  Godot C# 杈撳嚭鐩綍涓庤鏄庢枃浠剁敓鎴愬皝瑁呫€?- `ue-generator.js`
-  UE `.h`銆佹灇涓惧ご銆乣DataRefTypes.h` 鐢熸垚涓庡懡鍚嶈鏁淬€?
+  Godot C# 版本的运行时加载器与测试器生成
+- `godot-project-bootstrap-generator.js`
+  Godot 项目快速初始化需要的运行时脚本、场景模板、默认模板内容
+- `ue-generator.js`
+  UE `.h`、枚举头、`DataRefTypes.h` 生成与命名规整
+
 ### `database-editor/src/ui`
 
 - `panels.js`
-  涓夊垪妯″紡涓绘覆鏌擄細
-  - 妯℃澘 / 瀹炰緥 / 鍙傛暟鍒楄〃鍒锋柊
-  - 鍙傛暟璇︽儏缂栬緫鍖?  - 瀵规瘮鍊煎睍绀?  - 绱㈠紩璺宠浆
+  三列模式的主渲染与局部刷新
 - `interaction.js`
-  浜や簰澧炲己锛?  - 澶嶅埗 / 绮樿创 / 鍒犻櫎
-  - 妗嗛€?/ Shift 鍖洪棿閫夋嫨
-  - 绌虹櫧澶勫彇娑堥€夋嫨
-  - 鍙傛暟鍘嗗彶鍥為€€
-  - 鎼滅储杩囨护
+  复制、粘贴、删除、多选、拖选、搜索、快捷键、参数历史
 - `sheet-mode.js`
-  Luckysheet 琛ㄦ牸妯″紡锛?  - 宸ヤ綔绨挎瀯寤?  - 琛ㄦ牸鎻愪氦鍥炴ā鏉?  - 閲嶅 ID 楂樹寒
-  - 琛ㄦ牸妯″紡鍒囨崲
+  Luckysheet 表格模式、工作簿构建、表格回写、重复 ID 高亮
 - `system-panels.js`
-  绯荤粺闈㈡澘涓庡弽棣堬細
-  - 娑堟伅鎻愮ず
-  - 鎿嶄綔鏃ュ織
-  - 鍨冨溇绠遍潰鏉?
-## 寤鸿闃呰椤哄簭
+  消息提示、日志面板、垃圾箱面板
 
-### 鎯崇湅鈥滃簲鐢ㄦ槸鎬庝箞鍚姩鐨勨€?
+## 保存与生成行为
+
+保存主入口是 `template-persistence.js -> saveAll()`。
+
+保存时会做这些事：
+
+- 提交表格模式下尚未落盘的内容
+- 校验模板与实例数据
+- 将普通模板写入 `dataEntity/<模板名>.json`
+- 维护 `manifest.json`
+- 维护 `enum.json`
+- 处理垃圾箱与已删除模板
+- 在当前引擎模式下生成对应代码产物
+
+### Unity 模式
+
+会生成或更新：
+
+- `scripts/csharpDate/*.cs`
+- `scripts/csharpDate/modelstruct/DataEntityRuntimeLoader.cs`
+- `scripts/csharpDate/modelstruct/DataEntityRuntimeLoaderGuide.txt`
+- `scripts/csharpDate/DataEntityRuntimeTester.cs`
+- `scripts/csharpDate/modelstruct/DataEntityRuntimeTesterGuide.txt`
+- `scripts/csharpDate/Editor/DataEntityRuntimeTesterEditor.cs`
+
+### Godot C# 模式
+
+会生成或更新：
+
+- `scripts/godotCsharpDate/*.cs`
+- `scripts/godotCsharpDate/modelstruct/DataEntityRuntimeLoader.cs`
+- `scripts/godotCsharpDate/modelstruct/DataEntityRuntimeLoaderGuide.txt`
+- `scripts/godotCsharpDate/DataEntityRuntimeTester.cs`
+- `scripts/godotCsharpDate/modelstruct/DataEntityRuntimeTesterGuide.txt`
+
+### UE 模式
+
+会生成或更新：
+
+- `cppmodel/*.h`
+- `cppmodel/enum/*.h`
+- `cppmodel/DataRefTypes.h`
+
+### 冲突产物清理
+
+切换模式后执行保存或重新生成时，会清理其他模式的产物：
+
+- Unity 模式会清理 Godot 和 UE 产物
+- Godot 模式会清理 Unity 和 UE 产物
+- UE 模式会清理 Unity 和 Godot 产物
+
+相关逻辑在 `workspace-storage.js -> cleanConflictingEngineArtifacts()`。
+
+## Godot 快速初始化
+
+这是当前工具新增的重要能力，入口按钮是：
+
+- `index.html` 中的 `godotQuickInit`
+
+仅在 `Godot C#` 模式下显示并可用。
+
+主要逻辑在：
+
+- `database-editor/src/services/workspace-storage.js -> initializeGodotProjectConfiguration()`
+- `database-editor/src/generators/godot-project-bootstrap-generator.js`
+
+它会做这些事：
+
+- 确保 Godot C# 输出目录存在
+- 生成运行时加载器与测试器
+- 向脚本输出目录注入 Godot 运行时文件
+- 准备默认模板：
+  - `systemInitOrder`
+  - `systemEvent`
+- 创建或复用 `prefab/`
+- 生成场景：
+  - `prefab/GameRoot.tscn`
+  - `prefab/ObjectBase.tscn`
+
+运行时文件会落到类似目录：
+
+- `scripts/EventBusTickRunner/Shared/...`
+- `scripts/EventBusTickRunner/Godot/...`
+
+如果目标文件已存在：
+
+- 内容相同则复用
+- 内容不同则跳过覆盖，保留用户自定义文件
+
+## enum 模板机制
+
+`enum` 模板是特殊模板，相关规则主要在 `index-enum-validation.js`：
+
+- `enum` 模板具有特殊语义
+- 会参与枚举类型下拉选项构建
+- 会生成 `enum.json`
+- 会参与 Unity / Godot / UE 的枚举代码生成
+- IndexedDB 中还有 `enum` 模板缓存逻辑，避免缺失时完全丢失
+
+## CSV / 表格模式重点入口
+
+### CSV
+
+优先查看：
+
+1. `database-editor/src/services/csv-service.js`
+2. `database-editor/src/services/template-persistence.js`
+
+重点关键词：
+
+- `buildCsvRowsForTemplate`
+- `buildTemplateFromCsv`
+- `performExportCsv`
+- `importFromCsv`
+
+### 表格模式
+
+优先查看：
+
+1. `database-editor/src/ui/sheet-mode.js`
+2. `database-editor/src/main.js`
+
+重点关键词：
+
+- `commitActiveSheetEdits`
+- `renderLuckysheetForActiveInstance`
+- `updateSheetTemplateNav`
+- `sheetModeDirty`
+
+## 快速排查指引
+
+### 想看“编辑器是怎么启动的”
+
 1. `database-editor/src/main.js`
-2. `database-editor/src/services/workspace-storage.js`
-3. `database-editor/src/services/template-persistence.js`
+2. `database-editor/src/core/app-mode.js`
+3. `database-editor/src/services/workspace-storage.js`
 
-閲嶇偣鍏抽敭璇嶏細
+重点关键词：
 
-- `createAppModeModule`
-- `createWorkspaceStorageModule`
-- `createTemplatePersistenceModule`
-- `bootstrapApp`
+- `bootstrapLegacyApp`
 - `chooseDirectory`
-- `loadAllTemplates`
+- `autoRestoreLastDirectory`
+- `setEditMode`
+- `setEngineMode`
 
-### 鎯崇湅鈥滀繚瀛樻椂鍒板簳浼氬啓浠€涔堚€?
+### 想看“保存时到底写了什么”
+
 1. `database-editor/src/services/template-persistence.js`
 2. `database-editor/src/generators/csharp-runtime-generator.js`
 3. `database-editor/src/generators/godot-runtime-generator.js`
 4. `database-editor/src/generators/ue-generator.js`
 
-閲嶇偣鍏抽敭璇嶏細
+重点关键词：
 
 - `saveAll`
 - `writeManifestForTemplates`
-- `buildEnumTemplateJson`
 - `generateRuntimeLoaderArtifacts`
 - `generateUECppStructuresForCurrentTemplates`
 
-### 鎯崇湅鈥滅储寮曞弬鏁?/ enum / list 涓轰粈涔堣繖鏍疯〃鐜扳€?
+### 想看“Godot 一键初始化做了什么”
+
+1. `database-editor/src/services/workspace-storage.js`
+2. `database-editor/src/generators/godot-project-bootstrap-generator.js`
+
+重点关键词：
+
+- `initializeGodotProjectConfiguration`
+- `injectGodotRuntimeFiles`
+- `ensureSystemInitOrderTemplate`
+- `ensureSystemEventTemplate`
+- `injectGameRootScene`
+- `injectObjectBaseScene`
+
+### 想看“索引参数 / enum / list 为什么这样表现”
+
 1. `database-editor/src/domain/index-enum-validation.js`
 2. `database-editor/src/domain/editor-actions.js`
 3. `database-editor/src/core/form-and-reference.js`
 4. `database-editor/src/ui/panels.js`
 
-閲嶇偣鍏抽敭璇嶏細
+重点关键词：
 
 - `parameterIndexes`
 - `isEnumTemplate`
@@ -151,35 +384,16 @@
 - `collectListTypeViolations`
 - `wrapReferencePayload`
 
-### 鎯崇湅鈥淐SV 鍜岃〃鏍兼ā寮忊€?
-1. `database-editor/src/services/csv-service.js`
-2. `database-editor/src/ui/sheet-mode.js`
+## 维护建议
 
-閲嶇偣鍏抽敭璇嶏細
+- 改业务规则，优先看 `domain` / `core`
+- 改目录、文件、保存、生成流程，优先看 `services`
+- 改按钮、面板、交互、快捷键，优先看 `ui`
+- 改 Unity / Godot / UE 代码生成，优先看 `generators`
+- 改完源码后别忘了重建 `database-editor/script.js`
 
-- `buildCsvRowsForTemplate`
-- `buildTemplateFromCsv`
-- `performExportCsv`
-- `importFromCsv`
-- `commitActiveSheetEdits`
+## 备注
 
-## 涓庢棫缁撴瀯鐨勫叧绯?
-- 鏍圭洰褰?`database-editor/script.js` 浠嶄繚鐣欏畬鏁撮€昏緫锛屼絾瀹冩槸鎵撳寘缁撴灉銆?- `database-editor/src/ui/panels.js`銆乣database-editor/src/ui/interaction.js`銆乣database-editor/src/ui/sheet-mode.js`銆乣database-editor/src/services/csv-service.js` 涓嶆槸绌哄３锛屽凡缁忔壙杞界湡瀹炲疄鐜般€?- 濡傛灉鍙戠幇 `database-editor/script.js` 涓?`database-editor/src/` 琛屼负涓嶄竴鑷达紝浼樺厛淇?`database-editor/src/`锛岀劧鍚庢墽琛岋細
-
-```powershell
-.\database-editor/build-runtime.ps1
-```
-
-## 蹇€熷畾浣嶅缓璁?
-- 宸ヤ綔鍖?/ 鐩綍璁块棶锛?  `database-editor/src/services/workspace-storage.js`
-- 妯℃澘璇诲啓 / 鍨冨溇绠?/ manifest锛?  `database-editor/src/services/template-persistence.js`
-- CSV锛?  `database-editor/src/services/csv-service.js`
-- 涓夊垪妯″紡 UI锛?  `database-editor/src/ui/panels.js`
-- 琛ㄦ牸妯″紡锛?  `database-editor/src/ui/sheet-mode.js`
-- 浜や簰涓庡揩鎹烽敭锛?  `database-editor/src/ui/interaction.js`
-- Unity / Godot 杩愯鏃惰鍙?API锛?  `database-editor/src/generators/csharp-runtime-generator.js`
-- UE 浠ｇ爜鐢熸垚锛?  `database-editor/src/generators/ue-generator.js`
-
-## AI 淇敼寤鸿
-
-- 闇€瑕佹敼涓氬姟瑙勫垯鏃讹紝鍏堢湅 `domain` / `core` 鏄惁宸叉湁绾嚱鏁板彲浠ュ鐢ㄣ€?- 闇€瑕佹敼鏂囦欢绯荤粺涓庤惤鐩樿涓烘椂锛屼紭鍏堟敼 `services`銆?- 闇€瑕佹敼鎸夐挳琛ㄧ幇銆侀€夋嫨鎬併€侀潰鏉垮埛鏂版椂锛屼紭鍏堟敼 `ui`銆?- 闇€瑕佹敼杩愯鏃惰鍙?API銆佺敓鎴愪骇鐗╃粨鏋勬垨璇存槑鏂囨。鏃讹紝浼樺厛鏀?`generators`銆?- 鏀瑰畬 `database-editor/src/` 鍚庯紝鍒繕浜嗛噸寤?`database-editor/script.js`锛屽惁鍒欐祻瑙堝櫒鐩存帴鎵撳紑 `index.html` 鏃朵笉浼氭嬁鍒版渶鏂伴€昏緫銆?
+- `window.LegacyApp.modules` 仍然保留，方便旧调用路径兼容
+- 真正活跃的维护入口仍然是 `database-editor/src/main.js`
+- 旧版 README 或历史文档里若与当前实现冲突，以 `database-editor/src/` 和 `index.html` 为准

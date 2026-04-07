@@ -63,6 +63,7 @@ namespace GameFramework
                 _eventBus = gameObject.AddComponent<EventBus>();
             }
 
+            EnsureCore().RegisterService("rootNodeName", gameObject.name);
             _eventBus.Init(_dataRuntime);
             EnsureCore().Initialize(_dataRuntime, _eventBus);
         }

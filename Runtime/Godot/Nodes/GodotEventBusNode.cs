@@ -60,6 +60,9 @@ namespace GameFramework.Adapters.Godot
         public bool LogVerbose { get; set; }
 
         [Export]
+        public bool LogPublishedEvents { get; set; } = true;
+
+        [Export]
         public NodePath ScopeRootPath { get; set; }
 
         private readonly GodotRuntimeLogger _logger = new GodotRuntimeLogger();
@@ -67,6 +70,7 @@ namespace GameFramework.Adapters.Godot
         private readonly GodotScopeResolver _scopeResolver = new GodotScopeResolver();
 
         private EventBusCore _core;
+        private bool _hasLoggedInitialization;
 
         public void Init(IDataTableRuntime dbRuntime)
         {
@@ -75,7 +79,13 @@ namespace GameFramework.Adapters.Godot
 
         public void Init(IDataTableRuntime dbRuntime, object busOwner)
         {
-            EnsureCore().Init(dbRuntime, busOwner ?? ResolveDefaultBusOwner());
+            var resolvedBusOwner = busOwner ?? ResolveDefaultBusOwner();
+            EnsureCore().Init(dbRuntime, resolvedBusOwner);
+            if (!_hasLoggedInitialization)
+            {
+                _logger.Info($"[GodotEventBusNode] {ResolveInitializationRootName(resolvedBusOwner)} 初始化完成");
+                _hasLoggedInitialization = true;
+            }
         }
 
         public void RegisterCustomEvent(string eventName, string tagExpression)
@@ -168,7 +178,8 @@ namespace GameFramework.Adapters.Godot
                 InitTagFilters = InitTagFilters == null ? new List<string>() : new List<string>(InitTagFilters),
                 EnableScopeCheckForLocal = EnableScopeCheckForLocal,
                 AllowTriggerTagAtRuntime = AllowTriggerTagAtRuntime,
-                LogVerbose = LogVerbose
+                LogVerbose = LogVerbose,
+                LogPublishedEvents = LogPublishedEvents
             };
         }
 
@@ -193,6 +204,36 @@ namespace GameFramework.Adapters.Godot
             }
 
             return this;
+        }
+
+        private string ResolveInitializationRootName(object busOwner)
+        {
+            if (busOwner is Node busOwnerNode)
+            {
+                if (ReferenceEquals(busOwnerNode, this))
+                {
+                    var parentNode = GetParent();
+                    if (parentNode != null)
+                    {
+                        return ResolveNodeName(parentNode);
+                    }
+                }
+
+                return ResolveNodeName(busOwnerNode);
+            }
+
+            return ResolveNodeName(GetParent() ?? this);
+        }
+
+        private static string ResolveNodeName(Node node)
+        {
+            if (node == null)
+            {
+                return "<unknown-root>";
+            }
+
+            var nodeName = node.Name.ToString();
+            return string.IsNullOrEmpty(nodeName) ? node.GetType().Name : nodeName;
         }
     }
 }

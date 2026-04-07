@@ -209,6 +209,11 @@ namespace GameFramework.Core
                 eventTags = new List<string>();
             }
 
+            if (_config.LogPublishedEvents)
+            {
+                _logger.Info(BuildPublishLogMessage(sender, eventName, actualPayload, eventTags));
+            }
+
             if (_eventSubs.TryGetValue(eventName, out var subscriptions))
             {
                 foreach (var subscription in subscriptions.ToArray())
@@ -594,6 +599,67 @@ namespace GameFramework.Core
         private bool RequiresScopeCheck()
         {
             return _config.Mode == EventBusScopeMode.Local && _config.EnableScopeCheckForLocal;
+        }
+
+        private string BuildPublishLogMessage(object sender, string eventName, object payload, List<string> tags)
+        {
+            var tagText = tags != null && tags.Count > 0 ? string.Join(", ", tags) : "<none>";
+            return $"[EventBus] Published event '{eventName}' on bus '{_busName}' (sender={DescribeValueForLog(sender)}, tags={tagText}, payload={DescribeValueForLog(payload)}).";
+        }
+
+        private static string DescribeValueForLog(object value)
+        {
+            if (ReferenceEquals(value, NoDataPayload))
+            {
+                return "<none>";
+            }
+
+            if (value == null)
+            {
+                return "<null>";
+            }
+
+            switch (value)
+            {
+                case string text:
+                    return string.Concat('"', TrimForLog(text), '"');
+                case char charValue:
+                    return $"'{charValue}'";
+                case bool _:
+                case byte _:
+                case sbyte _:
+                case short _:
+                case ushort _:
+                case int _:
+                case uint _:
+                case long _:
+                case ulong _:
+                case float _:
+                case double _:
+                case decimal _:
+                    return value.ToString();
+            }
+
+            var typeName = value.GetType().Name;
+            var valueText = value.ToString();
+            if (string.IsNullOrEmpty(valueText)
+                || string.Equals(valueText, typeName, StringComparison.Ordinal)
+                || string.Equals(valueText, value.GetType().FullName, StringComparison.Ordinal))
+            {
+                return $"<{typeName}>";
+            }
+
+            return $"{typeName}({TrimForLog(valueText)})";
+        }
+
+        private static string TrimForLog(string value)
+        {
+            if (string.IsNullOrEmpty(value) || value.Length <= 120)
+            {
+                return value;
+            }
+
+            return value.Substring(0, 117) + "...";
         }
 
         private static HashSet<string> ParseTags(string tagExpression)

@@ -979,7 +979,32 @@
   var GODOT_RUNTIME_FOLDER_NAME = "EventBusTickRunner";
   var GODOT_PREFAB_FOLDER_NAME = "prefab";
   var GODOT_GAME_ROOT_SCENE_NAME = "GameRoot.tscn";
+  var GODOT_OBJECT_BASE_SCENE_NAME = "ObjectBase.tscn";
   var SYSTEM_INIT_ORDER_TEMPLATE_NAME = "systemInitOrder";
+  var SYSTEM_EVENT_TEMPLATE_NAME = "systemEvent";
+  var DEFAULT_SYSTEM_INIT_ORDER_INSTANCE_NAME = "examplesystem";
+  function buildBootstrapTemplateInstance({
+    templateName,
+    indexField = "id",
+    id = 0,
+    name = "default",
+    payload = {}
+  } = {}) {
+    const resolvedName = String(name || "").trim();
+    const nextPayload = {
+      template: templateName,
+      id,
+      name: resolvedName,
+      ...payload
+    };
+    const rawIndexValue = Object.prototype.hasOwnProperty.call(nextPayload, indexField) && nextPayload[indexField] != null ? nextPayload[indexField] : indexField === "name" ? resolvedName : id;
+    nextPayload.index = String(rawIndexValue ?? id);
+    return {
+      id,
+      name: resolvedName,
+      payload: nextPayload
+    };
+  }
   function buildGodotSharedContractsContent() {
     return `
 using System;
@@ -1010,6 +1035,8 @@ namespace GameFramework
         public bool AllowTriggerTagAtRuntime { get; set; }
 
         public bool LogVerbose { get; set; }
+
+        public bool LogPublishedEvents { get; set; }
     }
 
     public class EventBusTableInstance
@@ -1117,6 +1144,8 @@ namespace GameFramework
     {
         void Init(IDataTableRuntime dbRuntime);
 
+        void Init(IDataTableRuntime dbRuntime, object busOwner);
+
         void RegisterCustomEvent(string eventName, string tagExpression);
 
         SubscriptionToken SubscribeEvent(object owner, string eventName, Action<object> onEvent);
@@ -1166,6 +1195,26 @@ namespace GameFramework
         string Name { get; }
 
         void Init(IRootRuntime root, IEventBus eventBus);
+
+        void Tick();
+    }
+
+    public interface IObjectRuntime
+    {
+        IEventBus GetLocalEventBus();
+
+        IEventBus GetGlobalEventBus();
+
+        void PublishLocalThenGlobal(object sender, string eventName, object payload);
+    }
+
+    public interface IObjectModule
+    {
+        string Name { get; }
+
+        int TickPriority { get; }
+
+        void Init(IObjectRuntime root, IEventBus localEventBus, IEventBus globalEventBus);
 
         void Tick();
     }
@@ -1221,187 +1270,6 @@ namespace GameFramework.Core
             }
 
             return null;
-        }
-    }
-}
-`;
-  }
-  function buildGodotSharedRootTickRunnerCoreContent() {
-    return `
-namespace GameFramework.Core
-{
-    public sealed class RootTickRunnerCore : IRootRuntime
-    {
-        private sealed class ModuleEntry
-        {
-            public int Order;
-            public int TickType;
-            public ISystemModule Module;
-            public bool Registered;
-        }
-
-        private readonly IRuntimeLogger _logger;
-        private readonly ServiceRegistry _serviceRegistry = new ServiceRegistry();
-        private readonly Dictionary<string, ModuleEntry> _moduleTable = new Dictionary<string, ModuleEntry>();
-
-        private bool _modulesInitialised;
-        private IEventBus _eventBus;
-        private IDataTableRuntime _dataRuntime;
-
-        public RootTickRunnerCore(IRuntimeLogger logger)
-        {
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        }
-
-        public void Initialize(IDataTableRuntime dataRuntime, IEventBus eventBus, string initTableName = "systemInitOrder")
-        {
-            _dataRuntime = dataRuntime ?? throw new ArgumentNullException(nameof(dataRuntime));
-            _eventBus = eventBus ?? throw new ArgumentNullException(nameof(eventBus));
-
-            RegisterService("eventbus", eventBus);
-            RegisterService("database", dataRuntime);
-            LoadSystemInitOrder(initTableName);
-            _logger.Info("[RootTickRunner] 基础模块初始化完成");
-        }
-
-        public void RegisterService(string name, object instance)
-        {
-            _serviceRegistry.RegisterService(name, instance);
-        }
-
-        public T GetService<T>(string name) where T : class
-        {
-            return _serviceRegistry.GetService<T>(name);
-        }
-
-        public void RegisterModule(ISystemModule module)
-        {
-            if (module == null)
-            {
-                _logger.Error("[RootTickRunner] RegisterModule 参数为空");
-                return;
-            }
-
-            if (!_moduleTable.TryGetValue(module.Name, out var entry))
-            {
-                _logger.Error($"[RootTickRunner] 未在 systemInitOrder 表中找到模块 '{module.Name}'");
-                return;
-            }
-
-            if (entry.Registered)
-            {
-                _logger.Warning($"[RootTickRunner] 模块 '{module.Name}' 已经注册，重复注册已忽略");
-                return;
-            }
-
-            entry.Module = module;
-            entry.Registered = true;
-            _logger.Info($"[RootTickRunner] 模块 '{module.Name}' 已注册");
-
-            RegisterService(module.Name, module);
-            CheckAndInitAllModules();
-        }
-
-        public void Tick(TickPhase phase)
-        {
-            if (!_modulesInitialised)
-            {
-                return;
-            }
-
-            var targetTickType = phase == TickPhase.LateUpdate ? 1 : 0;
-            foreach (var entry in _moduleTable.Values.OrderBy(item => item.Order))
-            {
-                if (entry.TickType == targetTickType && entry.Module != null)
-                {
-                    entry.Module.Tick();
-                }
-            }
-        }
-
-        private void LoadSystemInitOrder(string initTableName)
-        {
-            EventBusTableSchema schema;
-            try
-            {
-                schema = _dataRuntime.GetSchema(initTableName);
-            }
-            catch (Exception ex)
-            {
-                _logger.Error($"[RootTickRunner] 读取 {initTableName} 失败: {ex.Message}");
-                return;
-            }
-
-            if (schema == null || schema.instances == null)
-            {
-                _logger.Error($"[RootTickRunner] 未找到 {initTableName} 表或表内没有实例");
-                return;
-            }
-
-            _moduleTable.Clear();
-            foreach (var pair in schema.instances)
-            {
-                var instance = pair.Value;
-                var order = instance.GetInt("id", 0);
-                var name = instance.GetString("name", null);
-                var tickType = instance.GetInt("ticktype", 0);
-                if (string.IsNullOrEmpty(name))
-                {
-                    _logger.Warning("[RootTickRunner] systemInitOrder 表中存在空名称实例，已跳过");
-                    continue;
-                }
-
-                if (_moduleTable.ContainsKey(name))
-                {
-                    _logger.Warning($"[RootTickRunner] systemInitOrder 表存在重复名称 '{name}'，已忽略后续条目");
-                    continue;
-                }
-
-                _moduleTable[name] = new ModuleEntry
-                {
-                    Order = order,
-                    TickType = tickType,
-                    Module = null,
-                    Registered = false
-                };
-            }
-        }
-
-        private void CheckAndInitAllModules()
-        {
-            if (_modulesInitialised)
-            {
-                return;
-            }
-
-            foreach (var entry in _moduleTable.Values)
-            {
-                if (!entry.Registered)
-                {
-                    return;
-                }
-            }
-
-            InitAllModules();
-        }
-
-        private void InitAllModules()
-        {
-            _modulesInitialised = true;
-            foreach (var entry in _moduleTable.Values.OrderBy(item => item.Order).ToList())
-            {
-                try
-                {
-                    entry.Module.Init(this, _eventBus);
-                    _logger.Info($"[RootTickRunner] 模块 '{entry.Module.Name}' 初始化完成");
-                }
-                catch (Exception ex)
-                {
-                    _logger.Error($"[RootTickRunner] 初始化模块 '{entry.Module.Name}' 时出现异常: {ex}");
-                }
-            }
-
-            _logger.Info("[RootTickRunner] 所有业务模块初始化完成");
         }
     }
 }
@@ -1615,6 +1483,11 @@ namespace GameFramework.Core
             {
                 _logger.Warning($"[EventBus] Publishing unknown event '{eventName}' on bus '{_busName}'. No tags will be dispatched unless event was declared previously.");
                 eventTags = new List<string>();
+            }
+
+            if (_config.LogPublishedEvents)
+            {
+                _logger.Info(BuildPublishLogMessage(sender, eventName, actualPayload, eventTags));
             }
 
             if (_eventSubs.TryGetValue(eventName, out var subscriptions))
@@ -2004,6 +1877,67 @@ namespace GameFramework.Core
             return _config.Mode == EventBusScopeMode.Local && _config.EnableScopeCheckForLocal;
         }
 
+        private string BuildPublishLogMessage(object sender, string eventName, object payload, List<string> tags)
+        {
+            var tagText = tags != null && tags.Count > 0 ? string.Join(", ", tags) : "<none>";
+            return $"[EventBus] Published event '{eventName}' on bus '{_busName}' (sender={DescribeValueForLog(sender)}, tags={tagText}, payload={DescribeValueForLog(payload)}).";
+        }
+
+        private static string DescribeValueForLog(object value)
+        {
+            if (ReferenceEquals(value, NoDataPayload))
+            {
+                return "<none>";
+            }
+
+            if (value == null)
+            {
+                return "<null>";
+            }
+
+            switch (value)
+            {
+                case string text:
+                    return string.Concat('"', TrimForLog(text), '"');
+                case char charValue:
+                    return $"'{charValue}'";
+                case bool _:
+                case byte _:
+                case sbyte _:
+                case short _:
+                case ushort _:
+                case int _:
+                case uint _:
+                case long _:
+                case ulong _:
+                case float _:
+                case double _:
+                case decimal _:
+                    return value.ToString();
+            }
+
+            var typeName = value.GetType().Name;
+            var valueText = value.ToString();
+            if (string.IsNullOrEmpty(valueText)
+                || string.Equals(valueText, typeName, StringComparison.Ordinal)
+                || string.Equals(valueText, value.GetType().FullName, StringComparison.Ordinal))
+            {
+                return $"<{typeName}>";
+            }
+
+            return $"{typeName}({TrimForLog(valueText)})";
+        }
+
+        private static string TrimForLog(string value)
+        {
+            if (string.IsNullOrEmpty(value) || value.Length <= 120)
+            {
+                return value;
+            }
+
+            return value.Substring(0, 117) + "...";
+        }
+
         private static HashSet<string> ParseTags(string tagExpression)
         {
             var result = new HashSet<string>();
@@ -2032,9 +1966,234 @@ namespace GameFramework.Core
     return [
       buildGodotSharedContractsContent(),
       buildGodotSharedServiceRegistryContent(),
-      buildGodotSharedRootTickRunnerCoreContent(),
+      buildGodotSharedRootTickRunnerCoreLatestContent(),
       buildGodotSharedEventBusCoreContent()
     ].join("\n\n");
+  }
+  function buildGodotSharedRootTickRunnerCoreLatestContent() {
+    return `
+namespace GameFramework.Core
+{
+    public sealed class RootTickRunnerCore : IRootRuntime
+    {
+        public const string AllModulesInitializedEventName = "tickrunner.all_modules_initialized";
+
+        public sealed class ModulesInitializedEventPayload
+        {
+            public string RootName { get; set; }
+
+            public int ModuleCount { get; set; }
+
+            public IReadOnlyList<string> ModuleNames { get; set; }
+        }
+
+        private sealed class ModuleEntry
+        {
+            public int Order;
+            public int TickType;
+            public ISystemModule Module;
+            public bool Registered;
+        }
+
+        private readonly IRuntimeLogger _logger;
+        private readonly ServiceRegistry _serviceRegistry = new ServiceRegistry();
+        private readonly Dictionary<string, ModuleEntry> _moduleTable = new Dictionary<string, ModuleEntry>();
+
+        private bool _modulesInitialised;
+        private IEventBus _eventBus;
+        private IDataTableRuntime _dataRuntime;
+
+        public RootTickRunnerCore(IRuntimeLogger logger)
+        {
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        }
+
+        public void Initialize(IDataTableRuntime dataRuntime, IEventBus eventBus, string initTableName = "systemInitOrder")
+        {
+            _dataRuntime = dataRuntime ?? throw new ArgumentNullException(nameof(dataRuntime));
+            _eventBus = eventBus ?? throw new ArgumentNullException(nameof(eventBus));
+
+            RegisterService("eventbus", eventBus);
+            RegisterService("database", dataRuntime);
+            _eventBus.RegisterCustomEvent(AllModulesInitializedEventName, string.Empty);
+            LoadSystemInitOrder(initTableName);
+            _logger.Info("[RootTickRunner] Base services initialized.");
+        }
+
+        public void RegisterService(string name, object instance)
+        {
+            _serviceRegistry.RegisterService(name, instance);
+        }
+
+        public T GetService<T>(string name) where T : class
+        {
+            return _serviceRegistry.GetService<T>(name);
+        }
+
+        public void RegisterModule(ISystemModule module)
+        {
+            if (module == null)
+            {
+                _logger.Error("[RootTickRunner] RegisterModule received a null module.");
+                return;
+            }
+
+            if (!_moduleTable.TryGetValue(module.Name, out var entry))
+            {
+                _logger.Error($"[RootTickRunner] Module '{module.Name}' was not declared in systemInitOrder.");
+                return;
+            }
+
+            if (entry.Registered)
+            {
+                _logger.Warning($"[RootTickRunner] Module '{module.Name}' is already registered. Duplicate registration ignored.");
+                return;
+            }
+
+            entry.Module = module;
+            entry.Registered = true;
+            _logger.Info($"[RootTickRunner] Module '{module.Name}' registered.");
+
+            RegisterService(module.Name, module);
+            CheckAndInitAllModules();
+        }
+
+        public void Tick(TickPhase phase)
+        {
+            if (!_modulesInitialised)
+            {
+                return;
+            }
+
+            var targetTickType = phase == TickPhase.LateUpdate ? 1 : 0;
+            foreach (var entry in _moduleTable.Values.OrderBy(item => item.Order))
+            {
+                if (entry.TickType == targetTickType && entry.Module != null)
+                {
+                    entry.Module.Tick();
+                }
+            }
+        }
+
+        private void LoadSystemInitOrder(string initTableName)
+        {
+            EventBusTableSchema schema;
+            try
+            {
+                schema = _dataRuntime.GetSchema(initTableName);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error($"[RootTickRunner] Failed to load {initTableName}: {ex.Message}");
+                return;
+            }
+
+            if (schema == null || schema.instances == null)
+            {
+                _logger.Error($"[RootTickRunner] Table '{initTableName}' was not found or has no instances.");
+                return;
+            }
+
+            _moduleTable.Clear();
+            foreach (var pair in schema.instances)
+            {
+                var instance = pair.Value;
+                var order = instance.GetInt("id", 0);
+                var name = instance.GetString("name", null);
+                var tickType = instance.GetInt("ticktype", 0);
+                if (string.IsNullOrEmpty(name))
+                {
+                    _logger.Warning("[RootTickRunner] Found a systemInitOrder entry with an empty name. It was skipped.");
+                    continue;
+                }
+
+                if (_moduleTable.ContainsKey(name))
+                {
+                    _logger.Warning($"[RootTickRunner] Duplicate module name '{name}' found in systemInitOrder. Later entries were skipped.");
+                    continue;
+                }
+
+                _moduleTable[name] = new ModuleEntry
+                {
+                    Order = order,
+                    TickType = tickType,
+                    Module = null,
+                    Registered = false
+                };
+            }
+        }
+
+        private void CheckAndInitAllModules()
+        {
+            if (_modulesInitialised)
+            {
+                return;
+            }
+
+            foreach (var entry in _moduleTable.Values)
+            {
+                if (!entry.Registered)
+                {
+                    return;
+                }
+            }
+
+            InitAllModules();
+        }
+
+        private void InitAllModules()
+        {
+            _modulesInitialised = true;
+            var initializedModuleNames = new List<string>();
+            var allModulesSucceeded = true;
+            foreach (var entry in _moduleTable.Values.OrderBy(item => item.Order).ToList())
+            {
+                try
+                {
+                    entry.Module.Init(this, _eventBus);
+                    initializedModuleNames.Add(entry.Module.Name);
+                    _logger.Info($"[RootTickRunner] {ResolveRootNodeName()} {entry.Module.Name} initialized.");
+                }
+                catch (Exception ex)
+                {
+                    allModulesSucceeded = false;
+                    _logger.Error($"[RootTickRunner] Exception while initializing module '{entry.Module.Name}': {ex}");
+                }
+            }
+
+            if (allModulesSucceeded)
+            {
+                _eventBus.PublishEvent(
+                    this,
+                    AllModulesInitializedEventName,
+                    new ModulesInitializedEventPayload
+                    {
+                        RootName = ResolveRootNodeName(),
+                        ModuleCount = initializedModuleNames.Count,
+                        ModuleNames = initializedModuleNames.AsReadOnly()
+                    });
+            }
+            else
+            {
+                _logger.Warning($"[RootTickRunner] Event '{AllModulesInitializedEventName}' was not published because at least one module failed to initialize.");
+            }
+
+            _logger.Info("[RootTickRunner] All registered system modules finished initialization.");
+        }
+
+        private string ResolveRootNodeName()
+        {
+            var rootNodeName = GetService<string>("rootNodeName");
+            if (!string.IsNullOrEmpty(rootNodeName))
+            {
+                return rootNodeName;
+            }
+
+            return "Root";
+        }
+    }
+}
+`;
   }
   function buildGodotRuntimeSupportContent() {
     return `
@@ -2115,6 +2274,7 @@ namespace GameFramework.Adapters.Godot
     return `
 using System;
 using System.Collections.Generic;
+using GameFramework;
 using GameFramework.Core;
 using Godot;
 
@@ -2173,15 +2333,33 @@ namespace GameFramework.Adapters.Godot
         [Export]
         public bool LogVerbose { get; set; }
 
+        [Export]
+        public bool LogPublishedEvents { get; set; } = true;
+
+        [Export]
+        public NodePath ScopeRootPath { get; set; }
+
         private readonly GodotRuntimeLogger _logger = new GodotRuntimeLogger();
         private readonly GodotTimeProvider _timeProvider = new GodotTimeProvider();
         private readonly GodotScopeResolver _scopeResolver = new GodotScopeResolver();
 
         private EventBusCore _core;
+        private bool _hasLoggedInitialization;
 
         public void Init(IDataTableRuntime dbRuntime)
         {
-            EnsureCore().Init(dbRuntime, this);
+            Init(dbRuntime, ResolveDefaultBusOwner());
+        }
+
+        public void Init(IDataTableRuntime dbRuntime, object busOwner)
+        {
+            var resolvedBusOwner = busOwner ?? ResolveDefaultBusOwner();
+            EnsureCore().Init(dbRuntime, resolvedBusOwner);
+            if (!_hasLoggedInitialization)
+            {
+                _logger.Info($"[GodotEventBusNode] {ResolveInitializationRootName(resolvedBusOwner)} 初始化完成");
+                _hasLoggedInitialization = true;
+            }
         }
 
         public void RegisterCustomEvent(string eventName, string tagExpression)
@@ -2274,8 +2452,473 @@ namespace GameFramework.Adapters.Godot
                 InitTagFilters = InitTagFilters == null ? new List<string>() : new List<string>(InitTagFilters),
                 EnableScopeCheckForLocal = EnableScopeCheckForLocal,
                 AllowTriggerTagAtRuntime = AllowTriggerTagAtRuntime,
-                LogVerbose = LogVerbose
+                LogVerbose = LogVerbose,
+                LogPublishedEvents = LogPublishedEvents
             };
+        }
+
+        private object ResolveDefaultBusOwner()
+        {
+            var scopeRootPathText = ScopeRootPath.ToString();
+            if (!string.IsNullOrEmpty(scopeRootPathText))
+            {
+                var configuredScopeRoot = GetNodeOrNull<Node>(ScopeRootPath);
+                if (configuredScopeRoot != null)
+                {
+                    return configuredScopeRoot;
+                }
+
+                _logger.Warning(
+                    "[GodotEventBusNode] ScopeRootPath is configured but the target node was not found. Falling back to the default scope root.");
+            }
+
+            if (Mode == BusMode.Local)
+            {
+                return GetParent() ?? this;
+            }
+
+            return this;
+        }
+
+        private string ResolveInitializationRootName(object busOwner)
+        {
+            if (busOwner is Node busOwnerNode)
+            {
+                if (ReferenceEquals(busOwnerNode, this))
+                {
+                    var parentNode = GetParent();
+                    if (parentNode != null)
+                    {
+                        return ResolveNodeName(parentNode);
+                    }
+                }
+
+                return ResolveNodeName(busOwnerNode);
+            }
+
+            return ResolveNodeName(GetParent() ?? this);
+        }
+
+        private static string ResolveNodeName(Node node)
+        {
+            if (node == null)
+            {
+                return "<unknown-root>";
+            }
+
+            var nodeName = node.Name.ToString();
+            return string.IsNullOrEmpty(nodeName) ? node.GetType().Name : nodeName;
+        }
+    }
+}
+`;
+  }
+  function buildGodotObjectModuleBaseContent() {
+    return `
+using GameFramework;
+using GameFramework.Core;
+using Godot;
+
+namespace GameFramework.Adapters.Godot
+{
+    [GlobalClass]
+    public abstract partial class GodotObjectModuleBase : Node, IObjectModule
+    {
+        [Export]
+        public int TickPriority { get; set; }
+
+        string IObjectModule.Name => Name.ToString();
+
+        int IObjectModule.TickPriority => TickPriority;
+
+        public virtual void Init(IObjectRuntime root, IEventBus localEventBus, IEventBus globalEventBus)
+        {
+        }
+
+        public virtual void Tick()
+        {
+        }
+    }
+}
+`;
+  }
+  function buildGodotObjectRootNodeContent() {
+    return `
+using System;
+using System.Collections.Generic;
+using Godot;
+
+namespace GameFramework.Adapters.Godot
+{
+    [GlobalClass]
+    public partial class GodotObjectRootNode : Node, IObjectRuntime
+    {
+        private sealed class ModuleEntry
+        {
+            public ModuleEntry(IObjectModule module, int siblingIndex)
+            {
+                Module = module;
+                SiblingIndex = siblingIndex;
+            }
+
+            public IObjectModule Module { get; }
+
+            public int SiblingIndex { get; }
+        }
+
+        [Export]
+        public NodePath ContextRootPath { get; set; } = new NodePath("..");
+
+        [Export]
+        public NodePath ScopeRootPath { get; set; }
+
+        [Export]
+        public NodePath LocalEventBusPath { get; set; } = new NodePath("../LocalEventBus");
+
+        [Export]
+        public NodePath DataTableProviderPath { get; set; }
+
+        [Export]
+        public NodePath GlobalEventBusPath { get; set; }
+
+        [Export]
+        public bool AutoInitialize { get; set; } = true;
+
+        private readonly GodotRuntimeLogger _logger = new GodotRuntimeLogger();
+        private readonly List<IObjectModule> _orderedModules = new List<IObjectModule>();
+
+        private GodotEventBusNode _localEventBus;
+        private IEventBus _globalEventBus;
+        private IDataTableRuntime _dataRuntime;
+        private bool _initialized;
+        private bool _loggedMissingLocalEventBus;
+        private bool _loggedPendingRootServices;
+
+        public IEventBus GetLocalEventBus()
+        {
+            return _localEventBus;
+        }
+
+        public IEventBus GetGlobalEventBus()
+        {
+            return _globalEventBus;
+        }
+
+        public void PublishLocalThenGlobal(object sender, string eventName, object payload)
+        {
+            if (!_initialized)
+            {
+                InitializeObjectDomain();
+            }
+
+            if (_localEventBus == null || _globalEventBus == null)
+            {
+                _logger.Warning("[GodotObjectRootNode] PublishLocalThenGlobal skipped because local/global event bus is not ready.");
+                return;
+            }
+
+            _localEventBus.PublishEvent(sender, eventName, payload);
+            _globalEventBus.PublishEvent(sender, eventName, payload);
+        }
+
+        public override void _Ready()
+        {
+            if (!AutoInitialize)
+            {
+                return;
+            }
+
+            SetProcess(true);
+            InitializeObjectDomain();
+        }
+
+        public override void _Process(double delta)
+        {
+            if (!_initialized)
+            {
+                if (AutoInitialize)
+                {
+                    InitializeObjectDomain();
+                }
+
+                return;
+            }
+
+            TickModules();
+        }
+
+        public override void _ExitTree()
+        {
+            _initialized = false;
+            _orderedModules.Clear();
+            _localEventBus = null;
+            _globalEventBus = null;
+            _dataRuntime = null;
+            _loggedMissingLocalEventBus = false;
+            _loggedPendingRootServices = false;
+            SetProcess(false);
+        }
+
+        public void InitializeObjectDomain()
+        {
+            if (_initialized)
+            {
+                return;
+            }
+
+            var contextRoot = ResolveContextRoot();
+            _localEventBus = _localEventBus ?? ResolveLocalEventBus(contextRoot);
+            if (_localEventBus == null)
+            {
+                if (!_loggedMissingLocalEventBus)
+                {
+                    _logger.Error("[GodotObjectRootNode] LocalEventBus was not found. Ensure ObjectRoot and LocalEventBus are siblings under the same context root.");
+                    _loggedMissingLocalEventBus = true;
+                }
+
+                return;
+            }
+
+            _dataRuntime = _dataRuntime ?? ResolveDataRuntime();
+            _globalEventBus = _globalEventBus ?? ResolveGlobalEventBus();
+            if (_dataRuntime == null || _globalEventBus == null)
+            {
+                if (!_loggedPendingRootServices)
+                {
+                    _logger.Warning("[GodotObjectRootNode] Waiting for SystemRoot services before completing ObjectRoot initialization.");
+                    _loggedPendingRootServices = true;
+                }
+
+                return;
+            }
+
+            var scopeRoot = ResolveScopeRoot(contextRoot);
+            _localEventBus.Init(_dataRuntime, scopeRoot);
+            CollectModules(contextRoot);
+            InitialiseModules(contextRoot);
+
+            _initialized = true;
+            _loggedPendingRootServices = false;
+            SetProcess(true);
+            _logger.Info($"[GodotObjectRootNode] Initialized {_orderedModules.Count} object modules under '{contextRoot.Name}'.");
+        }
+
+        private Node ResolveContextRoot()
+        {
+            if (TryResolveNode(ContextRootPath, out var contextRoot))
+            {
+                return contextRoot;
+            }
+
+            return GetParent() ?? this;
+        }
+
+        private Node ResolveScopeRoot(Node contextRoot)
+        {
+            if (TryResolveNode(ScopeRootPath, out var scopeRoot))
+            {
+                return scopeRoot;
+            }
+
+            return contextRoot;
+        }
+
+        private IDataTableRuntime ResolveDataRuntime()
+        {
+            if (TryResolveExplicitDataRuntime(out var explicitRuntime))
+            {
+                return explicitRuntime;
+            }
+
+            return GodotRootTickRunnerNode.Instance?.GetService<IDataTableRuntime>("database");
+        }
+
+        private bool TryResolveExplicitDataRuntime(out IDataTableRuntime runtime)
+        {
+            runtime = null;
+            if (!TryResolveNode(DataTableProviderPath, out var providerNode))
+            {
+                return false;
+            }
+
+            if (providerNode is IDataTableRuntime directRuntime)
+            {
+                runtime = directRuntime;
+                return true;
+            }
+
+            if (providerNode is IGodotDataTableProvider provider)
+            {
+                runtime = new GodotDataTableRuntimeAdapter(provider);
+                return true;
+            }
+
+            _logger.Error("[GodotObjectRootNode] DataTableProviderPath must point to a node implementing IDataTableRuntime or IGodotDataTableProvider.");
+            return false;
+        }
+
+        private IEventBus ResolveGlobalEventBus()
+        {
+            if (TryResolveExplicitGlobalEventBus(out var explicitBus))
+            {
+                return explicitBus;
+            }
+
+            return GodotRootTickRunnerNode.Instance?.GetService<IEventBus>("eventbus");
+        }
+
+        private bool TryResolveExplicitGlobalEventBus(out IEventBus eventBus)
+        {
+            eventBus = null;
+            if (!TryResolveNode(GlobalEventBusPath, out var busNode))
+            {
+                return false;
+            }
+
+            if (busNode is IEventBus directBus)
+            {
+                eventBus = directBus;
+                return true;
+            }
+
+            _logger.Error("[GodotObjectRootNode] GlobalEventBusPath must point to a node implementing IEventBus.");
+            return false;
+        }
+
+        private GodotEventBusNode ResolveLocalEventBus(Node contextRoot)
+        {
+            if (TryResolveNode(LocalEventBusPath, out var explicitBus))
+            {
+                if (explicitBus is GodotEventBusNode localBus)
+                {
+                    return localBus;
+                }
+
+                _logger.Error("[GodotObjectRootNode] LocalEventBusPath must point to a GodotEventBusNode.");
+                return null;
+            }
+
+            var namedBus = contextRoot.GetNodeOrNull<GodotEventBusNode>("LocalEventBus");
+            if (namedBus != null)
+            {
+                return namedBus;
+            }
+
+            var childCount = contextRoot.GetChildCount();
+            for (var index = 0; index < childCount; index++)
+            {
+                if (contextRoot.GetChild(index) is GodotEventBusNode candidate
+                    && candidate.Mode == GodotEventBusNode.BusMode.Local)
+                {
+                    return candidate;
+                }
+            }
+
+            return null;
+        }
+
+        private void CollectModules(Node contextRoot)
+        {
+            _orderedModules.Clear();
+
+            var moduleEntries = new List<ModuleEntry>();
+            var childCount = contextRoot.GetChildCount();
+            for (var index = 0; index < childCount; index++)
+            {
+                var child = contextRoot.GetChild(index);
+                if (ReferenceEquals(child, this) || ReferenceEquals(child, _localEventBus))
+                {
+                    continue;
+                }
+
+                if (child is IObjectModule module)
+                {
+                    moduleEntries.Add(new ModuleEntry(module, index));
+                }
+            }
+
+            moduleEntries.Sort(CompareModuleEntries);
+            for (var index = 0; index < moduleEntries.Count; index++)
+            {
+                _orderedModules.Add(moduleEntries[index].Module);
+            }
+        }
+
+        private void InitialiseModules(Node contextRoot)
+        {
+            for (var i = 0; i < _orderedModules.Count; i++)
+            {
+                var module = _orderedModules[i];
+                try
+                {
+                    module.Init(this, _localEventBus, _globalEventBus);
+                    _logger.Info($"[GodotObjectRootNode] {ResolveNodeName(contextRoot)} {ResolveModuleName(module)} 初始化完成");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error($"[GodotObjectRootNode] Init failed for object module '{ResolveModuleName(module)}': {ex}");
+                }
+            }
+        }
+
+        private void TickModules()
+        {
+            for (var i = 0; i < _orderedModules.Count; i++)
+            {
+                var module = _orderedModules[i];
+                try
+                {
+                    module.Tick();
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error($"[GodotObjectRootNode] Tick failed for object module '{ResolveModuleName(module)}': {ex}");
+                }
+            }
+        }
+
+        private static int CompareModuleEntries(ModuleEntry left, ModuleEntry right)
+        {
+            var priorityCompare = right.Module.TickPriority.CompareTo(left.Module.TickPriority);
+            if (priorityCompare != 0)
+            {
+                return priorityCompare;
+            }
+
+            return left.SiblingIndex.CompareTo(right.SiblingIndex);
+        }
+
+        private static string ResolveModuleName(IObjectModule module)
+        {
+            if (module == null)
+            {
+                return "<null>";
+            }
+
+            return string.IsNullOrEmpty(module.Name) ? module.GetType().Name : module.Name;
+        }
+
+        private static string ResolveNodeName(Node node)
+        {
+            if (node == null)
+            {
+                return "<unknown-root>";
+            }
+
+            var nodeName = node.Name.ToString();
+            return string.IsNullOrEmpty(nodeName) ? node.GetType().Name : nodeName;
+        }
+
+        private bool TryResolveNode(NodePath path, out Node node)
+        {
+            node = null;
+            if (string.IsNullOrEmpty(path.ToString()))
+            {
+                return false;
+            }
+
+            node = GetNodeOrNull<Node>(path);
+            return node != null;
         }
     }
 }
@@ -2379,6 +3022,7 @@ namespace GameFramework.Adapters.Godot
                 return;
             }
 
+            EnsureCore().RegisterService("rootNodeName", Name.ToString());
             _eventBus.Init(_dataRuntime);
             EnsureCore().Initialize(_dataRuntime, _eventBus);
         }
@@ -2535,6 +3179,10 @@ public partial class DataTableProvider : Node, IDataTableRuntime
   function buildGodotRuntimeFiles() {
     return [
       {
+        relativePath: "godotCsharpDate/TickRunnerEventBusApiGuide.md",
+        content: buildGodotTickRunnerEventBusApiGuideContent()
+      },
+      {
         relativePath: `${GODOT_RUNTIME_FOLDER_NAME}/Shared/GameFrameworkRuntime.cs`,
         content: buildGodotSharedRuntimeContent()
       },
@@ -2547,6 +3195,14 @@ public partial class DataTableProvider : Node, IDataTableRuntime
         content: buildGodotEventBusNodeContent()
       },
       {
+        relativePath: `${GODOT_RUNTIME_FOLDER_NAME}/Godot/GodotObjectModuleBase.cs`,
+        content: buildGodotObjectModuleBaseContent()
+      },
+      {
+        relativePath: `${GODOT_RUNTIME_FOLDER_NAME}/Godot/GodotObjectRootNode.cs`,
+        content: buildGodotObjectRootNodeContent()
+      },
+      {
         relativePath: `${GODOT_RUNTIME_FOLDER_NAME}/Godot/GodotRootTickRunnerNode.cs`,
         content: buildGodotRootTickRunnerNodeContent()
       },
@@ -2555,6 +3211,175 @@ public partial class DataTableProvider : Node, IDataTableRuntime
         content: buildGodotDataTableProviderContent()
       }
     ];
+  }
+  function buildGodotTickRunnerEventBusApiGuideContent() {
+    return `
+# Godot TickRunner / EventBus 使用说明
+
+## 一键初始化会注入什么
+
+- \`scripts/EventBusTickRunner/Shared/GameFrameworkRuntime.cs\`
+- \`scripts/EventBusTickRunner/Godot/*.cs\`
+- \`scripts/godotCsharpDate/TickRunnerEventBusApiGuide.md\`
+- \`prefab/GameRoot.tscn\`
+- \`prefab/ObjectBase.tscn\`
+- \`dataEntity/systemInitOrder.json\`
+- \`dataEntity/systemEvent.json\`
+
+再次执行 Godot C# 一键初始化时，只会更新工具注入的脚本和文档，不会覆盖你已经配置好的模板和场景内容。
+
+## TickRunner 自带功能
+
+\`GodotRootTickRunnerNode\` / \`RootTickRunnerCore\` 自带这些能力：
+
+- 通过 \`RegisterService\` / \`GetService<T>\` 提供基础服务注册与查询
+- 读取 \`systemInitOrder\`
+- 按顺序初始化系统模块
+- 分发 \`Update\` / \`LateUpdate\` Tick
+- 在所有系统模块初始化完成后触发内置生命周期事件 \`tickrunner.all_modules_initialized\`
+
+## EventBus 自带功能
+
+\`GodotEventBusNode\` / \`EventBusCore\` 自带这些能力：
+
+- 从 \`systemEvent\` 读取并声明事件
+- 可选的标签声明与标签校验
+- 支持全局总线 / 本地总线模式
+- 支持事件订阅
+- 支持标签订阅
+- 支持运行时注册自定义事件
+- 支持测试用的标签触发
+
+## 系统模块怎么写
+
+实现 \`ISystemModule\`：
+
+\`\`\`csharp
+using GameFramework;
+using GameFramework.Adapters.Godot;
+using Godot;
+
+public partial class ExampleSystem : Node, ISystemModule
+{
+    public string Name => "examplesystem";
+
+    public override void _Ready()
+    {
+        GodotRootTickRunnerNode.Instance?.RegisterModule(this);
+    }
+
+    public void Init(IRootRuntime root, IEventBus eventBus)
+    {
+    }
+
+    public void Tick()
+    {
+    }
+}
+\`\`\`
+
+规则：
+
+- \`Name\` must match one row in \`systemInitOrder\`
+- \`Init(...)\` runs only after all declared modules are registered
+- \`ticktype = 0\` is Update, \`ticktype = 1\` is LateUpdate
+
+更准确地说：
+
+- \`Name\` 必须和 \`systemInitOrder\` 里某一行的名字一致
+- 只有当 \`systemInitOrder\` 里声明的模块都注册完之后，\`Init(...)\` 才会统一执行
+- \`ticktype = 0\` 表示 Update，\`ticktype = 1\` 表示 LateUpdate
+
+## IEventBus 常用 API
+
+- \`RegisterCustomEvent(string eventName, string tagExpression)\`
+- \`SubscribeEvent(object owner, string eventName, Action<object> onEvent)\`
+- \`SubscribeTag(object owner, string tagName, Action<EventEnvelope> onEnvelope)\`
+- \`PublishEvent(object sender, string eventName, object payload)\`
+- \`TriggerTagForTest(object sender, string tagName, ...)\`
+- \`Unsubscribe(SubscriptionToken token)\`
+- \`UnsubscribeAll(object owner)\`
+
+## 常见调用示例
+
+发布一个自定义事件：
+
+\`\`\`csharp
+eventBus.RegisterCustomEvent("battle.started", "battle");
+eventBus.PublishEvent(this, "battle.started", new { stage = 1 });
+\`\`\`
+
+订阅一个事件：
+
+\`\`\`csharp
+eventBus.SubscribeEvent(this, "battle.started", payload =>
+{
+    GD.Print($"battle.started => \${payload}");
+});
+\`\`\`
+
+按标签订阅：
+
+\`\`\`csharp
+eventBus.SubscribeTag(this, "battle", envelope =>
+{
+    GD.Print(envelope.EventName);
+});
+\`\`\`
+
+## 内置的“全部模块初始化完成”事件
+
+TickRunner 会自动声明这个事件：
+
+- \`RootTickRunnerCore.AllModulesInitializedEventName\`
+- 实际事件名：\`tickrunner.all_modules_initialized\`
+
+触发时机：
+
+- 当所有在 \`systemInitOrder\` 中声明的系统模块都完成 \`Init(...)\` 之后触发
+- 如果任意模块在 \`Init(...)\` 期间抛异常，这个事件不会触发
+
+Payload 类型：
+
+\`\`\`csharp
+RootTickRunnerCore.ModulesInitializedEventPayload
+\`\`\`
+
+Payload 字段：
+
+- \`RootName\`
+- \`ModuleCount\`
+- \`ModuleNames\`
+
+订阅示例：
+
+\`\`\`csharp
+public void Init(IRootRuntime root, IEventBus eventBus)
+{
+    eventBus.SubscribeEvent(this, RootTickRunnerCore.AllModulesInitializedEventName, payload =>
+    {
+        var data = payload as RootTickRunnerCore.ModulesInitializedEventPayload;
+        if (data != null)
+        {
+            GD.Print($"All modules ready: \${data.ModuleCount}");
+        }
+    });
+}
+\`\`\`
+
+## 默认注入的场景
+
+\`GameRoot.tscn\` 默认包含：
+
+- 一个根 TickRunner
+- 一个全局 EventBus
+- 一个 DataTableProvider
+
+\`ObjectBase.tscn\` 默认包含：
+
+- 一个对象域根节点
+- 一个本地 EventBus
+`;
   }
   function buildGodotGameRootSceneContent(options = {}) {
     const scriptOutputRootName = options.scriptOutputRootName || "scripts";
@@ -2572,10 +3397,33 @@ DataTableProviderPath = NodePath("DataTableProvider")
 
 [node name="EventBus" type="Node" parent="."]
 script = ExtResource("2_bus")
+EventTableTemplateName = "${SYSTEM_EVENT_TEMPLATE_NAME}"
 
 [node name="DataTableProvider" type="Node" parent="."]
 script = ExtResource("3_provider")
 DataDir = "res://dataEntity"
+`;
+  }
+  function buildGodotObjectBaseSceneContent(options = {}) {
+    const scriptOutputRootName = options.scriptOutputRootName || "scripts";
+    const runtimeRootPath = `res://${scriptOutputRootName}/${GODOT_RUNTIME_FOLDER_NAME}/Godot`;
+    return `[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="${runtimeRootPath}/GodotObjectRootNode.cs" id="1_root"]
+[ext_resource type="Script" path="${runtimeRootPath}/GodotEventBusNode.cs" id="2_bus"]
+
+[node name="ObjectBase" type="Node"]
+
+[node name="ObjectRoot" type="Node" parent="."]
+script = ExtResource("1_root")
+ContextRootPath = NodePath("..")
+LocalEventBusPath = NodePath("../LocalEventBus")
+
+[node name="LocalEventBus" type="Node" parent="."]
+script = ExtResource("2_bus")
+Mode = 1
+EventTableTemplateName = "${SYSTEM_EVENT_TEMPLATE_NAME}"
+ScopeRootPath = NodePath("..")
 `;
   }
   function buildSystemInitOrderTemplate() {
@@ -2588,7 +3436,17 @@ DataDir = "res://dataEntity"
           type: "int"
         }
       ],
-      instances: []
+      instances: [
+        buildBootstrapTemplateInstance({
+          templateName: SYSTEM_INIT_ORDER_TEMPLATE_NAME,
+          indexField: "name",
+          id: 0,
+          name: DEFAULT_SYSTEM_INIT_ORDER_INSTANCE_NAME,
+          payload: {
+            ticktype: 0
+          }
+        })
+      ]
     };
   }
 
@@ -2596,8 +3454,9 @@ DataDir = "res://dataEntity"
   var DB_NAME = "json-editor";
   var DB_STORE = "handles";
   var ENUM_CACHE_PREFIX = "enumCache:";
-  var IGNORED_FILE_SUFFIXES = [".meta"];
+  var IGNORED_FILE_SUFFIXES = [".meta", ".uid"];
   var IGNORED_FILE_NAMES = [".ds_store", "thumbs.db"];
+  var ALLOWED_CSHARP_ROOT_FILE_SUFFIXES = [".cs", ".md", ".txt"];
   var PREFAB_SEARCH_IGNORED_DIRECTORIES = /* @__PURE__ */ new Set([
     ".git",
     ".godot",
@@ -2838,11 +3697,19 @@ DataDir = "res://dataEntity"
       await writeTextFile(dirHandle, fileName, content);
       return { status: "created", fileName };
     }
-    async function writeManagedRelativeFile(rootHandle, relativePath, content) {
+    async function overwriteManagedTextFile(dirHandle, fileName, content) {
+      const existing = await readTextFileIfExists(dirHandle, fileName);
+      if (existing != null && existing === content) {
+        return { status: "unchanged", fileName };
+      }
+      await writeTextFile(dirHandle, fileName, content);
+      return { status: existing == null ? "created" : "updated", fileName };
+    }
+    async function writeManagedRelativeFile(rootHandle, relativePath, content, options = {}) {
       const normalizedPath = String(relativePath || "").split("/").map((part) => part.trim()).filter(Boolean);
       const fileName = normalizedPath.pop();
       const dirHandle = await ensureNestedDirectory(rootHandle, normalizedPath);
-      const result = await upsertManagedTextFile(dirHandle, fileName, content);
+      const result = options.overwrite ? await overwriteManagedTextFile(dirHandle, fileName, content) : await upsertManagedTextFile(dirHandle, fileName, content);
       return {
         ...result,
         relativePath: [...normalizedPath, fileName].join("/")
@@ -2858,7 +3725,7 @@ DataDir = "res://dataEntity"
           summary[status] += 1;
           return summary;
         },
-        { created: 0, unchanged: 0, skipped: 0, unknown: 0 }
+        { created: 0, updated: 0, unchanged: 0, skipped: 0, unknown: 0 }
       );
     }
     function captureCurrentTemplateSelectionState() {
@@ -3077,22 +3944,38 @@ DataDir = "res://dataEntity"
       }
       return true;
     }
+    function describeError(err) {
+      if (!err) return "Unknown error";
+      if (typeof err === "string") return err;
+      const parts = [];
+      if (err.name) parts.push(err.name);
+      if (err.message && err.message !== err.name) parts.push(err.message);
+      return parts.length > 0 ? parts.join(": ") : String(err);
+    }
     async function initializeWorkspaceFromHandle(handle, successMessage = "") {
       if (!handle) return;
-      appState.directoryHandle = handle;
-      appState.configDirHandle = null;
-      setCurrentDirectoryLabel(handle.name || "");
-      await loadEditorConfigState();
-      await ensureSubFolders();
-      if (isCSharpMode()) {
-        await ensureModelStruct();
-        await generateRuntimeLoaderArtifacts();
-      }
-      await loadAllTemplates();
-      refreshTemplates();
-      updateIndexTemplateOptions();
-      if (successMessage) {
-        showMessage(successMessage);
+      try {
+        appState.directoryHandle = handle;
+        appState.configDirHandle = null;
+        setCurrentDirectoryLabel(handle.name || "");
+        await loadEditorConfigState();
+        await ensureSubFolders();
+        if (isCSharpMode()) {
+          await ensureModelStruct();
+          await generateRuntimeLoaderArtifacts();
+        }
+        await loadAllTemplates();
+        refreshTemplates();
+        updateIndexTemplateOptions();
+        if (successMessage) {
+          showMessage(successMessage);
+        }
+      } catch (err) {
+        const detail = describeError(err);
+        addLogEntry("error", `初始化工作目录失败: ${detail}`, {
+          detail: err && err.stack ? err.stack : ""
+        });
+        throw new Error(detail);
       }
     }
     async function autoRestoreLastDirectory() {
@@ -3124,8 +4007,16 @@ DataDir = "res://dataEntity"
         await initializeWorkspaceFromHandle(handle, "工作目录已选择并加载完成");
         await saveLastDirectoryHandle(handle);
       } catch (err) {
+        if (err && err.name === "AbortError") {
+          showMessage("已取消选择工作目录", "warn");
+          return;
+        }
+        const detail = describeError(err);
         console.error(err);
-        showMessage("选择工作目录失败");
+        addLogEntry("error", `选择工作目录失败: ${detail}`, {
+          detail: err && err.stack ? err.stack : ""
+        });
+        showMessage(`选择工作目录失败：${detail}`, "warn");
       }
     }
     function shouldIgnoreFileEntry(entryName) {
@@ -3133,6 +4024,11 @@ DataDir = "res://dataEntity"
       const lower = entryName.toLowerCase();
       if (IGNORED_FILE_NAMES.includes(lower)) return true;
       return IGNORED_FILE_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+    }
+    function isAllowedCSharpRootFile(entryName) {
+      if (!entryName) return false;
+      const lower = entryName.toLowerCase();
+      return ALLOWED_CSHARP_ROOT_FILE_SUFFIXES.some((suffix) => lower.endsWith(suffix));
     }
     async function removeDirectoryIfExists(parentHandle, name) {
       if (!parentHandle || typeof parentHandle.removeEntry !== "function" || !name) return false;
@@ -3223,8 +4119,8 @@ DataDir = "res://dataEntity"
           if (entry.kind === "file" && shouldIgnoreFileEntry(entry.name)) {
             continue;
           }
-          if (entry.kind === "file" && !entry.name.toLowerCase().endsWith(".cs")) {
-            showMessage(`${csharpFolderName} 文件夹内仅允许 .cs 文件：${entry.name}`);
+          if (entry.kind === "file" && !isAllowedCSharpRootFile(entry.name)) {
+            showMessage(`${csharpFolderName} 文件夹内仅允许 .cs/.md/.txt 文件：${entry.name}`);
             throw new Error("Invalid file in csharpDate");
           }
           if (entry.kind === "file") {
@@ -3341,11 +4237,11 @@ DataDir = "res://dataEntity"
         return { moved: false, error: err };
       }
     }
-    async function injectGodotRuntimeFiles(scriptOutputRootHandle) {
+    async function injectGodotRuntimeFiles(scriptOutputRootHandle, options = {}) {
       const results = [];
       for (const file of buildGodotRuntimeFiles()) {
         results.push(
-          await writeManagedRelativeFile(scriptOutputRootHandle, file.relativePath, file.content)
+          await writeManagedRelativeFile(scriptOutputRootHandle, file.relativePath, file.content, options)
         );
       }
       return results;
@@ -3431,16 +4327,31 @@ DataDir = "res://dataEntity"
         relativePath: `${prefabHandle.name}/${GODOT_GAME_ROOT_SCENE_NAME}`
       };
     }
+    async function injectObjectBaseScene(prefabHandle, scriptOutputRootName) {
+      if (!prefabHandle) {
+        return null;
+      }
+      const sceneContent = buildGodotObjectBaseSceneContent({ scriptOutputRootName });
+      const result = await upsertManagedTextFile(prefabHandle, GODOT_OBJECT_BASE_SCENE_NAME, sceneContent);
+      return {
+        ...result,
+        relativePath: `${prefabHandle.name}/${GODOT_OBJECT_BASE_SCENE_NAME}`
+      };
+    }
     function buildGodotInitializationSummary({
       runtimeResults,
       templateResult,
       prefabResult,
-      sceneResult
+      sceneResult,
+      objectBaseResult
     }) {
       const runtimeStats = summarizeWriteResults(runtimeResults);
       const parts = [];
       if (runtimeStats.created > 0) {
         parts.push(`created ${runtimeStats.created} runtime files`);
+      }
+      if (runtimeStats.updated > 0) {
+        parts.push(`updated ${runtimeStats.updated} runtime files`);
       }
       if (runtimeStats.unchanged > 0) {
         parts.push(`reused ${runtimeStats.unchanged} runtime files`);
@@ -3474,6 +4385,15 @@ DataDir = "res://dataEntity"
           parts.push(`kept existing ${GODOT_GAME_ROOT_SCENE_NAME}`);
         }
       }
+      if (objectBaseResult) {
+        if (objectBaseResult.status === "created") {
+          parts.push(`generated ${GODOT_OBJECT_BASE_SCENE_NAME}`);
+        } else if (objectBaseResult.status === "unchanged") {
+          parts.push(`${GODOT_OBJECT_BASE_SCENE_NAME} ready`);
+        } else if (objectBaseResult.status === "skipped") {
+          parts.push(`kept existing ${GODOT_OBJECT_BASE_SCENE_NAME}`);
+        }
+      }
       if (parts.length === 0) {
         return "Godot init complete; existing files were kept";
       }
@@ -3496,15 +4416,17 @@ DataDir = "res://dataEntity"
         if (!scriptOutputRootHandle) {
           throw new Error("Unable to access script output directory");
         }
-        const runtimeResults = await injectGodotRuntimeFiles(scriptOutputRootHandle);
+        const runtimeResults = await injectGodotRuntimeFiles(scriptOutputRootHandle, { overwrite: true });
         const templateResult = await ensureSystemInitOrderTemplate();
         const prefabResult = await ensurePrefabDirectory();
         const sceneResult = await injectGameRootScene(prefabResult.handle, scriptOutputRootHandle.name);
+        const objectBaseResult = await injectObjectBaseScene(prefabResult.handle, scriptOutputRootHandle.name);
         const summary = buildGodotInitializationSummary({
           runtimeResults,
           templateResult,
           prefabResult,
-          sceneResult
+          sceneResult,
+          objectBaseResult
         });
         addLogEntry("info", summary);
         showMessage(summary);
@@ -11047,8 +11969,9 @@ DataEntityRuntimeTester (Godot C#) 使用说明
         showMessage("选择工作目录失败");
       }
     }
-    const IGNORED_FILE_SUFFIXES2 = [".meta"];
+    const IGNORED_FILE_SUFFIXES2 = [".meta", ".uid"];
     const IGNORED_FILE_NAMES2 = [".ds_store", "thumbs.db"];
+    const ALLOWED_CSHARP_ROOT_FILE_SUFFIXES2 = [".cs", ".md", ".txt"];
     function shouldIgnoreFileEntry(entryName) {
       if (workspaceStorageModule) {
         return workspaceStorageModule.shouldIgnoreFileEntry(entryName);
@@ -11057,6 +11980,11 @@ DataEntityRuntimeTester (Godot C#) 使用说明
       const lower = entryName.toLowerCase();
       if (IGNORED_FILE_NAMES2.includes(lower)) return true;
       return IGNORED_FILE_SUFFIXES2.some((suffix) => lower.endsWith(suffix));
+    }
+    function isAllowedCSharpRootFile(entryName) {
+      if (!entryName) return false;
+      const lower = entryName.toLowerCase();
+      return ALLOWED_CSHARP_ROOT_FILE_SUFFIXES2.some((suffix) => lower.endsWith(suffix));
     }
     async function removeDirectoryIfExists(parentHandle, name) {
       if (workspaceStorageModule) {
@@ -11118,8 +12046,8 @@ DataEntityRuntimeTester (Godot C#) 使用说明
           if (entry.kind === "file" && shouldIgnoreFileEntry(entry.name)) {
             continue;
           }
-          if (entry.kind === "file" && !entry.name.toLowerCase().endsWith(".cs")) {
-            showMessage(`csharpDate 文件夹内仅允许 .cs 文件：${entry.name}`);
+          if (entry.kind === "file" && !isAllowedCSharpRootFile(entry.name)) {
+            showMessage(`csharpDate 文件夹内仅允许 .cs/.md/.txt 文件：${entry.name}`);
             throw new Error("Invalid file in csharpDate");
           }
           if (entry.kind === "file") {

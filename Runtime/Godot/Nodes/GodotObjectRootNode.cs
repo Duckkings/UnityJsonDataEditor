@@ -152,7 +152,7 @@ namespace GameFramework.Adapters.Godot
             var scopeRoot = ResolveScopeRoot(contextRoot);
             _localEventBus.Init(_dataRuntime, scopeRoot);
             CollectModules(contextRoot);
-            InitialiseModules();
+            InitialiseModules(contextRoot);
 
             _initialized = true;
             _loggedPendingRootServices = false;
@@ -305,7 +305,7 @@ namespace GameFramework.Adapters.Godot
             }
         }
 
-        private void InitialiseModules()
+        private void InitialiseModules(Node contextRoot)
         {
             for (var index = 0; index < _orderedModules.Count; index++)
             {
@@ -313,6 +313,8 @@ namespace GameFramework.Adapters.Godot
                 try
                 {
                     module.Init(this, _localEventBus, _globalEventBus);
+                    _logger.Info(
+                        $"[GodotObjectRootNode] {ResolveNodeName(contextRoot)} {ResolveModuleName(module)} 初始化完成");
                 }
                 catch (Exception ex)
                 {
@@ -358,6 +360,17 @@ namespace GameFramework.Adapters.Godot
             }
 
             return string.IsNullOrEmpty(module.Name) ? module.GetType().Name : module.Name;
+        }
+
+        private static string ResolveNodeName(Node node)
+        {
+            if (node == null)
+            {
+                return "<unknown-root>";
+            }
+
+            var nodeName = node.Name.ToString();
+            return string.IsNullOrEmpty(nodeName) ? node.GetType().Name : nodeName;
         }
 
         private bool TryResolveNode(NodePath path, out Node node)
