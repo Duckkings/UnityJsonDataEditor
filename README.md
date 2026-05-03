@@ -399,3 +399,13 @@ UE 妯″紡锛?
 .\database-editor/build-runtime.ps1
 ```
 
+
+## Godot 对象快照中心更新
+
+Godot C# 模式的一键初始化现在会默认生成对象域快照中心：
+
+- `ObjectBase.tscn` 默认包含 `ObjectSnapshotSystem + ObjectRoot + LocalEventBus`
+- 运行时新增对象快照接口与 `IObjectRuntime.GetObjectSnapshotSystem()`
+- `ObjectRoot` 会在 `Init(...)` 前注入快照区域，并在 `Tick()` 后自动同步对象快照
+
+建议把属性系统和快照中心拆开：`PlayerAttributeSystem` 负责属性链路，`ObjectSnapshotSystem` 负责稳定结果快照。

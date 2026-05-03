@@ -1,232 +1,142 @@
-# Godot 配置说明
+# Godot 接入说明
 
-这份文档说明如何在 Godot 4 C# 项目里把这套工具链完整接起来。
+这份文档说明如何把工具仓的 Godot 运行时、对象域结构和一键初始化产物接进 Godot 4 C# 项目。
 
-## 1. 需要哪些产物
+## 一键初始化会生成什么
 
-### 来自编辑器生成的内容
+- `scripts/EventBusTickRunner/Shared/GameFrameworkRuntime.cs`
+- `scripts/EventBusTickRunner/Godot/*.cs`
+- `scripts/godotCsharpDate/TickRunnerEventBusApiGuide.md`
+- `prefab/GameRoot.tscn`
+- `prefab/ObjectBase.tscn`
+- `dataEntity/systemInitOrder.json`
+- `dataEntity/systemEvent.json`
 
-- `dataEntity/`
-- `godotCsharpDate/`
+其中 `ObjectBase.tscn` 默认包含：
 
-其中最关键的是：
+```text
+ObjectBase
+  ObjectSnapshotSystem
+  ObjectRoot
+  LocalEventBus
+```
 
-- `godotCsharpDate/modelstruct/DataEntityRuntimeLoader.cs`
-- `dataEntity/manifest.json`
+## 推荐层级
 
-### 来自本仓库运行时目录的内容
-
-- `Runtime/Shared/`
-- `Runtime/Godot/`
-
-还需要确保项目已安装 `Newtonsoft.Json`。
-
-## 2. 推荐场景结构
-
-最推荐的挂法：
+全局根建议保持：
 
 ```text
 GameRoot
-  Root
-    EventBus
-    DataTableProvider
-    ExampleSystem
+  EventBus
+  DataTableProvider
 ```
 
-其中：
+对象域建议保持：
 
-- `Root`
-  挂 `GodotRootTickRunnerNode`
-- `EventBus`
-  挂 `GodotEventBusNode`
-- `DataTableProvider`
-  挂你自己的数据库 Provider
-
-推荐把 `EventBus` 和 `DataTableProvider` 都挂成 `Root` 的子节点。
-
-## 3. 为什么 Godot 需要 Provider
-
-当前 Godot 版 `GodotRootTickRunnerNode` 和 Unity 不同：
-
-- 它不会自动调用 `DataEntityRuntimeLoader.Initialize()`
-- 它只会去找一个已经可用的 `IDataTableRuntime`
-
-所以你通常需要额外提供一个数据库桥接节点。
-
-最常见的方式是：
-
-1. `DataTableProvider` 在 `_Ready()` 里初始化 `DataEntityRuntimeLoader`
-2. `DataTableProvider` 实现 `IDataTableRuntime`
-3. `Root.DataTableProviderPath` 指到这个节点
-
-## 4. Root Inspector 配置
-
-推荐这样填：
-
-- `EventBusNodePath = "EventBus"`
-- `DataTableProviderPath = "DataTableProvider"`
-
-`UsePhysicsProcessForLateTick` 按项目需要决定：
-
-- 关闭：`LateUpdate` 也走 `_Process()`
-- 打开：`LateUpdate` 改走 `_PhysicsProcess()`
-
-## 5. DataTableProvider 最小示例
-
-如果你想直接复用编辑器生成的 `DataEntityRuntimeLoader.cs`，可以这样写：
-
-```csharp
-using System.Collections.Generic;
-using GameFramework;
-using Godot;
-
-public partial class DataTableProvider : Node, IDataTableRuntime
-{
-    [Export]
-    public string DataDir = "res://dataEntity";
-
-    public override void _Ready()
-    {
-        DataEntityRuntimeLoader.Initialize(ProjectSettings.GlobalizePath(DataDir));
-    }
-
-    public EventBusTableSchema GetSchema(string templateName)
-    {
-        var sourceSchema = DataEntityRuntimeLoader.GetSchema(templateName);
-        if (sourceSchema == null)
-        {
-            return null;
-        }
-
-        return new EventBusTableSchema
-        {
-            instances = ConvertInstances(sourceSchema.instances)
-        };
-    }
-
-    private static Dictionary<string, EventBusTableInstance> ConvertInstances(Dictionary<string, object> sourceInstances)
-    {
-        var result = new Dictionary<string, EventBusTableInstance>();
-        if (sourceInstances == null)
-        {
-            return result;
-        }
-
-        foreach (var pair in sourceInstances)
-        {
-            if (pair.Value is Dictionary<string, object> fields)
-            {
-                result[pair.Key] = new EventBusTableInstance(fields);
-            }
-        }
-
-        return result;
-    }
-}
+```text
+PlayerContext
+  ObjectSnapshotSystem
+  ObjectRoot
+  LocalEventBus
+  InputModule
+  MovementModule
+  WeaponModule
 ```
 
-这套写法下，Root 的数据库读取链路就是：
+说明：
 
-1. `DataTableProvider._Ready()`
-2. `DataEntityRuntimeLoader.Initialize(...)`
-3. `GodotRootTickRunnerNode._Ready()`
-4. Root 通过 `DataTableProviderPath` 拿到 `IDataTableRuntime`
-5. `RootTickRunnerCore` 读取 `systemInitOrder`
+- `ObjectSnapshotSystem` 负责对象快照区域注册与读取。
+- `ObjectRoot` 负责扫描直接子节点、模块排序、快照绑定和 Tick 后同步。
+- `LocalEventBus` 负责对象域内的本地事件广播。
 
-## 6. 必备数据表
+## 对象快照接口
 
-### `systemInitOrder`
+运行时新增四个接口：
 
-默认表名就是 `systemInitOrder`，至少包含：
+- `IObjectSnapshotSystem`
+- `IObjectSnapshotRegion`
+- `IRequireObjectSnapshotRegion`
+- `IObjectSnapshotSync`
 
-- `id`
-- `name`
-- `ticktype`
+`IObjectRuntime` 同时新增：
 
-语义和 Unity 相同：
+- `GetObjectSnapshotSystem()`
 
-- `id`
-  初始化顺序
-- `name`
-  必须和 `ISystemModule.Name` 完全一致
-- `ticktype`
-  `0 = Update`，`1 = LateUpdate`
+## ObjectRoot 行为
 
-### 事件表
+`ObjectRoot` 的快照流程固定为：
 
-由 `GodotEventBusNode.EventTableTemplateName` 指定。
+1. 解析 `contextRoot`
+2. 解析 `LocalEventBus`
+3. 解析 `DataTableProvider / GlobalEventBus`
+4. 初始化本地总线
+5. 解析 `ObjectSnapshotSystem`
+6. 扫描 `contextRoot` 的直接子节点
+7. 收集模块、快照参与者、被动同步对象
+8. 若存在快照参与者但缺少 `ObjectSnapshotSystem`，直接报错并中止初始化
+9. 若快照中心是 `GodotObjectSnapshotSystemNode`，绑定前先 `ClearRegions()`
+10. 所有快照参与者按节点名注册区域；若重名则报错并中止初始化
+11. 对实现 `IRequireObjectSnapshotRegion` 的对象执行 `BindObjectSnapshot(...)`
+12. 对实现 `IObjectModule` 的对象再执行 `Init(...)`
 
-### 标签表
+判定规则：
 
-由 `GodotEventBusNode.TagTableTemplateName` 指定。
+- 实现 `IRequireObjectSnapshotRegion` 的对象是快照参与者。
+- 实现 `IObjectSnapshotSync` 的对象也是快照参与者。
+- 只实现 `IObjectSnapshotSync` 也允许，会自动注册区域；只是不会收到 `BindObjectSnapshot(...)` 回调。
 
-## 7. 模块怎么写
+同步规则：
 
-模块仍然实现 `ISystemModule`：
+- 模块对象：`Tick()` 后立即同步。
+- 非模块但实现 `IObjectSnapshotSync` 的直接子节点：在模块循环结束后按 sibling 顺序同步。
+- 如果某个同步对象当前没有绑定区域，会记警告并跳过同步。
+
+## 示例
 
 ```csharp
 using GameFramework;
 using GameFramework.Adapters.Godot;
 using Godot;
 
-public partial class ExampleSystem : Node, ISystemModule
+public partial class MovementModule : GodotObjectModuleBase, IRequireObjectSnapshotRegion, IObjectSnapshotSync
 {
-    public string Name => "examplesystem";
+    private IObjectSnapshotRegion _region;
 
-    private IEventBus eventBus;
-
-    public override void _Ready()
+    public void BindObjectSnapshot(IObjectSnapshotSystem snapshotSystem, IObjectSnapshotRegion region)
     {
-        GodotRootTickRunnerNode.Instance.RegisterModule(this);
+        _region = region;
     }
 
-    public void Init(IRootRuntime root, IEventBus eventBus)
+    public override void Init(IObjectRuntime root, IEventBus localEventBus, IEventBus globalEventBus)
     {
-        this.eventBus = eventBus;
+        GD.Print(_region != null ? "snapshot bound before init" : "snapshot missing");
     }
 
-    public void Tick()
+    public void SyncObjectSnapshot(IObjectSnapshotRegion region)
     {
-    }
-
-    public override void _ExitTree()
-    {
-        eventBus?.UnsubscribeAll(this);
+        region.Set("speed", 6.0f);
     }
 }
 ```
 
-## 8. 推荐接入顺序
+```csharp
+using GameFramework;
+using Godot;
 
-1. 先用编辑器导出 `dataEntity/` 和 `godotCsharpDate/`
-2. 把 `Runtime/Shared + Runtime/Godot` 拷进 Godot 工程
-3. 配场景里的 `Root + EventBus + DataTableProvider`
-4. 让 `DataTableProvider` 能读到 `systemInitOrder`
-5. 再配置事件表和标签表
-6. 最后写业务模块并在 `_Ready()` 中注册
+public partial class HudSnapshotProxy : Node, IObjectSnapshotSync
+{
+    public void SyncObjectSnapshot(IObjectSnapshotRegion region)
+    {
+        region.Set("visible", Visible);
+    }
+}
+```
 
-## 9. 常见问题
+## 数据职责建议
 
-### Root `_Ready()` 后没有初始化成功
+- `PlayerAttributeSystem`
+  - 负责属性、装备加成、派生值和状态读写。
+- `ObjectSnapshotSystem`
+  - 负责稳定结果快照，给同步、插值、回放和跨模块读取使用。
 
-优先检查：
-
-- `DataTableProviderPath` 是否真的指到正确节点
-- `DataTableProvider` 是否已经先执行并完成 `DataEntityRuntimeLoader.Initialize(...)`
-- `systemInitOrder` 是否真的能被 `GetSchema("systemInitOrder")` 读取到
-- `systemInitOrder.name` 是否和模块 `Name` 完全一致
-
-### EventBus 没找到
-
-优先检查：
-
-- `EventBusNodePath` 是否正确
-- 场景里是否真的有这个子节点
-
-### 模块没进入 `Init()`
-
-优先检查：
-
-- 是否写进了 `systemInitOrder`
-- 是否在 `_Ready()` 里调用了 `RegisterModule(this)`
-- 是否还有别的声明模块没注册完成
+也就是说：属性系统不再兼任快照中心，快照中心是对象域基础设施。

@@ -397,3 +397,12 @@ Godot 模式还会创建：
 - `window.LegacyApp.modules` 仍然保留，方便旧调用路径兼容
 - 真正活跃的维护入口仍然是 `database-editor/src/main.js`
 - 旧版 README 或历史文档里若与当前实现冲突，以 `database-editor/src/` 和 `index.html` 为准
+
+## 2026-04 Godot 对象快照更新
+
+- Godot 一键初始化现在会默认注入 `ObjectSnapshotSystem + ObjectRoot + LocalEventBus`。
+- 运行时新增对象快照接口：`IObjectSnapshotSystem`、`IObjectSnapshotRegion`、`IRequireObjectSnapshotRegion`、`IObjectSnapshotSync`。
+- `IObjectRuntime` 新增 `GetObjectSnapshotSystem()`。
+- `ObjectRoot` 会在模块 `Init(...)` 前执行快照区域注入，并在 `Tick()` 后自动同步实现了 `IObjectSnapshotSync` 的对象。
+- 玩家控制器相关术语统一为：`PlayerAttributeSystem` 负责属性链路，`ObjectSnapshotSystem` 负责对象快照，二者不是同一个东西。
+- Godot 快速初始化的源码入口仍然是 `database-editor/src/generators/godot-project-bootstrap-generator.js`，运行时镜像目录是 `Runtime/Shared/Contracts` 和 `Runtime/Godot/Nodes`。

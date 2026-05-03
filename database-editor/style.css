@@ -673,13 +673,22 @@ body.dark .param-item.selecting {
 }
 
 .param-item label {
-  width: 80px;
+  flex: 0 0 140px;
+  max-width: 48%;
   font-weight: 500;
+  margin-right: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .param-item input,
-.param-item select {
-  flex: 1;
+.param-item select,
+.param-item textarea {
+  flex: 0 1 160px;
+  width: 160px;
+  max-width: 100%;
+  min-width: 96px;
   margin-right: 4px;
   padding: 4px 6px;
   font-size: 14px;

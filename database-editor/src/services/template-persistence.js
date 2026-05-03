@@ -143,7 +143,34 @@ export function createTemplatePersistenceModule(context) {
     appState.currentInstanceIndex = -1;
     appState.templateUidState.counter = 0;
     appState.lastSavedStructureSnapshot = new Map();
+    appState.lastLoadedTemplateSnapshot = '[]';
     appState.pendingTemplateDeletions.clear();
+  }
+
+  function buildPersistedTemplateSnapshot(tpl) {
+    if (!tpl) return null;
+    const source = isEnumTemplate(tpl)
+      ? buildEnumTemplateJson(tpl)
+      : {
+          name: tpl.name,
+          indexField: tpl.indexField || 'id',
+          parameters: Array.isArray(tpl.parameters) ? tpl.parameters : [],
+          instances: Array.isArray(tpl.instances) ? tpl.instances : [],
+        };
+    if (!source || !source.name) return null;
+    return JSON.parse(JSON.stringify(source));
+  }
+
+  function getCurrentTemplatePersistenceSnapshot() {
+    const snapshot = appState.templates
+      .map((tpl) => buildPersistedTemplateSnapshot(tpl))
+      .filter(Boolean)
+      .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN'));
+    return JSON.stringify(snapshot);
+  }
+
+  function hasUnsavedTemplateChanges() {
+    return getCurrentTemplatePersistenceSnapshot() !== (appState.lastLoadedTemplateSnapshot || '[]');
   }
 
   function hydrateTemplateFromJson(obj) {
@@ -212,6 +239,7 @@ export function createTemplatePersistenceModule(context) {
         appState.templates[0].instances.length > 0 ? 0 : -1;
     }
     appState.lastSavedStructureSnapshot = captureCurrentStructureSnapshot();
+    appState.lastLoadedTemplateSnapshot = getCurrentTemplatePersistenceSnapshot();
     await refreshTrashButtonState();
   }
 
@@ -356,6 +384,7 @@ export function createTemplatePersistenceModule(context) {
     } else {
       showMessage(`已恢复模板：${template.name}`);
     }
+    appState.lastLoadedTemplateSnapshot = getCurrentTemplatePersistenceSnapshot();
     await refreshTrashButtonState();
     await refreshTrashOverlayContents();
   }
@@ -660,6 +689,7 @@ export function createTemplatePersistenceModule(context) {
       }
       await persistEditorConfig();
       appState.lastSavedStructureSnapshot = captureCurrentStructureSnapshot();
+      appState.lastLoadedTemplateSnapshot = getCurrentTemplatePersistenceSnapshot();
       await refreshTrashButtonState();
       await refreshTrashOverlayContents();
 
@@ -677,6 +707,8 @@ export function createTemplatePersistenceModule(context) {
 
   return {
     loadAllTemplates,
+    getCurrentTemplatePersistenceSnapshot,
+    hasUnsavedTemplateChanges,
     buildEnumTemplateJson,
     writeManifestForTemplates,
     askCSharpReplacementBulk,

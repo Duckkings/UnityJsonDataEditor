@@ -48,10 +48,13 @@ export function createWorkspaceStorageModule(context) {
     isUnityMode = () => true,
     isGodotMode = () => false,
     showMessage = () => {},
+    commitActiveSheetEdits = () => ({ ok: true }),
     loadAllTemplates = async () => {},
+    hasUnsavedTemplateChanges = () => false,
     refreshTemplates = () => {},
     refreshInstances = () => {},
     refreshParams = () => {},
+    showSelectedParamDetails = () => {},
     updateIndexTemplateOptions = () => {},
     isSheetModeActive = () => false,
     updateSheetTemplateNav = () => {},
@@ -305,9 +308,24 @@ export function createWorkspaceStorageModule(context) {
     if (currentTemplate) {
       ensureTemplateUid(currentTemplate);
     }
+    const instanceList = Array.isArray(currentTemplate?.instances) ? currentTemplate.instances : [];
+    const currentInstance =
+      appState.currentInstanceIndex >= 0 ? instanceList[appState.currentInstanceIndex] : null;
+    const currentParam =
+      currentTemplate && appState.editingParamIndex >= 0
+        ? currentTemplate.parameters?.[appState.editingParamIndex] || null
+        : null;
     return {
       templateUid: currentTemplate && currentTemplate.__uid ? currentTemplate.__uid : null,
+      templateName: currentTemplate && currentTemplate.name ? currentTemplate.name : '',
       instanceIndex: appState.currentInstanceIndex,
+      instanceId:
+        currentInstance && Object.prototype.hasOwnProperty.call(currentInstance, 'id')
+          ? currentInstance.id
+          : null,
+      instanceName: currentInstance && currentInstance.name ? currentInstance.name : '',
+      paramName: currentParam && currentParam.name ? currentParam.name : '',
+      editMode: appState.currentEditMode || '',
     };
   }
 
@@ -326,6 +344,9 @@ export function createWorkspaceStorageModule(context) {
       preferredUid != null
         ? templates.findIndex((tpl) => tpl && tpl.__uid === preferredUid)
         : -1;
+    if (nextTemplateIndex < 0 && state && state.templateName) {
+      nextTemplateIndex = templates.findIndex((tpl) => tpl && tpl.name === state.templateName);
+    }
     if (nextTemplateIndex < 0 && fallbackTemplateUid) {
       nextTemplateIndex = templates.findIndex((tpl) => tpl && tpl.__uid === fallbackTemplateUid);
     }
@@ -342,13 +363,35 @@ export function createWorkspaceStorageModule(context) {
       : [];
     appState.selectedInstances.clear();
     if (instanceList.length > 0) {
-      const desiredInstanceIndex =
-        state && Number.isInteger(state.instanceIndex) ? state.instanceIndex : 0;
-      const nextInstanceIndex = Math.max(0, Math.min(desiredInstanceIndex, instanceList.length - 1));
+      let nextInstanceIndex =
+        state && state.instanceId != null
+          ? instanceList.findIndex((inst) => inst && inst.id === state.instanceId)
+          : -1;
+      if (nextInstanceIndex < 0 && state && state.instanceName) {
+        nextInstanceIndex = instanceList.findIndex((inst) => inst && inst.name === state.instanceName);
+      }
+      if (nextInstanceIndex < 0) {
+        const desiredInstanceIndex =
+          state && Number.isInteger(state.instanceIndex) ? state.instanceIndex : 0;
+        nextInstanceIndex = Math.max(0, Math.min(desiredInstanceIndex, instanceList.length - 1));
+      }
       appState.currentInstanceIndex = nextInstanceIndex;
       appState.selectedInstances.add(nextInstanceIndex);
     } else {
       appState.currentInstanceIndex = -1;
+    }
+
+    const parameterList = Array.isArray(templates[nextTemplateIndex]?.parameters)
+      ? templates[nextTemplateIndex].parameters
+      : [];
+    appState.selectedParams.clear();
+    appState.editingParamIndex = -1;
+    if (state && state.paramName) {
+      const nextParamIndex = parameterList.findIndex((param) => param && param.name === state.paramName);
+      if (nextParamIndex >= 0) {
+        appState.editingParamIndex = nextParamIndex;
+        appState.selectedParams.add(nextParamIndex);
+      }
     }
   }
 
@@ -612,6 +655,66 @@ export function createWorkspaceStorageModule(context) {
         detail: err && err.stack ? err.stack : '',
       });
       showMessage(`选择工作目录失败：${detail}`, 'warn');
+    }
+  }
+
+  async function refreshCurrentWorkspace() {
+    if (!appState.directoryHandle) {
+      showMessage('请先选择工作目录', 'warn');
+      return { ok: false, reason: 'missing-directory' };
+    }
+
+    const commitResult = commitActiveSheetEdits();
+    if (commitResult && commitResult.ok === false) {
+      if (isSheetModeActive()) {
+        updateSheetTemplateNav();
+      }
+      return { ok: false, reason: 'invalid-sheet' };
+    }
+
+    try {
+      const hasPermission = await verifyPermission(appState.directoryHandle, false);
+      if (!hasPermission) {
+        showMessage('当前工作目录读取权限不可用，请重新选择目录', 'warn');
+        return { ok: false, reason: 'permission-denied' };
+      }
+
+      const hasUnsavedChanges = hasUnsavedTemplateChanges();
+      if (hasUnsavedChanges) {
+        const confirmed = window.confirm(
+          '检测到当前编辑器里还有未保存改动。继续刷新会用磁盘里的 JSON 覆盖这些修改，是否继续？',
+        );
+        if (!confirmed) {
+          showMessage('已取消刷新', 'warn');
+          return { ok: false, reason: 'canceled' };
+        }
+      }
+
+      const selectionState = captureCurrentTemplateSelectionState();
+      await loadEditorConfigState();
+      await ensureSubFolders();
+      await loadAllTemplates();
+      restoreTemplateSelectionState(selectionState);
+      appState.anchorTemplate = appState.currentTemplateIndex >= 0 ? appState.currentTemplateIndex : null;
+      appState.anchorInstance = appState.currentInstanceIndex >= 0 ? appState.currentInstanceIndex : null;
+      appState.anchorParam = appState.editingParamIndex >= 0 ? appState.editingParamIndex : null;
+      appState.lastSelectedCategory = appState.editingParamIndex >= 0 ? 'param' : 'template';
+      appState.sheetActiveTemplateIndex = appState.currentTemplateIndex;
+      appState.sheetActiveInstanceIndex = appState.currentInstanceIndex;
+      showSelectedParamDetails();
+      refreshTemplateViews();
+      showMessage(
+        hasUnsavedChanges ? '已从磁盘刷新，未保存修改已被覆盖' : '已从磁盘刷新最新 JSON',
+      );
+      return { ok: true };
+    } catch (err) {
+      const detail = describeError(err);
+      console.error(err);
+      addLogEntry('error', `刷新工作目录失败: ${detail}`, {
+        detail: err && err.stack ? err.stack : '',
+      });
+      showMessage(`刷新失败：${detail}`, 'warn');
+      return { ok: false, reason: 'error', error: err };
     }
   }
 
@@ -1090,6 +1193,7 @@ export function createWorkspaceStorageModule(context) {
     verifyPermission,
     autoRestoreLastDirectory,
     chooseDirectory,
+    refreshCurrentWorkspace,
     shouldIgnoreFileEntry,
     removeDirectoryIfExists,
     cleanConflictingEngineArtifacts,

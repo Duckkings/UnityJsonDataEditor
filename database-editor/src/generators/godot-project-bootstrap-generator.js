@@ -237,7 +237,45 @@ namespace GameFramework
 
         IEventBus GetGlobalEventBus();
 
+        IObjectSnapshotSystem GetObjectSnapshotSystem();
+
         void PublishLocalThenGlobal(object sender, string eventName, object payload);
+    }
+
+    public interface IObjectSnapshotSystem
+    {
+        IObjectSnapshotRegion RegisterRegion(object owner, string regionName);
+
+        bool TryGetRegion(string regionName, out IObjectSnapshotRegion region);
+
+        IReadOnlyDictionary<string, IObjectSnapshotRegion> GetRegions();
+    }
+
+    public interface IObjectSnapshotRegion
+    {
+        string RegionName { get; }
+
+        object Owner { get; }
+
+        int Version { get; }
+
+        bool IsDirty { get; }
+
+        void Set(string key, object value);
+
+        bool TryGet(string key, out object value);
+
+        IReadOnlyDictionary<string, object> GetValues();
+    }
+
+    public interface IRequireObjectSnapshotRegion
+    {
+        void BindObjectSnapshot(IObjectSnapshotSystem snapshotSystem, IObjectSnapshotRegion region);
+    }
+
+    public interface IObjectSnapshotSync
+    {
+        void SyncObjectSnapshot(IObjectSnapshotRegion region);
     }
 
     public interface IObjectModule
@@ -1775,6 +1813,114 @@ namespace GameFramework.Adapters.Godot
 `;
 }
 
+export function buildGodotObjectSnapshotSystemNodeContent() {
+  return `
+using System;
+using System.Collections.Generic;
+using Godot;
+
+namespace GameFramework.Adapters.Godot
+{
+	[GlobalClass]
+	public partial class GodotObjectSnapshotSystemNode : Node, IObjectSnapshotSystem
+	{
+		private sealed class SnapshotRegion : IObjectSnapshotRegion
+		{
+			private readonly Dictionary<string, object> _values = new Dictionary<string, object>();
+
+			public SnapshotRegion(object owner, string regionName)
+			{
+				Owner = owner ?? throw new ArgumentNullException(nameof(owner));
+				RegionName = regionName ?? throw new ArgumentNullException(nameof(regionName));
+			}
+
+			public string RegionName { get; }
+
+			public object Owner { get; }
+
+			public int Version { get; private set; }
+
+			public bool IsDirty { get; private set; }
+
+			public void Set(string key, object value)
+			{
+				if (string.IsNullOrWhiteSpace(key))
+				{
+					throw new ArgumentException("Snapshot key cannot be empty.", nameof(key));
+				}
+
+				_values[key] = value;
+				Version++;
+				IsDirty = true;
+			}
+
+			public bool TryGet(string key, out object value)
+			{
+				if (string.IsNullOrWhiteSpace(key))
+				{
+					value = null;
+					return false;
+				}
+
+				return _values.TryGetValue(key, out value);
+			}
+
+			public IReadOnlyDictionary<string, object> GetValues()
+			{
+				return _values;
+			}
+		}
+
+		private readonly Dictionary<string, IObjectSnapshotRegion> _regions =
+			new Dictionary<string, IObjectSnapshotRegion>(StringComparer.Ordinal);
+
+		public IObjectSnapshotRegion RegisterRegion(object owner, string regionName)
+		{
+			if (owner == null)
+			{
+				throw new ArgumentNullException(nameof(owner));
+			}
+
+			if (string.IsNullOrWhiteSpace(regionName))
+			{
+				throw new ArgumentException("Snapshot region name cannot be empty.", nameof(regionName));
+			}
+
+			if (_regions.ContainsKey(regionName))
+			{
+				throw new InvalidOperationException($"Snapshot region '{regionName}' is already registered.");
+			}
+
+			var region = new SnapshotRegion(owner, regionName);
+			_regions.Add(regionName, region);
+			return region;
+		}
+
+		public bool TryGetRegion(string regionName, out IObjectSnapshotRegion region)
+		{
+			if (string.IsNullOrWhiteSpace(regionName))
+			{
+				region = null;
+				return false;
+			}
+
+			return _regions.TryGetValue(regionName, out region);
+		}
+
+		public IReadOnlyDictionary<string, IObjectSnapshotRegion> GetRegions()
+		{
+			return _regions;
+		}
+
+		public void ClearRegions()
+		{
+			_regions.Clear();
+		}
+	}
+}
+`;
+}
+
 export function buildGodotObjectRootNodeContent() {
   return `
 using System;
@@ -1783,381 +1929,602 @@ using Godot;
 
 namespace GameFramework.Adapters.Godot
 {
-    [GlobalClass]
-    public partial class GodotObjectRootNode : Node, IObjectRuntime
-    {
-        private sealed class ModuleEntry
-        {
-            public ModuleEntry(IObjectModule module, int siblingIndex)
-            {
-                Module = module;
-                SiblingIndex = siblingIndex;
-            }
+	[GlobalClass]
+	public partial class GodotObjectRootNode : Node, IObjectRuntime
+	{
+		private sealed class ModuleEntry
+		{
+			public ModuleEntry(Node ownerNode, IObjectModule module, IObjectSnapshotSync snapshotSync, int siblingIndex)
+			{
+				OwnerNode = ownerNode;
+				Module = module;
+				SnapshotSync = snapshotSync;
+				SiblingIndex = siblingIndex;
+			}
 
-            public IObjectModule Module { get; }
+			public Node OwnerNode { get; }
 
-            public int SiblingIndex { get; }
-        }
+			public IObjectModule Module { get; }
 
-        [Export]
-        public NodePath ContextRootPath { get; set; } = new NodePath("..");
+			public IObjectSnapshotSync SnapshotSync { get; }
 
-        [Export]
-        public NodePath ScopeRootPath { get; set; }
+			public int SiblingIndex { get; }
+		}
 
-        [Export]
-        public NodePath LocalEventBusPath { get; set; } = new NodePath("../LocalEventBus");
+		private sealed class PassiveSnapshotSyncEntry
+		{
+			public PassiveSnapshotSyncEntry(Node ownerNode, IObjectSnapshotSync snapshotSync, int siblingIndex)
+			{
+				OwnerNode = ownerNode;
+				SnapshotSync = snapshotSync;
+				SiblingIndex = siblingIndex;
+			}
 
-        [Export]
-        public NodePath DataTableProviderPath { get; set; }
+			public Node OwnerNode { get; }
 
-        [Export]
-        public NodePath GlobalEventBusPath { get; set; }
+			public IObjectSnapshotSync SnapshotSync { get; }
 
-        [Export]
-        public bool AutoInitialize { get; set; } = true;
+			public int SiblingIndex { get; }
+		}
 
-        private readonly GodotRuntimeLogger _logger = new GodotRuntimeLogger();
-        private readonly List<IObjectModule> _orderedModules = new List<IObjectModule>();
+		private sealed class SnapshotParticipantEntry
+		{
+			public SnapshotParticipantEntry(Node ownerNode, IRequireObjectSnapshotRegion snapshotBinder)
+			{
+				OwnerNode = ownerNode;
+				SnapshotBinder = snapshotBinder;
+			}
 
-        private GodotEventBusNode _localEventBus;
-        private IEventBus _globalEventBus;
-        private IDataTableRuntime _dataRuntime;
-        private bool _initialized;
-        private bool _loggedMissingLocalEventBus;
-        private bool _loggedPendingRootServices;
+			public Node OwnerNode { get; }
 
-        public IEventBus GetLocalEventBus()
-        {
-            return _localEventBus;
-        }
+			public IRequireObjectSnapshotRegion SnapshotBinder { get; }
+		}
 
-        public IEventBus GetGlobalEventBus()
-        {
-            return _globalEventBus;
-        }
+		[Export]
+		public NodePath ContextRootPath { get; set; } = new NodePath("..");
 
-        public void PublishLocalThenGlobal(object sender, string eventName, object payload)
-        {
-            if (!_initialized)
-            {
-                InitializeObjectDomain();
-            }
+		[Export]
+		public NodePath ScopeRootPath { get; set; }
 
-            if (_localEventBus == null || _globalEventBus == null)
-            {
-                _logger.Warning("[GodotObjectRootNode] PublishLocalThenGlobal skipped because local/global event bus is not ready.");
-                return;
-            }
+		[Export]
+		public NodePath LocalEventBusPath { get; set; } = new NodePath("../LocalEventBus");
 
-            _localEventBus.PublishEvent(sender, eventName, payload);
-            _globalEventBus.PublishEvent(sender, eventName, payload);
-        }
+		[Export]
+		public NodePath ObjectSnapshotSystemPath { get; set; } = new NodePath("../ObjectSnapshotSystem");
 
-        public override void _Ready()
-        {
-            if (!AutoInitialize)
-            {
-                return;
-            }
+		[Export]
+		public NodePath DataTableProviderPath { get; set; }
 
-            SetProcess(true);
-            InitializeObjectDomain();
-        }
+		[Export]
+		public NodePath GlobalEventBusPath { get; set; }
 
-        public override void _Process(double delta)
-        {
-            if (!_initialized)
-            {
-                if (AutoInitialize)
-                {
-                    InitializeObjectDomain();
-                }
+		[Export]
+		public bool AutoInitialize { get; set; } = true;
 
-                return;
-            }
+		private readonly GodotRuntimeLogger _logger = new GodotRuntimeLogger();
+		private readonly List<ModuleEntry> _orderedModules = new List<ModuleEntry>();
+		private readonly List<PassiveSnapshotSyncEntry> _orderedPassiveSnapshotSyncs = new List<PassiveSnapshotSyncEntry>();
+		private readonly Dictionary<Node, IObjectSnapshotRegion> _snapshotRegions =
+			new Dictionary<Node, IObjectSnapshotRegion>();
 
-            TickModules();
-        }
+		private GodotEventBusNode _localEventBus;
+		private IEventBus _globalEventBus;
+		private IDataTableRuntime _dataRuntime;
+		private IObjectSnapshotSystem _objectSnapshotSystem;
+		private bool _initialized;
+		private bool _loggedMissingLocalEventBus;
+		private bool _loggedPendingRootServices;
+		private bool _loggedMissingSnapshotSystem;
 
-        public override void _ExitTree()
-        {
-            _initialized = false;
-            _orderedModules.Clear();
-            _localEventBus = null;
-            _globalEventBus = null;
-            _dataRuntime = null;
-            _loggedMissingLocalEventBus = false;
-            _loggedPendingRootServices = false;
-            SetProcess(false);
-        }
+		public IEventBus GetLocalEventBus()
+		{
+			return _localEventBus;
+		}
 
-        public void InitializeObjectDomain()
-        {
-            if (_initialized)
-            {
-                return;
-            }
+		public IEventBus GetGlobalEventBus()
+		{
+			return _globalEventBus;
+		}
 
-            var contextRoot = ResolveContextRoot();
-            _localEventBus = _localEventBus ?? ResolveLocalEventBus(contextRoot);
-            if (_localEventBus == null)
-            {
-                if (!_loggedMissingLocalEventBus)
-                {
-                    _logger.Error("[GodotObjectRootNode] LocalEventBus was not found. Ensure ObjectRoot and LocalEventBus are siblings under the same context root.");
-                    _loggedMissingLocalEventBus = true;
-                }
+		public IObjectSnapshotSystem GetObjectSnapshotSystem()
+		{
+			return _objectSnapshotSystem;
+		}
 
-                return;
-            }
+		public void PublishLocalThenGlobal(object sender, string eventName, object payload)
+		{
+			if (!_initialized)
+			{
+				InitializeObjectDomain();
+			}
 
-            _dataRuntime = _dataRuntime ?? ResolveDataRuntime();
-            _globalEventBus = _globalEventBus ?? ResolveGlobalEventBus();
-            if (_dataRuntime == null || _globalEventBus == null)
-            {
-                if (!_loggedPendingRootServices)
-                {
-                    _logger.Warning("[GodotObjectRootNode] Waiting for SystemRoot services before completing ObjectRoot initialization.");
-                    _loggedPendingRootServices = true;
-                }
+			if (_localEventBus == null || _globalEventBus == null)
+			{
+				_logger.Warning("[GodotObjectRootNode] PublishLocalThenGlobal skipped because local/global event bus is not ready.");
+				return;
+			}
 
-                return;
-            }
+			_localEventBus.PublishEvent(sender, eventName, payload);
+			_globalEventBus.PublishEvent(sender, eventName, payload);
+		}
 
-            var scopeRoot = ResolveScopeRoot(contextRoot);
-            _localEventBus.Init(_dataRuntime, scopeRoot);
-            CollectModules(contextRoot);
-            InitialiseModules(contextRoot);
+		public override void _Ready()
+		{
+			if (!AutoInitialize)
+			{
+				return;
+			}
 
-            _initialized = true;
-            _loggedPendingRootServices = false;
-            SetProcess(true);
-            _logger.Info($"[GodotObjectRootNode] Initialized {_orderedModules.Count} object modules under '{contextRoot.Name}'.");
-        }
+			SetProcess(true);
+			InitializeObjectDomain();
+		}
 
-        private Node ResolveContextRoot()
-        {
-            if (TryResolveNode(ContextRootPath, out var contextRoot))
-            {
-                return contextRoot;
-            }
+		public override void _Process(double delta)
+		{
+			if (!_initialized)
+			{
+				if (AutoInitialize)
+				{
+					InitializeObjectDomain();
+				}
 
-            return GetParent() ?? this;
-        }
+				return;
+			}
 
-        private Node ResolveScopeRoot(Node contextRoot)
-        {
-            if (TryResolveNode(ScopeRootPath, out var scopeRoot))
-            {
-                return scopeRoot;
-            }
+			TickModules();
+		}
 
-            return contextRoot;
-        }
+		public override void _ExitTree()
+		{
+			ClearRuntimeState();
+			SetProcess(false);
+		}
 
-        private IDataTableRuntime ResolveDataRuntime()
-        {
-            if (TryResolveExplicitDataRuntime(out var explicitRuntime))
-            {
-                return explicitRuntime;
-            }
+		public void InitializeObjectDomain()
+		{
+			if (_initialized)
+			{
+				return;
+			}
 
-            return GodotRootTickRunnerNode.Instance?.GetService<IDataTableRuntime>("database");
-        }
+			var contextRoot = ResolveContextRoot();
+			_localEventBus = _localEventBus ?? ResolveLocalEventBus(contextRoot);
+			if (_localEventBus == null)
+			{
+				if (!_loggedMissingLocalEventBus)
+				{
+					_logger.Error("[GodotObjectRootNode] LocalEventBus was not found. Ensure ObjectRoot and LocalEventBus are siblings under the same context root.");
+					_loggedMissingLocalEventBus = true;
+				}
 
-        private bool TryResolveExplicitDataRuntime(out IDataTableRuntime runtime)
-        {
-            runtime = null;
-            if (!TryResolveNode(DataTableProviderPath, out var providerNode))
-            {
-                return false;
-            }
+				return;
+			}
 
-            if (providerNode is IDataTableRuntime directRuntime)
-            {
-                runtime = directRuntime;
-                return true;
-            }
+			_dataRuntime = _dataRuntime ?? ResolveDataRuntime();
+			_globalEventBus = _globalEventBus ?? ResolveGlobalEventBus();
+			if (_dataRuntime == null || _globalEventBus == null)
+			{
+				if (!_loggedPendingRootServices)
+				{
+					_logger.Warning("[GodotObjectRootNode] Waiting for SystemRoot services before completing ObjectRoot initialization.");
+					_loggedPendingRootServices = true;
+				}
 
-            if (providerNode is IGodotDataTableProvider provider)
-            {
-                runtime = new GodotDataTableRuntimeAdapter(provider);
-                return true;
-            }
+				return;
+			}
 
-            _logger.Error("[GodotObjectRootNode] DataTableProviderPath must point to a node implementing IDataTableRuntime or IGodotDataTableProvider.");
-            return false;
-        }
+			var scopeRoot = ResolveScopeRoot(contextRoot);
+			_localEventBus.Init(_dataRuntime, scopeRoot);
+			_objectSnapshotSystem = ResolveObjectSnapshotSystem(contextRoot);
 
-        private IEventBus ResolveGlobalEventBus()
-        {
-            if (TryResolveExplicitGlobalEventBus(out var explicitBus))
-            {
-                return explicitBus;
-            }
+			CollectModulesAndSnapshotParticipants(contextRoot, out var snapshotParticipants);
+			if (!BindSnapshotParticipants(contextRoot, snapshotParticipants))
+			{
+				return;
+			}
 
-            return GodotRootTickRunnerNode.Instance?.GetService<IEventBus>("eventbus");
-        }
+			InitialiseModules(contextRoot);
 
-        private bool TryResolveExplicitGlobalEventBus(out IEventBus eventBus)
-        {
-            eventBus = null;
-            if (!TryResolveNode(GlobalEventBusPath, out var busNode))
-            {
-                return false;
-            }
+			_initialized = true;
+			_loggedMissingLocalEventBus = false;
+			_loggedPendingRootServices = false;
+			_loggedMissingSnapshotSystem = false;
+			SetProcess(true);
+			_logger.Info($"[GodotObjectRootNode] Initialized {_orderedModules.Count} object modules under '{ResolveNodeName(contextRoot)}'.");
+		}
 
-            if (busNode is IEventBus directBus)
-            {
-                eventBus = directBus;
-                return true;
-            }
+		private void ClearRuntimeState()
+		{
+			_initialized = false;
+			_orderedModules.Clear();
+			_orderedPassiveSnapshotSyncs.Clear();
+			_snapshotRegions.Clear();
+			_localEventBus = null;
+			_globalEventBus = null;
+			_dataRuntime = null;
+			_objectSnapshotSystem = null;
+			_loggedMissingLocalEventBus = false;
+			_loggedPendingRootServices = false;
+			_loggedMissingSnapshotSystem = false;
+		}
 
-            _logger.Error("[GodotObjectRootNode] GlobalEventBusPath must point to a node implementing IEventBus.");
-            return false;
-        }
+		private Node ResolveContextRoot()
+		{
+			if (TryResolveNode(ContextRootPath, out var contextRoot))
+			{
+				return contextRoot;
+			}
 
-        private GodotEventBusNode ResolveLocalEventBus(Node contextRoot)
-        {
-            if (TryResolveNode(LocalEventBusPath, out var explicitBus))
-            {
-                if (explicitBus is GodotEventBusNode localBus)
-                {
-                    return localBus;
-                }
+			return GetParent() ?? this;
+		}
 
-                _logger.Error("[GodotObjectRootNode] LocalEventBusPath must point to a GodotEventBusNode.");
-                return null;
-            }
+		private Node ResolveScopeRoot(Node contextRoot)
+		{
+			if (TryResolveNode(ScopeRootPath, out var scopeRoot))
+			{
+				return scopeRoot;
+			}
 
-            var namedBus = contextRoot.GetNodeOrNull<GodotEventBusNode>("LocalEventBus");
-            if (namedBus != null)
-            {
-                return namedBus;
-            }
+			return contextRoot;
+		}
 
-            var childCount = contextRoot.GetChildCount();
-            for (var index = 0; index < childCount; index++)
-            {
-                if (contextRoot.GetChild(index) is GodotEventBusNode candidate
-                    && candidate.Mode == GodotEventBusNode.BusMode.Local)
-                {
-                    return candidate;
-                }
-            }
+		private IDataTableRuntime ResolveDataRuntime()
+		{
+			if (TryResolveExplicitDataRuntime(out var explicitRuntime))
+			{
+				return explicitRuntime;
+			}
 
-            return null;
-        }
+			return GodotRootTickRunnerNode.Instance?.GetService<IDataTableRuntime>("database");
+		}
 
-        private void CollectModules(Node contextRoot)
-        {
-            _orderedModules.Clear();
+		private bool TryResolveExplicitDataRuntime(out IDataTableRuntime runtime)
+		{
+			runtime = null;
+			if (!TryResolveNode(DataTableProviderPath, out var providerNode))
+			{
+				return false;
+			}
 
-            var moduleEntries = new List<ModuleEntry>();
-            var childCount = contextRoot.GetChildCount();
-            for (var index = 0; index < childCount; index++)
-            {
-                var child = contextRoot.GetChild(index);
-                if (ReferenceEquals(child, this) || ReferenceEquals(child, _localEventBus))
-                {
-                    continue;
-                }
+			if (providerNode is IDataTableRuntime directRuntime)
+			{
+				runtime = directRuntime;
+				return true;
+			}
 
-                if (child is IObjectModule module)
-                {
-                    moduleEntries.Add(new ModuleEntry(module, index));
-                }
-            }
+			if (providerNode is IGodotDataTableProvider provider)
+			{
+				runtime = new GodotDataTableRuntimeAdapter(provider);
+				return true;
+			}
 
-            moduleEntries.Sort(CompareModuleEntries);
-            for (var index = 0; index < moduleEntries.Count; index++)
-            {
-                _orderedModules.Add(moduleEntries[index].Module);
-            }
-        }
+			_logger.Error("[GodotObjectRootNode] DataTableProviderPath must point to a node implementing IDataTableRuntime or IGodotDataTableProvider.");
+			return false;
+		}
 
-        private void InitialiseModules(Node contextRoot)
-        {
-            for (var i = 0; i < _orderedModules.Count; i++)
-            {
-                var module = _orderedModules[i];
-                try
-                {
-                    module.Init(this, _localEventBus, _globalEventBus);
-                    _logger.Info($"[GodotObjectRootNode] {ResolveNodeName(contextRoot)} {ResolveModuleName(module)} 初始化完成");
-                }
-                catch (Exception ex)
-                {
-                    _logger.Error($"[GodotObjectRootNode] Init failed for object module '{ResolveModuleName(module)}': {ex}");
-                }
-            }
-        }
+		private IEventBus ResolveGlobalEventBus()
+		{
+			if (TryResolveExplicitGlobalEventBus(out var explicitBus))
+			{
+				return explicitBus;
+			}
 
-        private void TickModules()
-        {
-            for (var i = 0; i < _orderedModules.Count; i++)
-            {
-                var module = _orderedModules[i];
-                try
-                {
-                    module.Tick();
-                }
-                catch (Exception ex)
-                {
-                    _logger.Error($"[GodotObjectRootNode] Tick failed for object module '{ResolveModuleName(module)}': {ex}");
-                }
-            }
-        }
+			return GodotRootTickRunnerNode.Instance?.GetService<IEventBus>("eventbus");
+		}
 
-        private static int CompareModuleEntries(ModuleEntry left, ModuleEntry right)
-        {
-            var priorityCompare = right.Module.TickPriority.CompareTo(left.Module.TickPriority);
-            if (priorityCompare != 0)
-            {
-                return priorityCompare;
-            }
+		private bool TryResolveExplicitGlobalEventBus(out IEventBus eventBus)
+		{
+			eventBus = null;
+			if (!TryResolveNode(GlobalEventBusPath, out var busNode))
+			{
+				return false;
+			}
 
-            return left.SiblingIndex.CompareTo(right.SiblingIndex);
-        }
+			if (busNode is IEventBus directBus)
+			{
+				eventBus = directBus;
+				return true;
+			}
 
-        private static string ResolveModuleName(IObjectModule module)
-        {
-            if (module == null)
-            {
-                return "<null>";
-            }
+			_logger.Error("[GodotObjectRootNode] GlobalEventBusPath must point to a node implementing IEventBus.");
+			return false;
+		}
 
-            return string.IsNullOrEmpty(module.Name) ? module.GetType().Name : module.Name;
-        }
+		private GodotEventBusNode ResolveLocalEventBus(Node contextRoot)
+		{
+			if (TryResolveNode(LocalEventBusPath, out var explicitBus))
+			{
+				if (explicitBus is GodotEventBusNode localBus)
+				{
+					return localBus;
+				}
 
-        private static string ResolveNodeName(Node node)
-        {
-            if (node == null)
-            {
-                return "<unknown-root>";
-            }
+				_logger.Error("[GodotObjectRootNode] LocalEventBusPath must point to a GodotEventBusNode.");
+				return null;
+			}
 
-            var nodeName = node.Name.ToString();
-            return string.IsNullOrEmpty(nodeName) ? node.GetType().Name : nodeName;
-        }
+			var namedBus = contextRoot.GetNodeOrNull<GodotEventBusNode>("LocalEventBus");
+			if (namedBus != null)
+			{
+				return namedBus;
+			}
 
-        private bool TryResolveNode(NodePath path, out Node node)
-        {
-            node = null;
-            if (string.IsNullOrEmpty(path.ToString()))
-            {
-                return false;
-            }
+			var childCount = contextRoot.GetChildCount();
+			for (var index = 0; index < childCount; index++)
+			{
+				if (contextRoot.GetChild(index) is GodotEventBusNode candidate
+					&& candidate.Mode == GodotEventBusNode.BusMode.Local)
+				{
+					return candidate;
+				}
+			}
 
-            node = GetNodeOrNull<Node>(path);
-            return node != null;
-        }
-    }
+			return null;
+		}
+
+		private IObjectSnapshotSystem ResolveObjectSnapshotSystem(Node contextRoot)
+		{
+			if (TryResolveNode(ObjectSnapshotSystemPath, out var explicitNode))
+			{
+				if (explicitNode is IObjectSnapshotSystem explicitSnapshotSystem)
+				{
+					return explicitSnapshotSystem;
+				}
+
+				_logger.Error("[GodotObjectRootNode] ObjectSnapshotSystemPath must point to a node implementing IObjectSnapshotSystem.");
+				return null;
+			}
+
+			var namedNode = contextRoot.GetNodeOrNull<Node>("ObjectSnapshotSystem");
+			if (namedNode is IObjectSnapshotSystem namedSnapshotSystem)
+			{
+				return namedSnapshotSystem;
+			}
+
+			var childCount = contextRoot.GetChildCount();
+			for (var index = 0; index < childCount; index++)
+			{
+				var child = contextRoot.GetChild(index);
+				if (child is IObjectSnapshotSystem snapshotSystem)
+				{
+					return snapshotSystem;
+				}
+			}
+
+			return null;
+		}
+
+		private void CollectModulesAndSnapshotParticipants(
+			Node contextRoot,
+			out List<SnapshotParticipantEntry> snapshotParticipants)
+		{
+			_orderedModules.Clear();
+			_orderedPassiveSnapshotSyncs.Clear();
+			_snapshotRegions.Clear();
+
+			snapshotParticipants = new List<SnapshotParticipantEntry>();
+			var moduleEntries = new List<ModuleEntry>();
+			var passiveSyncEntries = new List<PassiveSnapshotSyncEntry>();
+
+			var childCount = contextRoot.GetChildCount();
+			for (var index = 0; index < childCount; index++)
+			{
+				var child = contextRoot.GetChild(index);
+				if (ReferenceEquals(child, this)
+					|| ReferenceEquals(child, _localEventBus)
+					|| ReferenceEquals(child, _objectSnapshotSystem))
+				{
+					continue;
+				}
+
+				var module = child as IObjectModule;
+				var snapshotBinder = child as IRequireObjectSnapshotRegion;
+				var snapshotSync = child as IObjectSnapshotSync;
+
+				if (module != null)
+				{
+					moduleEntries.Add(new ModuleEntry(child, module, snapshotSync, index));
+				}
+
+				if (snapshotBinder != null || snapshotSync != null)
+				{
+					snapshotParticipants.Add(new SnapshotParticipantEntry(child, snapshotBinder));
+				}
+
+				if (module == null && snapshotSync != null)
+				{
+					passiveSyncEntries.Add(new PassiveSnapshotSyncEntry(child, snapshotSync, index));
+				}
+			}
+
+			moduleEntries.Sort(CompareModuleEntries);
+			passiveSyncEntries.Sort((left, right) => left.SiblingIndex.CompareTo(right.SiblingIndex));
+			_orderedModules.AddRange(moduleEntries);
+			_orderedPassiveSnapshotSyncs.AddRange(passiveSyncEntries);
+		}
+
+		private bool BindSnapshotParticipants(Node contextRoot, List<SnapshotParticipantEntry> snapshotParticipants)
+		{
+			if (snapshotParticipants.Count == 0)
+			{
+				return true;
+			}
+
+			if (_objectSnapshotSystem == null)
+			{
+				if (!_loggedMissingSnapshotSystem)
+				{
+					_logger.Error(
+						$"[GodotObjectRootNode] Snapshot participants were found under '{ResolveNodeName(contextRoot)}' but ObjectSnapshotSystem was not found. Initialization aborted.");
+					_loggedMissingSnapshotSystem = true;
+				}
+
+				_orderedModules.Clear();
+				_orderedPassiveSnapshotSyncs.Clear();
+				_snapshotRegions.Clear();
+				return false;
+			}
+
+			if (_objectSnapshotSystem is GodotObjectSnapshotSystemNode godotSnapshotSystem)
+			{
+				godotSnapshotSystem.ClearRegions();
+			}
+
+			var uniqueRegionNames = new HashSet<string>(StringComparer.Ordinal);
+			for (var index = 0; index < snapshotParticipants.Count; index++)
+			{
+				var participant = snapshotParticipants[index];
+				var regionName = ResolveNodeName(participant.OwnerNode);
+				if (!uniqueRegionNames.Add(regionName))
+				{
+					_logger.Error($"[GodotObjectRootNode] Duplicate snapshot region name '{regionName}' under '{ResolveNodeName(contextRoot)}'. Snapshot region names must be unique.");
+					_orderedModules.Clear();
+					_orderedPassiveSnapshotSyncs.Clear();
+					_snapshotRegions.Clear();
+					return false;
+				}
+			}
+
+			try
+			{
+				for (var index = 0; index < snapshotParticipants.Count; index++)
+				{
+					var participant = snapshotParticipants[index];
+					var region = _objectSnapshotSystem.RegisterRegion(participant.OwnerNode, ResolveNodeName(participant.OwnerNode));
+					_snapshotRegions[participant.OwnerNode] = region;
+
+					if (participant.SnapshotBinder != null)
+					{
+						participant.SnapshotBinder.BindObjectSnapshot(_objectSnapshotSystem, region);
+					}
+				}
+			}
+			catch (Exception ex)
+			{
+				_logger.Error($"[GodotObjectRootNode] Failed to bind snapshot participants under '{ResolveNodeName(contextRoot)}': {ex}");
+				_orderedModules.Clear();
+				_orderedPassiveSnapshotSyncs.Clear();
+				_snapshotRegions.Clear();
+				return false;
+			}
+
+			return true;
+		}
+
+		private void InitialiseModules(Node contextRoot)
+		{
+			for (var index = 0; index < _orderedModules.Count; index++)
+			{
+				var entry = _orderedModules[index];
+				try
+				{
+					entry.Module.Init(this, _localEventBus, _globalEventBus);
+					_logger.Info($"[GodotObjectRootNode] Initialized object module '{ResolveModuleName(entry.Module)}' under '{ResolveNodeName(contextRoot)}'.");
+				}
+				catch (Exception ex)
+				{
+					_logger.Error($"[GodotObjectRootNode] Init failed for object module '{ResolveModuleName(entry.Module)}': {ex}");
+				}
+			}
+		}
+
+		private void TickModules()
+		{
+			for (var index = 0; index < _orderedModules.Count; index++)
+			{
+				var entry = _orderedModules[index];
+				try
+				{
+					entry.Module.Tick();
+				}
+				catch (Exception ex)
+				{
+					_logger.Error($"[GodotObjectRootNode] Tick failed for object module '{ResolveModuleName(entry.Module)}': {ex}");
+				}
+
+				if (entry.SnapshotSync != null)
+				{
+					SyncSnapshot(entry.OwnerNode, entry.SnapshotSync);
+				}
+			}
+
+			for (var index = 0; index < _orderedPassiveSnapshotSyncs.Count; index++)
+			{
+				var entry = _orderedPassiveSnapshotSyncs[index];
+				SyncSnapshot(entry.OwnerNode, entry.SnapshotSync);
+			}
+		}
+
+		private void SyncSnapshot(Node ownerNode, IObjectSnapshotSync snapshotSync)
+		{
+			if (ownerNode == null || snapshotSync == null)
+			{
+				return;
+			}
+
+			if (!_snapshotRegions.TryGetValue(ownerNode, out var region))
+			{
+				_logger.Warning($"[GodotObjectRootNode] Snapshot sync skipped for '{ResolveNodeName(ownerNode)}' because no region is bound.");
+				return;
+			}
+
+			try
+			{
+				snapshotSync.SyncObjectSnapshot(region);
+			}
+			catch (Exception ex)
+			{
+				_logger.Error($"[GodotObjectRootNode] Snapshot sync failed for '{ResolveNodeName(ownerNode)}': {ex}");
+			}
+		}
+
+		private static int CompareModuleEntries(ModuleEntry left, ModuleEntry right)
+		{
+			var priorityCompare = right.Module.TickPriority.CompareTo(left.Module.TickPriority);
+			if (priorityCompare != 0)
+			{
+				return priorityCompare;
+			}
+
+			return left.SiblingIndex.CompareTo(right.SiblingIndex);
+		}
+
+		private static string ResolveModuleName(IObjectModule module)
+		{
+			if (module == null)
+			{
+				return "<null>";
+			}
+
+			return string.IsNullOrEmpty(module.Name) ? module.GetType().Name : module.Name;
+		}
+
+		private static string ResolveNodeName(Node node)
+		{
+			if (node == null)
+			{
+				return "<unknown-node>";
+			}
+
+			var nodeName = node.Name.ToString();
+			return string.IsNullOrEmpty(nodeName) ? node.GetType().Name : nodeName;
+		}
+
+		private bool TryResolveNode(NodePath path, out Node node)
+		{
+			node = null;
+			if (string.IsNullOrEmpty(path.ToString()))
+			{
+				return false;
+			}
+
+			node = GetNodeOrNull<Node>(path);
+			return node != null;
+		}
+	}
 }
 `;
 }
-
 export function buildGodotRootTickRunnerNodeContent() {
   return `
 using GameFramework.Core;
@@ -2435,6 +2802,10 @@ export function buildGodotRuntimeFiles() {
       content: buildGodotObjectModuleBaseContent(),
     },
     {
+      relativePath: `${GODOT_RUNTIME_FOLDER_NAME}/Godot/GodotObjectSnapshotSystemNode.cs`,
+      content: buildGodotObjectSnapshotSystemNodeContent(),
+    },
+    {
       relativePath: `${GODOT_RUNTIME_FOLDER_NAME}/Godot/GodotObjectRootNode.cs`,
       content: buildGodotObjectRootNodeContent(),
     },
@@ -2448,13 +2819,11 @@ export function buildGodotRuntimeFiles() {
     },
   ];
 }
-
 function buildGodotTickRunnerEventBusApiGuideContent() {
   return `
-# Godot TickRunner / EventBus 使用说明
+# Godot TickRunner / EventBus / ObjectSnapshot 使用说明
 
 ## 一键初始化会注入什么
-
 - \`scripts/EventBusTickRunner/Shared/GameFrameworkRuntime.cs\`
 - \`scripts/EventBusTickRunner/Godot/*.cs\`
 - \`scripts/godotCsharpDate/TickRunnerEventBusApiGuide.md\`
@@ -2465,160 +2834,81 @@ function buildGodotTickRunnerEventBusApiGuideContent() {
 
 再次执行 Godot C# 一键初始化时，只会更新工具注入的脚本和文档，不会覆盖你已经配置好的模板和场景内容。
 
-## TickRunner 自带功能
+## 对象域默认结构
+- \`ObjectSnapshotSystem\`
+- \`ObjectRoot\`
+- \`LocalEventBus\`
 
-\`GodotRootTickRunnerNode\` / \`RootTickRunnerCore\` 自带这些能力：
+\`\`\`text
+ObjectBase
+├─ ObjectSnapshotSystem
+├─ ObjectRoot
+├─ LocalEventBus
+└─ 你的模块或对象
+\`\`\`
 
-- 通过 \`RegisterService\` / \`GetService<T>\` 提供基础服务注册与查询
-- 读取 \`systemInitOrder\`
-- 按顺序初始化系统模块
-- 分发 \`Update\` / \`LateUpdate\` Tick
-- 在所有系统模块初始化完成后触发内置生命周期事件 \`tickrunner.all_modules_initialized\`
+## 快照参与者判定
+- 实现 \`IRequireObjectSnapshotRegion\` 的对象会在 \`Init(...)\` 前收到 \`BindObjectSnapshot(...)\`。
+- 实现 \`IObjectSnapshotSync\` 的对象也算快照参与者，即使它没有实现 \`IRequireObjectSnapshotRegion\`。
+- 只要对象实现了 \`IRequireObjectSnapshotRegion\` 或 \`IObjectSnapshotSync\`，\`ObjectRoot\` 都会为它注册区域。
 
-## EventBus 自带功能
+## ObjectRoot 快照流程
+1. 解析 \`ObjectSnapshotSystem\`。
+2. 扫描 \`contextRoot\` 的直接子节点。
+3. 收集模块、快照参与者、被动同步对象。
+4. 若存在快照参与者但缺少 \`ObjectSnapshotSystem\`，直接报错并终止初始化。
+5. 若快照中心是 \`GodotObjectSnapshotSystemNode\`，绑定前会先 \`ClearRegions()\`。
+6. 所有快照参与者按节点名注册区域；重名会直接报错并终止初始化。
+7. 实现了 \`IRequireObjectSnapshotRegion\` 的对象会收到 \`BindObjectSnapshot(...)\`。
+8. 之后才初始化 \`IObjectModule\`。
 
-\`GodotEventBusNode\` / \`EventBusCore\` 自带这些能力：
+## 同步时机
+- 模块对象：\`Tick()\` 后立即同步。
+- 非模块但实现了 \`IObjectSnapshotSync\` 的直接子节点：在所有模块 Tick 结束后按 sibling 顺序同步。
+- 如果对象有同步接口但当前帧没有绑定区域，只会记警告并跳过同步。
 
-- 从 \`systemEvent\` 读取并声明事件
-- 可选的标签声明与标签校验
-- 支持全局总线 / 本地总线模式
-- 支持事件订阅
-- 支持标签订阅
-- 支持运行时注册自定义事件
-- 支持测试用的标签触发
-
-## 系统模块怎么写
-
-实现 \`ISystemModule\`：
-
+## 对象模块示例
 \`\`\`csharp
 using GameFramework;
 using GameFramework.Adapters.Godot;
 using Godot;
 
-public partial class ExampleSystem : Node, ISystemModule
+public partial class ExampleMovementModule : GodotObjectModuleBase, IRequireObjectSnapshotRegion, IObjectSnapshotSync
 {
-    public string Name => "examplesystem";
+    private IObjectSnapshotRegion _snapshotRegion;
 
-    public override void _Ready()
+    public void BindObjectSnapshot(IObjectSnapshotSystem snapshotSystem, IObjectSnapshotRegion region)
     {
-        GodotRootTickRunnerNode.Instance?.RegisterModule(this);
+        _snapshotRegion = region;
     }
 
-    public void Init(IRootRuntime root, IEventBus eventBus)
+    public override void Init(IObjectRuntime root, IEventBus localEventBus, IEventBus globalEventBus)
     {
+        GD.Print(_snapshotRegion != null ? "snapshot bound before init" : "snapshot missing");
     }
 
-    public void Tick()
+    public void SyncObjectSnapshot(IObjectSnapshotRegion region)
     {
+        region.Set("velocity", Vector3.Forward);
     }
 }
 \`\`\`
 
-规则：
-
-- \`Name\` must match one row in \`systemInitOrder\`
-- \`Init(...)\` runs only after all declared modules are registered
-- \`ticktype = 0\` is Update, \`ticktype = 1\` is LateUpdate
-
-更准确地说：
-
-- \`Name\` 必须和 \`systemInitOrder\` 里某一行的名字一致
-- 只有当 \`systemInitOrder\` 里声明的模块都注册完之后，\`Init(...)\` 才会统一执行
-- \`ticktype = 0\` 表示 Update，\`ticktype = 1\` 表示 LateUpdate
-
-## IEventBus 常用 API
-
-- \`RegisterCustomEvent(string eventName, string tagExpression)\`
-- \`SubscribeEvent(object owner, string eventName, Action<object> onEvent)\`
-- \`SubscribeTag(object owner, string tagName, Action<EventEnvelope> onEnvelope)\`
-- \`PublishEvent(object sender, string eventName, object payload)\`
-- \`TriggerTagForTest(object sender, string tagName, ...)\`
-- \`Unsubscribe(SubscriptionToken token)\`
-- \`UnsubscribeAll(object owner)\`
-
-## 常见调用示例
-
-发布一个自定义事件：
-
+## 非模块对象示例
 \`\`\`csharp
-eventBus.RegisterCustomEvent("battle.started", "battle");
-eventBus.PublishEvent(this, "battle.started", new { stage = 1 });
-\`\`\`
+using GameFramework;
+using Godot;
 
-订阅一个事件：
-
-\`\`\`csharp
-eventBus.SubscribeEvent(this, "battle.started", payload =>
+public partial class ExampleHudBridge : Node, IObjectSnapshotSync
 {
-    GD.Print($\"battle.started => \${payload}\");
-});
-\`\`\`
-
-按标签订阅：
-
-\`\`\`csharp
-eventBus.SubscribeTag(this, "battle", envelope =>
-{
-    GD.Print(envelope.EventName);
-});
-\`\`\`
-
-## 内置的“全部模块初始化完成”事件
-
-TickRunner 会自动声明这个事件：
-
-- \`RootTickRunnerCore.AllModulesInitializedEventName\`
-- 实际事件名：\`tickrunner.all_modules_initialized\`
-
-触发时机：
-
-- 当所有在 \`systemInitOrder\` 中声明的系统模块都完成 \`Init(...)\` 之后触发
-- 如果任意模块在 \`Init(...)\` 期间抛异常，这个事件不会触发
-
-Payload 类型：
-
-\`\`\`csharp
-RootTickRunnerCore.ModulesInitializedEventPayload
-\`\`\`
-
-Payload 字段：
-
-- \`RootName\`
-- \`ModuleCount\`
-- \`ModuleNames\`
-
-订阅示例：
-
-\`\`\`csharp
-public void Init(IRootRuntime root, IEventBus eventBus)
-{
-    eventBus.SubscribeEvent(this, RootTickRunnerCore.AllModulesInitializedEventName, payload =>
+    public void SyncObjectSnapshot(IObjectSnapshotRegion region)
     {
-        var data = payload as RootTickRunnerCore.ModulesInitializedEventPayload;
-        if (data != null)
-        {
-            GD.Print($\"All modules ready: \${data.ModuleCount}\");
-        }
-    });
+        region.Set("visible", Visible);
+    }
 }
 \`\`\`
-
-## 默认注入的场景
-
-\`GameRoot.tscn\` 默认包含：
-
-- 一个根 TickRunner
-- 一个全局 EventBus
-- 一个 DataTableProvider
-
-\`ObjectBase.tscn\` 默认包含：
-
-- 一个对象域根节点
-- 一个本地 EventBus
 `;
 }
-
 export function buildGodotGameRootSceneContent(options = {}) {
   const scriptOutputRootName = options.scriptOutputRootName || 'scripts';
   const runtimeRootPath = `res://${scriptOutputRootName}/${GODOT_RUNTIME_FOLDER_NAME}/Godot`;
@@ -2646,17 +2936,22 @@ DataDir = "res://dataEntity"
 export function buildGodotObjectBaseSceneContent(options = {}) {
   const scriptOutputRootName = options.scriptOutputRootName || 'scripts';
   const runtimeRootPath = `res://${scriptOutputRootName}/${GODOT_RUNTIME_FOLDER_NAME}/Godot`;
-  return `[gd_scene load_steps=3 format=3]
+  return `[gd_scene load_steps=4 format=3]
 
 [ext_resource type="Script" path="${runtimeRootPath}/GodotObjectRootNode.cs" id="1_root"]
 [ext_resource type="Script" path="${runtimeRootPath}/GodotEventBusNode.cs" id="2_bus"]
+[ext_resource type="Script" path="${runtimeRootPath}/GodotObjectSnapshotSystemNode.cs" id="3_snapshot"]
 
 [node name="ObjectBase" type="Node"]
+
+[node name="ObjectSnapshotSystem" type="Node" parent="."]
+script = ExtResource("3_snapshot")
 
 [node name="ObjectRoot" type="Node" parent="."]
 script = ExtResource("1_root")
 ContextRootPath = NodePath("..")
 LocalEventBusPath = NodePath("../LocalEventBus")
+ObjectSnapshotSystemPath = NodePath("../ObjectSnapshotSystem")
 
 [node name="LocalEventBus" type="Node" parent="."]
 script = ExtResource("2_bus")
@@ -2665,7 +2960,6 @@ EventTableTemplateName = "${SYSTEM_EVENT_TEMPLATE_NAME}"
 ScopeRootPath = NodePath("..")
 `;
 }
-
 export function buildSystemInitOrderTemplate() {
   return {
     name: SYSTEM_INIT_ORDER_TEMPLATE_NAME,

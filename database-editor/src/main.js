@@ -81,6 +81,7 @@ import { createUEGeneratorModule } from './generators/ue-generator.js';
   const templates = [];
   const templateUidState = { counter: 0 };
   let lastSavedStructureSnapshot = new Map();
+  let lastLoadedTemplateSnapshot = '[]';
   let currentTemplateIndex = -1;
   let currentInstanceIndex = -1;
   let directoryHandle = null;
@@ -1772,6 +1773,7 @@ import { createUEGeneratorModule } from './generators/ue-generator.js';
 
   const chooseDirBtn = $("chooseDir");
   const saveBtn = $("saveBtn");
+  const refreshBtn = $("refreshBtn");
   const toggleDarkBtn = $("toggleDark");
   const paramWidthSlider = $("paramWidth");
   const paramWidthLabel = $("paramWidthLabel");
@@ -1825,6 +1827,7 @@ import { createUEGeneratorModule } from './generators/ue-generator.js';
     currentDirLabel,
     chooseDirBtn,
     saveBtn,
+    refreshBtn,
     toggleDarkBtn,
     helpBtn,
     openTrashBtn,
@@ -1884,6 +1887,9 @@ import { createUEGeneratorModule } from './generators/ue-generator.js';
 
   bindAppStateProperty('lastSavedStructureSnapshot', () => lastSavedStructureSnapshot, (value) => {
     lastSavedStructureSnapshot = value;
+  });
+  bindAppStateProperty('lastLoadedTemplateSnapshot', () => lastLoadedTemplateSnapshot, (value) => {
+    lastLoadedTemplateSnapshot = value;
   });
   bindAppStateProperty('currentTemplateIndex', () => currentTemplateIndex, (value) => {
     currentTemplateIndex = value;
@@ -2011,10 +2017,14 @@ import { createUEGeneratorModule } from './generators/ue-generator.js';
     isUnityMode: (...args) => appModeModule.isUnityMode(...args),
     isGodotMode: (...args) => appModeModule.isGodotMode(...args),
     showMessage,
+    commitActiveSheetEdits,
     loadAllTemplates: (...args) => templatePersistenceModule.loadAllTemplates(...args),
+    hasUnsavedTemplateChanges: (...args) =>
+      templatePersistenceModule.hasUnsavedTemplateChanges(...args),
     refreshTemplates,
     refreshInstances,
     refreshParams,
+    showSelectedParamDetails,
     updateIndexTemplateOptions,
     isSheetModeActive: (...args) => appModeModule.isSheetModeActive(...args),
     updateSheetTemplateNav,
@@ -2396,6 +2406,10 @@ import { createUEGeneratorModule } from './generators/ue-generator.js';
 
   async function saveAll(...args) {
     return templatePersistenceModule.saveAll(...args);
+  }
+
+  async function refreshCurrentWorkspace(...args) {
+    return workspaceStorageModule.refreshCurrentWorkspace(...args);
   }
 
   const originalAlert = window.alert.bind(window);
@@ -3491,6 +3505,9 @@ import { createUEGeneratorModule } from './generators/ue-generator.js';
   }
   if (saveBtn) {
     saveBtn.addEventListener("click", saveAll);
+  }
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", refreshCurrentWorkspace);
   }
   $("newTemplate").addEventListener("click", newTemplate);
   $("newInstance").addEventListener("click", newInstance);
