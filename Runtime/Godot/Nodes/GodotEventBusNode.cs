@@ -48,6 +48,12 @@ namespace GameFramework.Adapters.Godot
         public string TagTableTemplateName { get; set; }
 
         [Export]
+        public string InitTagFilterTableTemplateName { get; set; }
+
+        [Export]
+        public string InitTagFilterProfileName { get; set; }
+
+        [Export]
         public string[] InitTagFilters { get; set; } = Array.Empty<string>();
 
         [Export]
@@ -175,6 +181,8 @@ namespace GameFramework.Adapters.Godot
                 Mode = Mode == BusMode.Local ? EventBusScopeMode.Local : EventBusScopeMode.Global,
                 EventTableTemplateName = EventTableTemplateName,
                 TagTableTemplateName = TagTableTemplateName,
+                InitTagFilterTableTemplateName = InitTagFilterTableTemplateName,
+                InitTagFilterProfileName = InitTagFilterProfileName,
                 InitTagFilters = InitTagFilters == null ? new List<string>() : new List<string>(InitTagFilters),
                 EnableScopeCheckForLocal = EnableScopeCheckForLocal,
                 AllowTriggerTagAtRuntime = AllowTriggerTagAtRuntime,

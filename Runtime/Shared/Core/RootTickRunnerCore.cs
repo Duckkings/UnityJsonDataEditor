@@ -20,7 +20,9 @@ namespace GameFramework.Core
         private sealed class ModuleEntry
         {
             public int Order;
+            public int Priority;
             public int TickType;
+            public IReadOnlyList<string> Tags;
             public ISystemModule Module;
             public bool Registered;
         }
@@ -32,13 +34,14 @@ namespace GameFramework.Core
         private bool _modulesInitialised;
         private IEventBus _eventBus;
         private IDataTableRuntime _dataRuntime;
+        private string _moduleDeclareTableName = "systemModuleDeclare";
 
         public RootTickRunnerCore(IRuntimeLogger logger)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
-        public void Initialize(IDataTableRuntime dataRuntime, IEventBus eventBus, string initTableName = "systemInitOrder")
+        public void Initialize(IDataTableRuntime dataRuntime, IEventBus eventBus, string initTableName = "systemModuleDeclare")
         {
             _dataRuntime = dataRuntime ?? throw new ArgumentNullException(nameof(dataRuntime));
             _eventBus = eventBus ?? throw new ArgumentNullException(nameof(eventBus));
@@ -46,7 +49,7 @@ namespace GameFramework.Core
             RegisterService("eventbus", eventBus);
             RegisterService("database", dataRuntime);
             _eventBus.RegisterCustomEvent(AllModulesInitializedEventName, string.Empty);
-            LoadSystemInitOrder(initTableName);
+            LoadSystemModuleDeclare(initTableName);
             _logger.Info("[RootTickRunner] Base services initialized.");
         }
 
@@ -70,7 +73,7 @@ namespace GameFramework.Core
 
             if (!_moduleTable.TryGetValue(module.Name, out var entry))
             {
-                _logger.Error($"[RootTickRunner] Module '{module.Name}' was not declared in systemInitOrder.");
+                _logger.Error($"[RootTickRunner] Module '{module.Name}' was not declared in {_moduleDeclareTableName}.");
                 return;
             }
 
@@ -96,7 +99,7 @@ namespace GameFramework.Core
             }
 
             var targetTickType = phase == TickPhase.LateUpdate ? 1 : 0;
-            foreach (var entry in _moduleTable.Values.OrderBy(item => item.Order))
+            foreach (var entry in GetOrderedModuleEntries())
             {
                 if (entry.TickType == targetTickType && entry.Module != null)
                 {
@@ -105,51 +108,71 @@ namespace GameFramework.Core
             }
         }
 
-        private void LoadSystemInitOrder(string initTableName)
+        private void LoadSystemModuleDeclare(string initTableName)
         {
-            EventBusTableSchema schema;
-            try
+            var resolvedTableName = string.IsNullOrEmpty(initTableName) ? "systemModuleDeclare" : initTableName;
+            var schema = TryGetSystemModuleSchema(resolvedTableName);
+            if ((schema == null || schema.instances == null)
+                && string.Equals(resolvedTableName, "systemModuleDeclare", StringComparison.Ordinal))
             {
-                schema = _dataRuntime.GetSchema(initTableName);
-            }
-            catch (Exception ex)
-            {
-                _logger.Error($"[RootTickRunner] Failed to load {initTableName}: {ex.Message}");
-                return;
+                var legacySchema = TryGetSystemModuleSchema("systemInitOrder");
+                if (legacySchema != null && legacySchema.instances != null)
+                {
+                    _logger.Warning("[RootTickRunner] systemModuleDeclare was not found. Falling back to legacy systemInitOrder.");
+                    resolvedTableName = "systemInitOrder";
+                    schema = legacySchema;
+                }
             }
 
             if (schema == null || schema.instances == null)
             {
-                _logger.Error($"[RootTickRunner] Table '{initTableName}' was not found or has no instances.");
+                _logger.Error($"[RootTickRunner] Table '{resolvedTableName}' was not found or has no instances.");
                 return;
             }
 
+            _moduleDeclareTableName = resolvedTableName;
             _moduleTable.Clear();
             foreach (var pair in schema.instances)
             {
                 var instance = pair.Value;
                 var order = instance.GetInt("id", 0);
-                var name = instance.GetString("name", null);
+                var priority = instance.GetInt("priority", 0);
+                var name = instance.GetString("moduleKey", instance.GetString("name", null));
                 var tickType = instance.GetInt("ticktype", 0);
                 if (string.IsNullOrEmpty(name))
                 {
-                    _logger.Warning("[RootTickRunner] Found a systemInitOrder entry with an empty name. It was skipped.");
+                    _logger.Warning($"[RootTickRunner] Found a {resolvedTableName} entry with an empty moduleKey/name. It was skipped.");
                     continue;
                 }
 
                 if (_moduleTable.ContainsKey(name))
                 {
-                    _logger.Warning($"[RootTickRunner] Duplicate module name '{name}' found in systemInitOrder. Later entries were skipped.");
+                    _logger.Warning($"[RootTickRunner] Duplicate module name '{name}' found in {resolvedTableName}. Later entries were skipped.");
                     continue;
                 }
 
                 _moduleTable[name] = new ModuleEntry
                 {
                     Order = order,
+                    Priority = priority,
                     TickType = tickType,
+                    Tags = ParseTags(instance.GetString("tags", string.Empty)).AsReadOnly(),
                     Module = null,
                     Registered = false
                 };
+            }
+        }
+
+        private EventBusTableSchema TryGetSystemModuleSchema(string tableName)
+        {
+            try
+            {
+                return _dataRuntime.GetSchema(tableName);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning($"[RootTickRunner] Failed to load {tableName}: {ex.Message}");
+                return null;
             }
         }
 
@@ -177,7 +200,7 @@ namespace GameFramework.Core
             var initializedModuleNames = new List<string>();
             var allModulesSucceeded = true;
 
-            foreach (var entry in _moduleTable.Values.OrderBy(item => item.Order).ToList())
+            foreach (var entry in GetOrderedModuleEntries().ToList())
             {
                 try
                 {
@@ -213,6 +236,13 @@ namespace GameFramework.Core
             _logger.Info("[RootTickRunner] All registered system modules finished initialization.");
         }
 
+        private IEnumerable<ModuleEntry> GetOrderedModuleEntries()
+        {
+            return _moduleTable.Values
+                .OrderByDescending(item => item.Priority)
+                .ThenBy(item => item.Order);
+        }
+
         private string ResolveRootNodeName()
         {
             var rootNodeName = GetService<string>("rootNodeName");
@@ -222,6 +252,27 @@ namespace GameFramework.Core
             }
 
             return "Root";
+        }
+
+        private static List<string> ParseTags(string tagExpression)
+        {
+            var result = new List<string>();
+            if (string.IsNullOrEmpty(tagExpression))
+            {
+                return result;
+            }
+
+            var parts = tagExpression.Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var part in parts)
+            {
+                var trimmed = part.Trim();
+                if (!string.IsNullOrEmpty(trimmed) && !result.Contains(trimmed))
+                {
+                    result.Add(trimmed);
+                }
+            }
+
+            return result;
         }
     }
 }

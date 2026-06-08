@@ -16,6 +16,10 @@ namespace GameFramework
 
         public string TagTableTemplateName { get; set; }
 
+        public string InitTagFilterTableTemplateName { get; set; }
+
+        public string InitTagFilterProfileName { get; set; }
+
         public List<string> InitTagFilters { get; set; } = new List<string>();
 
         public bool EnableScopeCheckForLocal { get; set; } = true;

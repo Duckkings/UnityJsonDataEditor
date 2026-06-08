@@ -75,10 +75,11 @@ namespace GameFramework.Core
 
             if (!string.IsNullOrEmpty(_config.EventTableTemplateName))
             {
-                var declared = LoadAndDeclareEventsFromTable(_config.EventTableTemplateName, _config.InitTagFilters);
+                var initTagFilters = ResolveInitTagFilters();
+                var declared = LoadAndDeclareEventsFromTable(_config.EventTableTemplateName, initTagFilters);
                 if (declared == 0)
                 {
-                    _logger.Warning($"[EventBus] No events declared after applying filters on bus '{_busName}'. Filters: {string.Join(", ", _config.InitTagFilters ?? new List<string>())}");
+                    _logger.Warning($"[EventBus] No events declared after applying filters on bus '{_busName}'. Filters: {string.Join(", ", initTagFilters ?? new List<string>())}");
                 }
             }
             else
@@ -456,6 +457,95 @@ namespace GameFramework.Core
             {
                 _logger.Info($"[EventBus] Loaded {_validTags.Count} valid tags for bus '{_busName}'.");
             }
+        }
+
+        private List<string> ResolveInitTagFilters()
+        {
+            var inspectorFilters = _config.InitTagFilters ?? new List<string>();
+            if (string.IsNullOrEmpty(_config.InitTagFilterTableTemplateName)
+                || string.IsNullOrEmpty(_config.InitTagFilterProfileName))
+            {
+                return inspectorFilters;
+            }
+
+            EventBusTableSchema schema;
+            try
+            {
+                schema = _dbRuntime.GetSchema(_config.InitTagFilterTableTemplateName);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error($"[EventBus] Failed to load init tag filter schema '{_config.InitTagFilterTableTemplateName}': {ex.Message}");
+                return inspectorFilters;
+            }
+
+            if (schema == null || schema.instances == null)
+            {
+                _logger.Warning($"[EventBus] Init tag filter schema '{_config.InitTagFilterTableTemplateName}' has no instances. Falling back to inspector filters.");
+                return inspectorFilters;
+            }
+
+            EventBusTableInstance profile = null;
+            if (!schema.instances.TryGetValue(_config.InitTagFilterProfileName, out profile))
+            {
+                foreach (var pair in schema.instances)
+                {
+                    var instance = pair.Value;
+                    if (instance == null)
+                    {
+                        continue;
+                    }
+
+                    if (string.Equals(instance.GetString("name", string.Empty), _config.InitTagFilterProfileName, StringComparison.Ordinal)
+                        || string.Equals(instance.GetString("index", string.Empty), _config.InitTagFilterProfileName, StringComparison.Ordinal))
+                    {
+                        profile = instance;
+                        break;
+                    }
+                }
+            }
+
+            if (profile == null)
+            {
+                _logger.Warning($"[EventBus] Init tag filter profile '{_config.InitTagFilterProfileName}' was not found in table '{_config.InitTagFilterTableTemplateName}'. Falling back to inspector filters.");
+                return inspectorFilters;
+            }
+
+            var filtersText = profile.GetString("filters", null);
+            if (filtersText == null)
+            {
+                _logger.Warning($"[EventBus] Init tag filter profile '{_config.InitTagFilterProfileName}' has no 'filters' field. Falling back to inspector filters.");
+                return inspectorFilters;
+            }
+
+            var filters = ParseInitTagFilterProfile(filtersText);
+            if (_config.LogVerbose)
+            {
+                _logger.Info($"[EventBus] Loaded {filters.Count} init tag filters from table '{_config.InitTagFilterTableTemplateName}' profile '{_config.InitTagFilterProfileName}' for bus '{_busName}'.");
+            }
+
+            return filters;
+        }
+
+        private static List<string> ParseInitTagFilterProfile(string filtersText)
+        {
+            var filters = new List<string>();
+            if (string.IsNullOrEmpty(filtersText))
+            {
+                return filters;
+            }
+
+            var parts = filtersText.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var part in parts)
+            {
+                var trimmed = part.Trim();
+                if (!string.IsNullOrEmpty(trimmed))
+                {
+                    filters.Add(trimmed);
+                }
+            }
+
+            return filters;
         }
 
         private int LoadAndDeclareEventsFromTable(string eventTemplate, List<string> filters)

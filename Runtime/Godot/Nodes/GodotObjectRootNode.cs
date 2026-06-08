@@ -9,12 +9,22 @@ namespace GameFramework.Adapters.Godot
 	{
 		private sealed class ModuleEntry
 		{
-			public ModuleEntry(Node ownerNode, IObjectModule module, IObjectSnapshotSync snapshotSync, int siblingIndex)
+			public ModuleEntry(
+				Node ownerNode,
+				IObjectModule module,
+				IObjectSnapshotSync snapshotSync,
+				int siblingIndex,
+				int priority,
+				bool hasDeclareId,
+				int declareId)
 			{
 				OwnerNode = ownerNode;
 				Module = module;
 				SnapshotSync = snapshotSync;
 				SiblingIndex = siblingIndex;
+				Priority = priority;
+				HasDeclareId = hasDeclareId;
+				DeclareId = declareId;
 			}
 
 			public Node OwnerNode { get; }
@@ -24,6 +34,12 @@ namespace GameFramework.Adapters.Godot
 			public IObjectSnapshotSync SnapshotSync { get; }
 
 			public int SiblingIndex { get; }
+
+			public int Priority { get; }
+
+			public bool HasDeclareId { get; }
+
+			public int DeclareId { get; }
 		}
 
 		private sealed class PassiveSnapshotSyncEntry
@@ -75,6 +91,9 @@ namespace GameFramework.Adapters.Godot
 
 		[Export]
 		public bool AutoInitialize { get; set; } = true;
+
+		[Export]
+		public string ModuleDeclareTableTemplateName { get; set; } = string.Empty;
 
 		private readonly GodotRuntimeLogger _logger = new GodotRuntimeLogger();
 		private readonly List<ModuleEntry> _orderedModules = new List<ModuleEntry>();
@@ -380,6 +399,7 @@ namespace GameFramework.Adapters.Godot
 			snapshotParticipants = new List<SnapshotParticipantEntry>();
 			var moduleEntries = new List<ModuleEntry>();
 			var passiveSyncEntries = new List<PassiveSnapshotSyncEntry>();
+			var moduleDeclareRuntime = LoadModuleDeclareRuntime();
 
 			var childCount = contextRoot.GetChildCount();
 			for (var index = 0; index < childCount; index++)
@@ -398,7 +418,7 @@ namespace GameFramework.Adapters.Godot
 
 				if (module != null)
 				{
-					moduleEntries.Add(new ModuleEntry(child, module, snapshotSync, index));
+					moduleEntries.Add(CreateModuleEntry(child, module, snapshotSync, index, moduleDeclareRuntime));
 				}
 
 				if (snapshotBinder != null || snapshotSync != null)
@@ -553,12 +573,56 @@ namespace GameFramework.Adapters.Godot
 			}
 		}
 
+		private ModuleEntry CreateModuleEntry(
+			Node ownerNode,
+			IObjectModule module,
+			IObjectSnapshotSync snapshotSync,
+			int siblingIndex,
+			IModuleDeclareRuntime moduleDeclareRuntime)
+		{
+			var priority = module.TickPriority;
+			var hasDeclareId = false;
+			var declareId = 0;
+			if (moduleDeclareRuntime != null
+				&& moduleDeclareRuntime.TryGetModuleDeclare(ResolveModuleName(module), out var declare))
+			{
+				priority = declare.Priority;
+				declareId = declare.Id;
+				hasDeclareId = true;
+			}
+
+			return new ModuleEntry(ownerNode, module, snapshotSync, siblingIndex, priority, hasDeclareId, declareId);
+		}
+
+		private IModuleDeclareRuntime LoadModuleDeclareRuntime()
+		{
+			if (_dataRuntime == null || string.IsNullOrEmpty(ModuleDeclareTableTemplateName))
+			{
+				return null;
+			}
+
+			try
+			{
+				return new ModuleDeclareRuntime(_dataRuntime, ModuleDeclareTableTemplateName);
+			}
+			catch (Exception ex)
+			{
+				_logger.Warning($"[GodotObjectRootNode] Failed to load module declare table '{ModuleDeclareTableTemplateName}': {ex.Message}");
+				return null;
+			}
+		}
+
 		private static int CompareModuleEntries(ModuleEntry left, ModuleEntry right)
 		{
-			var priorityCompare = right.Module.TickPriority.CompareTo(left.Module.TickPriority);
+			var priorityCompare = right.Priority.CompareTo(left.Priority);
 			if (priorityCompare != 0)
 			{
 				return priorityCompare;
+			}
+
+			if (left.HasDeclareId && right.HasDeclareId)
+			{
+				return left.DeclareId.CompareTo(right.DeclareId);
 			}
 
 			return left.SiblingIndex.CompareTo(right.SiblingIndex);

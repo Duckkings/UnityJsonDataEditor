@@ -2,11 +2,19 @@
   GODOT_GAME_ROOT_SCENE_NAME,
   GODOT_OBJECT_BASE_SCENE_NAME,
   GODOT_PREFAB_FOLDER_NAME,
-  SYSTEM_INIT_ORDER_TEMPLATE_NAME,
+  EVENT_BUS_INIT_FILTER_TEMPLATE_NAME,
+  MODULE_DECLARE_TEMPLATE_NAME,
+  SYSTEM_EVENT_TAG_TEMPLATE_NAME,
+  SYSTEM_EVENT_TEMPLATE_NAME,
+  SYSTEM_MODULE_DECLARE_TEMPLATE_NAME,
+  buildEventBusInitFilterTemplate,
   buildGodotGameRootSceneContent,
   buildGodotObjectBaseSceneContent,
   buildGodotRuntimeFiles,
-  buildSystemInitOrderTemplate,
+  buildModuleDeclareTemplate,
+  buildSystemEventTagTemplate,
+  buildSystemEventTemplate,
+  buildSystemModuleDeclareTemplate,
 } from '../generators/godot-project-bootstrap-generator.js';
 
 const DB_NAME = 'json-editor';
@@ -419,6 +427,12 @@ export function createWorkspaceStorageModule(context) {
         template: entry.name.slice(0, -5),
         path: entry.name,
       });
+    }
+    if (manifest.some((item) => item.template === SYSTEM_MODULE_DECLARE_TEMPLATE_NAME)) {
+      const legacyIndex = manifest.findIndex((item) => item.template === 'systemInitOrder');
+      if (legacyIndex >= 0) {
+        manifest.splice(legacyIndex, 1);
+      }
     }
     manifest.sort((a, b) => a.template.localeCompare(b.template, 'zh-Hans-CN'));
     await writeTextFile(appState.dataEntityHandle, 'manifest.json', JSON.stringify(manifest, null, 2));
@@ -961,19 +975,17 @@ export function createWorkspaceStorageModule(context) {
     return results;
   }
 
-  async function ensureSystemInitOrderTemplate() {
+  async function ensureGeneratedTemplate(templateName, buildTemplate) {
     if (!appState.dataEntityHandle) {
       return null;
     }
 
     const selectionState = captureCurrentTemplateSelectionState();
-    let template = appState.templates.find(
-      (item) => item && item.name === SYSTEM_INIT_ORDER_TEMPLATE_NAME,
-    );
+    let template = appState.templates.find((item) => item && item.name === templateName);
     let createdInMemory = false;
 
     if (!template) {
-      template = buildSystemInitOrderTemplate();
+      template = buildTemplate();
       normalizeTemplateParameterIndexes(template);
       ensureTemplateUid(template);
       template.__fromDisk = false;
@@ -1039,6 +1051,174 @@ export function createWorkspaceStorageModule(context) {
     };
   }
 
+  async function ensureSystemModuleDeclareTemplate() {
+    if (!appState.dataEntityHandle) {
+      return null;
+    }
+
+    const selectionState = captureCurrentTemplateSelectionState();
+    let template = appState.templates.find(
+      (item) => item && item.name === SYSTEM_MODULE_DECLARE_TEMPLATE_NAME,
+    );
+    let createdInMemory = false;
+
+    if (!template) {
+      template = buildSystemModuleDeclareTemplate();
+      normalizeTemplateParameterIndexes(template);
+      ensureTemplateUid(template);
+      template.__fromDisk = false;
+      appState.templates.push(template);
+      appState.templates.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'));
+      createdInMemory = true;
+      restoreTemplateSelectionState(selectionState, template.__uid);
+    } else {
+      normalizeTemplateParameterIndexes(template);
+      ensureTemplateUid(template);
+    }
+
+    const templateFileName = `${template.name}.json`;
+    const serializedTemplate = JSON.stringify(
+      {
+        name: template.name,
+        indexField: template.indexField || 'id',
+        parameters: Array.isArray(template.parameters) ? template.parameters : [],
+        instances: Array.isArray(template.instances) ? template.instances : [],
+      },
+      null,
+      2,
+    );
+    const existingTemplateJson = await readTextFileIfExists(
+      appState.dataEntityHandle,
+      templateFileName,
+    );
+    let templateFileStatus = 'unchanged';
+    if (existingTemplateJson == null) {
+      await writeTextFile(appState.dataEntityHandle, templateFileName, serializedTemplate);
+      templateFileStatus = 'created';
+    } else if (existingTemplateJson !== serializedTemplate) {
+      templateFileStatus = 'skipped';
+    }
+
+    let csharpFileStatus = 'not_applicable';
+    if (appState.csharpHandle) {
+      const csharpResult = await upsertManagedTextFile(
+        appState.csharpHandle,
+        `${template.name}.cs`,
+        generateCSContent(template),
+      );
+      csharpFileStatus = csharpResult.status;
+    }
+
+    if (templateFileStatus !== 'skipped') {
+      await rebuildManifestFromDisk();
+      template.__fromDisk = true;
+      if (appState.lastSavedStructureSnapshot instanceof Map && template.__uid) {
+        appState.lastSavedStructureSnapshot.set(template.__uid, snapshotTemplateStructure(template));
+      }
+    }
+
+    if (createdInMemory) {
+      refreshTemplateViews();
+    }
+
+    return {
+      templateName: template.name,
+      createdInMemory,
+      templateFileStatus,
+      csharpFileStatus,
+    };
+  }
+
+  async function ensureModuleDeclareTemplate() {
+    if (!appState.dataEntityHandle) {
+      return null;
+    }
+
+    const selectionState = captureCurrentTemplateSelectionState();
+    let template = appState.templates.find(
+      (item) => item && item.name === MODULE_DECLARE_TEMPLATE_NAME,
+    );
+    let createdInMemory = false;
+
+    if (!template) {
+      template = buildModuleDeclareTemplate();
+      normalizeTemplateParameterIndexes(template);
+      ensureTemplateUid(template);
+      template.__fromDisk = false;
+      appState.templates.push(template);
+      appState.templates.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'));
+      createdInMemory = true;
+      restoreTemplateSelectionState(selectionState, template.__uid);
+    } else {
+      normalizeTemplateParameterIndexes(template);
+      ensureTemplateUid(template);
+    }
+
+    const templateFileName = `${template.name}.json`;
+    const serializedTemplate = JSON.stringify(
+      {
+        name: template.name,
+        indexField: template.indexField || 'id',
+        parameters: Array.isArray(template.parameters) ? template.parameters : [],
+        instances: Array.isArray(template.instances) ? template.instances : [],
+      },
+      null,
+      2,
+    );
+    const existingTemplateJson = await readTextFileIfExists(
+      appState.dataEntityHandle,
+      templateFileName,
+    );
+    let templateFileStatus = 'unchanged';
+    if (existingTemplateJson == null) {
+      await writeTextFile(appState.dataEntityHandle, templateFileName, serializedTemplate);
+      templateFileStatus = 'created';
+    } else if (existingTemplateJson !== serializedTemplate) {
+      templateFileStatus = 'skipped';
+    }
+
+    let csharpFileStatus = 'not_applicable';
+    if (appState.csharpHandle) {
+      const csharpResult = await upsertManagedTextFile(
+        appState.csharpHandle,
+        `${template.name}.cs`,
+        generateCSContent(template),
+      );
+      csharpFileStatus = csharpResult.status;
+    }
+
+    if (templateFileStatus !== 'skipped') {
+      await rebuildManifestFromDisk();
+      template.__fromDisk = true;
+      if (appState.lastSavedStructureSnapshot instanceof Map && template.__uid) {
+        appState.lastSavedStructureSnapshot.set(template.__uid, snapshotTemplateStructure(template));
+      }
+    }
+
+    if (createdInMemory) {
+      refreshTemplateViews();
+    }
+
+    return {
+      templateName: template.name,
+      createdInMemory,
+      templateFileStatus,
+      csharpFileStatus,
+    };
+  }
+
+  async function ensureSystemEventTemplate() {
+    return ensureGeneratedTemplate(SYSTEM_EVENT_TEMPLATE_NAME, buildSystemEventTemplate);
+  }
+
+  async function ensureSystemEventTagTemplate() {
+    return ensureGeneratedTemplate(SYSTEM_EVENT_TAG_TEMPLATE_NAME, buildSystemEventTagTemplate);
+  }
+
+  async function ensureEventBusInitFilterTemplate() {
+    return ensureGeneratedTemplate(EVENT_BUS_INIT_FILTER_TEMPLATE_NAME, buildEventBusInitFilterTemplate);
+  }
+
   async function injectGameRootScene(prefabHandle, scriptOutputRootName) {
     if (!prefabHandle) {
       return null;
@@ -1086,19 +1266,24 @@ export function createWorkspaceStorageModule(context) {
       parts.push(`kept ${runtimeStats.skipped} custom runtime files`);
     }
 
-    if (templateResult) {
-      if (templateResult.createdInMemory || templateResult.templateFileStatus === 'created') {
-        parts.push(`prepared ${templateResult.templateName} template`);
-      } else if (templateResult.templateFileStatus === 'unchanged') {
-        parts.push(`${templateResult.templateName} template ready`);
-      } else if (templateResult.templateFileStatus === 'skipped') {
-        parts.push(`kept existing ${templateResult.templateName} template`);
+    const templateResults = Array.isArray(templateResult)
+      ? templateResult.filter(Boolean)
+      : templateResult
+        ? [templateResult]
+        : [];
+    for (const currentTemplateResult of templateResults) {
+      if (currentTemplateResult.createdInMemory || currentTemplateResult.templateFileStatus === 'created') {
+        parts.push(`prepared ${currentTemplateResult.templateName} template`);
+      } else if (currentTemplateResult.templateFileStatus === 'unchanged') {
+        parts.push(`${currentTemplateResult.templateName} template ready`);
+      } else if (currentTemplateResult.templateFileStatus === 'skipped') {
+        parts.push(`kept existing ${currentTemplateResult.templateName} template`);
       }
 
-      if (templateResult.csharpFileStatus === 'created') {
-        parts.push(`generated ${templateResult.templateName}.cs`);
-      } else if (templateResult.csharpFileStatus === 'skipped') {
-        parts.push(`kept existing ${templateResult.templateName}.cs`);
+      if (currentTemplateResult.csharpFileStatus === 'created') {
+        parts.push(`generated ${currentTemplateResult.templateName}.cs`);
+      } else if (currentTemplateResult.csharpFileStatus === 'skipped') {
+        parts.push(`kept existing ${currentTemplateResult.templateName}.cs`);
       }
     }
 
@@ -1153,7 +1338,13 @@ export function createWorkspaceStorageModule(context) {
       }
 
       const runtimeResults = await injectGodotRuntimeFiles(scriptOutputRootHandle, { overwrite: true });
-      const templateResult = await ensureSystemInitOrderTemplate();
+      const templateResult = [
+        await ensureSystemModuleDeclareTemplate(),
+        await ensureSystemEventTemplate(),
+        await ensureSystemEventTagTemplate(),
+        await ensureEventBusInitFilterTemplate(),
+        await ensureModuleDeclareTemplate(),
+      ];
       const prefabResult = await ensurePrefabDirectory();
       const sceneResult = await injectGameRootScene(prefabResult.handle, scriptOutputRootHandle.name);
       const objectBaseResult = await injectObjectBaseScene(prefabResult.handle, scriptOutputRootHandle.name);

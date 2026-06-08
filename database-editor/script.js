@@ -980,9 +980,16 @@
   var GODOT_PREFAB_FOLDER_NAME = "prefab";
   var GODOT_GAME_ROOT_SCENE_NAME = "GameRoot.tscn";
   var GODOT_OBJECT_BASE_SCENE_NAME = "ObjectBase.tscn";
-  var SYSTEM_INIT_ORDER_TEMPLATE_NAME = "systemInitOrder";
+  var SYSTEM_MODULE_DECLARE_TEMPLATE_NAME = "systemModuleDeclare";
+  var MODULE_DECLARE_TEMPLATE_NAME = "moduleDeclare";
   var SYSTEM_EVENT_TEMPLATE_NAME = "systemEvent";
-  var DEFAULT_SYSTEM_INIT_ORDER_INSTANCE_NAME = "examplesystem";
+  var SYSTEM_EVENT_TAG_TEMPLATE_NAME = "systemEventTag";
+  var EVENT_BUS_INIT_FILTER_TEMPLATE_NAME = "eventBusInitFilter";
+  var DEFAULT_SYSTEM_MODULE_DECLARE_INSTANCE_NAME = "examplesystem";
+  var DEFAULT_MODULE_DECLARE_INSTANCE_NAME = "examplemodule";
+  var DEFAULT_SYSTEM_EVENT_INSTANCE_NAME = "systemevent";
+  var DEFAULT_SYSTEM_EVENT_TAG_INSTANCE_NAME = "exampletag";
+  var DEFAULT_WORLD_BUS_PROFILE_NAME = "global_world_bus";
   function buildBootstrapTemplateInstance({
     templateName,
     indexField = "id",
@@ -1027,6 +1034,10 @@ namespace GameFramework
         public string EventTableTemplateName { get; set; }
 
         public string TagTableTemplateName { get; set; }
+
+        public string InitTagFilterTableTemplateName { get; set; }
+
+        public string InitTagFilterProfileName { get; set; }
 
         public List<string> InitTagFilters { get; set; } = new List<string>();
 
@@ -1138,6 +1149,80 @@ namespace GameFramework
     public interface IDataTableRuntime
     {
         EventBusTableSchema GetSchema(string templateName);
+    }
+
+    public sealed class ModuleDeclareRecord
+    {
+        public int Id { get; set; }
+
+        public string ModuleKey { get; set; }
+
+        public string Tags { get; set; }
+
+        public int Priority { get; set; }
+    }
+
+    public interface IModuleDeclareRuntime
+    {
+        bool TryGetModuleDeclare(string moduleKey, out ModuleDeclareRecord record);
+    }
+
+    public sealed class ModuleDeclareRuntime : IModuleDeclareRuntime
+    {
+        private readonly Dictionary<string, ModuleDeclareRecord> _records =
+            new Dictionary<string, ModuleDeclareRecord>(StringComparer.Ordinal);
+
+        public ModuleDeclareRuntime(IDataTableRuntime dataRuntime, string templateName = "moduleDeclare")
+        {
+            if (dataRuntime == null || string.IsNullOrEmpty(templateName))
+            {
+                return;
+            }
+
+            EventBusTableSchema schema;
+            try
+            {
+                schema = dataRuntime.GetSchema(templateName);
+            }
+            catch
+            {
+                return;
+            }
+
+            if (schema == null || schema.instances == null)
+            {
+                return;
+            }
+
+            foreach (var pair in schema.instances)
+            {
+                var instance = pair.Value;
+                if (instance == null)
+                {
+                    continue;
+                }
+
+                var moduleKey = instance.GetString("moduleKey", instance.GetString("name", null));
+                if (string.IsNullOrEmpty(moduleKey))
+                {
+                    continue;
+                }
+
+                _records[moduleKey] = new ModuleDeclareRecord
+                {
+                    Id = instance.GetInt("id", 0),
+                    ModuleKey = moduleKey,
+                    Tags = instance.GetString("tags", string.Empty),
+                    Priority = instance.GetInt("priority", 0)
+                };
+            }
+        }
+
+        public bool TryGetModuleDeclare(string moduleKey, out ModuleDeclareRecord record)
+        {
+            record = null;
+            return !string.IsNullOrEmpty(moduleKey) && _records.TryGetValue(moduleKey, out record);
+        }
     }
 
     public interface IEventBus
@@ -1389,10 +1474,11 @@ namespace GameFramework.Core
 
             if (!string.IsNullOrEmpty(_config.EventTableTemplateName))
             {
-                var declared = LoadAndDeclareEventsFromTable(_config.EventTableTemplateName, _config.InitTagFilters);
+                var initTagFilters = ResolveInitTagFilters();
+                var declared = LoadAndDeclareEventsFromTable(_config.EventTableTemplateName, initTagFilters);
                 if (declared == 0)
                 {
-                    _logger.Warning($"[EventBus] No events declared after applying filters on bus '{_busName}'. Filters: {string.Join(", ", _config.InitTagFilters ?? new List<string>())}");
+                    _logger.Warning($"[EventBus] No events declared after applying filters on bus '{_busName}'. Filters: {string.Join(", ", initTagFilters ?? new List<string>())}");
                 }
             }
             else
@@ -1772,6 +1858,95 @@ namespace GameFramework.Core
             }
         }
 
+        private List<string> ResolveInitTagFilters()
+        {
+            var inspectorFilters = _config.InitTagFilters ?? new List<string>();
+            if (string.IsNullOrEmpty(_config.InitTagFilterTableTemplateName)
+                || string.IsNullOrEmpty(_config.InitTagFilterProfileName))
+            {
+                return inspectorFilters;
+            }
+
+            EventBusTableSchema schema;
+            try
+            {
+                schema = _dbRuntime.GetSchema(_config.InitTagFilterTableTemplateName);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error($"[EventBus] Failed to load init tag filter schema '{_config.InitTagFilterTableTemplateName}': {ex.Message}");
+                return inspectorFilters;
+            }
+
+            if (schema == null || schema.instances == null)
+            {
+                _logger.Warning($"[EventBus] Init tag filter schema '{_config.InitTagFilterTableTemplateName}' has no instances. Falling back to inspector filters.");
+                return inspectorFilters;
+            }
+
+            EventBusTableInstance profile = null;
+            if (!schema.instances.TryGetValue(_config.InitTagFilterProfileName, out profile))
+            {
+                foreach (var pair in schema.instances)
+                {
+                    var instance = pair.Value;
+                    if (instance == null)
+                    {
+                        continue;
+                    }
+
+                    if (string.Equals(instance.GetString("name", string.Empty), _config.InitTagFilterProfileName, StringComparison.Ordinal)
+                        || string.Equals(instance.GetString("index", string.Empty), _config.InitTagFilterProfileName, StringComparison.Ordinal))
+                    {
+                        profile = instance;
+                        break;
+                    }
+                }
+            }
+
+            if (profile == null)
+            {
+                _logger.Warning($"[EventBus] Init tag filter profile '{_config.InitTagFilterProfileName}' was not found in table '{_config.InitTagFilterTableTemplateName}'. Falling back to inspector filters.");
+                return inspectorFilters;
+            }
+
+            var filtersText = profile.GetString("filters", null);
+            if (filtersText == null)
+            {
+                _logger.Warning($"[EventBus] Init tag filter profile '{_config.InitTagFilterProfileName}' has no 'filters' field. Falling back to inspector filters.");
+                return inspectorFilters;
+            }
+
+            var filters = ParseInitTagFilterProfile(filtersText);
+            if (_config.LogVerbose)
+            {
+                _logger.Info($"[EventBus] Loaded {filters.Count} init tag filters from table '{_config.InitTagFilterTableTemplateName}' profile '{_config.InitTagFilterProfileName}' for bus '{_busName}'.");
+            }
+
+            return filters;
+        }
+
+        private static List<string> ParseInitTagFilterProfile(string filtersText)
+        {
+            var filters = new List<string>();
+            if (string.IsNullOrEmpty(filtersText))
+            {
+                return filters;
+            }
+
+            var parts = filtersText.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var part in parts)
+            {
+                var trimmed = part.Trim();
+                if (!string.IsNullOrEmpty(trimmed))
+                {
+                    filters.Add(trimmed);
+                }
+            }
+
+            return filters;
+        }
+
         private int LoadAndDeclareEventsFromTable(string eventTemplate, List<string> filters)
         {
             if (_config.LogVerbose)
@@ -2028,7 +2203,9 @@ namespace GameFramework.Core
         private sealed class ModuleEntry
         {
             public int Order;
+            public int Priority;
             public int TickType;
+            public IReadOnlyList<string> Tags;
             public ISystemModule Module;
             public bool Registered;
         }
@@ -2040,13 +2217,14 @@ namespace GameFramework.Core
         private bool _modulesInitialised;
         private IEventBus _eventBus;
         private IDataTableRuntime _dataRuntime;
+        private string _moduleDeclareTableName = "systemModuleDeclare";
 
         public RootTickRunnerCore(IRuntimeLogger logger)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
-        public void Initialize(IDataTableRuntime dataRuntime, IEventBus eventBus, string initTableName = "systemInitOrder")
+        public void Initialize(IDataTableRuntime dataRuntime, IEventBus eventBus, string initTableName = "systemModuleDeclare")
         {
             _dataRuntime = dataRuntime ?? throw new ArgumentNullException(nameof(dataRuntime));
             _eventBus = eventBus ?? throw new ArgumentNullException(nameof(eventBus));
@@ -2054,7 +2232,7 @@ namespace GameFramework.Core
             RegisterService("eventbus", eventBus);
             RegisterService("database", dataRuntime);
             _eventBus.RegisterCustomEvent(AllModulesInitializedEventName, string.Empty);
-            LoadSystemInitOrder(initTableName);
+            LoadSystemModuleDeclare(initTableName);
             _logger.Info("[RootTickRunner] Base services initialized.");
         }
 
@@ -2078,7 +2256,7 @@ namespace GameFramework.Core
 
             if (!_moduleTable.TryGetValue(module.Name, out var entry))
             {
-                _logger.Error($"[RootTickRunner] Module '{module.Name}' was not declared in systemInitOrder.");
+                _logger.Error($"[RootTickRunner] Module '{module.Name}' was not declared in {_moduleDeclareTableName}.");
                 return;
             }
 
@@ -2104,7 +2282,7 @@ namespace GameFramework.Core
             }
 
             var targetTickType = phase == TickPhase.LateUpdate ? 1 : 0;
-            foreach (var entry in _moduleTable.Values.OrderBy(item => item.Order))
+            foreach (var entry in GetOrderedModuleEntries())
             {
                 if (entry.TickType == targetTickType && entry.Module != null)
                 {
@@ -2113,48 +2291,55 @@ namespace GameFramework.Core
             }
         }
 
-        private void LoadSystemInitOrder(string initTableName)
+        private void LoadSystemModuleDeclare(string initTableName)
         {
-            EventBusTableSchema schema;
-            try
+            var resolvedTableName = string.IsNullOrEmpty(initTableName) ? "systemModuleDeclare" : initTableName;
+            var schema = TryGetSystemModuleSchema(resolvedTableName);
+            if ((schema == null || schema.instances == null)
+                && string.Equals(resolvedTableName, "systemModuleDeclare", StringComparison.Ordinal))
             {
-                schema = _dataRuntime.GetSchema(initTableName);
-            }
-            catch (Exception ex)
-            {
-                _logger.Error($"[RootTickRunner] Failed to load {initTableName}: {ex.Message}");
-                return;
+                var legacySchema = TryGetSystemModuleSchema("systemInitOrder");
+                if (legacySchema != null && legacySchema.instances != null)
+                {
+                    _logger.Warning("[RootTickRunner] systemModuleDeclare was not found. Falling back to legacy systemInitOrder.");
+                    resolvedTableName = "systemInitOrder";
+                    schema = legacySchema;
+                }
             }
 
             if (schema == null || schema.instances == null)
             {
-                _logger.Error($"[RootTickRunner] Table '{initTableName}' was not found or has no instances.");
+                _logger.Error($"[RootTickRunner] Table '{resolvedTableName}' was not found or has no instances.");
                 return;
             }
 
+            _moduleDeclareTableName = resolvedTableName;
             _moduleTable.Clear();
             foreach (var pair in schema.instances)
             {
                 var instance = pair.Value;
                 var order = instance.GetInt("id", 0);
-                var name = instance.GetString("name", null);
+                var priority = instance.GetInt("priority", 0);
+                var name = instance.GetString("moduleKey", instance.GetString("name", null));
                 var tickType = instance.GetInt("ticktype", 0);
                 if (string.IsNullOrEmpty(name))
                 {
-                    _logger.Warning("[RootTickRunner] Found a systemInitOrder entry with an empty name. It was skipped.");
+                    _logger.Warning($"[RootTickRunner] Found a {resolvedTableName} entry with an empty moduleKey/name. It was skipped.");
                     continue;
                 }
 
                 if (_moduleTable.ContainsKey(name))
                 {
-                    _logger.Warning($"[RootTickRunner] Duplicate module name '{name}' found in systemInitOrder. Later entries were skipped.");
+                    _logger.Warning($"[RootTickRunner] Duplicate module name '{name}' found in {resolvedTableName}. Later entries were skipped.");
                     continue;
                 }
 
                 _moduleTable[name] = new ModuleEntry
                 {
                     Order = order,
+                    Priority = priority,
                     TickType = tickType,
+                    Tags = ParseTags(instance.GetString("tags", string.Empty)).AsReadOnly(),
                     Module = null,
                     Registered = false
                 };
@@ -2184,7 +2369,7 @@ namespace GameFramework.Core
             _modulesInitialised = true;
             var initializedModuleNames = new List<string>();
             var allModulesSucceeded = true;
-            foreach (var entry in _moduleTable.Values.OrderBy(item => item.Order).ToList())
+            foreach (var entry in GetOrderedModuleEntries().ToList())
             {
                 try
                 {
@@ -2219,6 +2404,26 @@ namespace GameFramework.Core
             _logger.Info("[RootTickRunner] All registered system modules finished initialization.");
         }
 
+        private EventBusTableSchema TryGetSystemModuleSchema(string tableName)
+        {
+            try
+            {
+                return _dataRuntime.GetSchema(tableName);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning($"[RootTickRunner] Failed to load {tableName}: {ex.Message}");
+                return null;
+            }
+        }
+
+        private IEnumerable<ModuleEntry> GetOrderedModuleEntries()
+        {
+            return _moduleTable.Values
+                .OrderByDescending(item => item.Priority)
+                .ThenBy(item => item.Order);
+        }
+
         private string ResolveRootNodeName()
         {
             var rootNodeName = GetService<string>("rootNodeName");
@@ -2228,6 +2433,27 @@ namespace GameFramework.Core
             }
 
             return "Root";
+        }
+
+        private static List<string> ParseTags(string tagExpression)
+        {
+            var result = new List<string>();
+            if (string.IsNullOrEmpty(tagExpression))
+            {
+                return result;
+            }
+
+            var parts = tagExpression.Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var part in parts)
+            {
+                var trimmed = part.Trim();
+                if (!string.IsNullOrEmpty(trimmed) && !result.Contains(trimmed))
+                {
+                    result.Add(trimmed);
+                }
+            }
+
+            return result;
         }
     }
 }
@@ -2360,6 +2586,12 @@ namespace GameFramework.Adapters.Godot
         public string TagTableTemplateName { get; set; }
 
         [Export]
+        public string InitTagFilterTableTemplateName { get; set; }
+
+        [Export]
+        public string InitTagFilterProfileName { get; set; }
+
+        [Export]
         public string[] InitTagFilters { get; set; } = Array.Empty<string>();
 
         [Export]
@@ -2487,6 +2719,8 @@ namespace GameFramework.Adapters.Godot
                 Mode = Mode == BusMode.Local ? EventBusScopeMode.Local : EventBusScopeMode.Global,
                 EventTableTemplateName = EventTableTemplateName,
                 TagTableTemplateName = TagTableTemplateName,
+                InitTagFilterTableTemplateName = InitTagFilterTableTemplateName,
+                InitTagFilterProfileName = InitTagFilterProfileName,
                 InitTagFilters = InitTagFilters == null ? new List<string>() : new List<string>(InitTagFilters),
                 EnableScopeCheckForLocal = EnableScopeCheckForLocal,
                 AllowTriggerTagAtRuntime = AllowTriggerTagAtRuntime,
@@ -2700,12 +2934,22 @@ namespace GameFramework.Adapters.Godot
 	{
 		private sealed class ModuleEntry
 		{
-			public ModuleEntry(Node ownerNode, IObjectModule module, IObjectSnapshotSync snapshotSync, int siblingIndex)
+			public ModuleEntry(
+				Node ownerNode,
+				IObjectModule module,
+				IObjectSnapshotSync snapshotSync,
+				int siblingIndex,
+				int priority,
+				bool hasDeclareId,
+				int declareId)
 			{
 				OwnerNode = ownerNode;
 				Module = module;
 				SnapshotSync = snapshotSync;
 				SiblingIndex = siblingIndex;
+				Priority = priority;
+				HasDeclareId = hasDeclareId;
+				DeclareId = declareId;
 			}
 
 			public Node OwnerNode { get; }
@@ -2715,6 +2959,12 @@ namespace GameFramework.Adapters.Godot
 			public IObjectSnapshotSync SnapshotSync { get; }
 
 			public int SiblingIndex { get; }
+
+			public int Priority { get; }
+
+			public bool HasDeclareId { get; }
+
+			public int DeclareId { get; }
 		}
 
 		private sealed class PassiveSnapshotSyncEntry
@@ -2766,6 +3016,9 @@ namespace GameFramework.Adapters.Godot
 
 		[Export]
 		public bool AutoInitialize { get; set; } = true;
+
+		[Export]
+		public string ModuleDeclareTableTemplateName { get; set; } = string.Empty;
 
 		private readonly GodotRuntimeLogger _logger = new GodotRuntimeLogger();
 		private readonly List<ModuleEntry> _orderedModules = new List<ModuleEntry>();
@@ -3071,6 +3324,7 @@ namespace GameFramework.Adapters.Godot
 			snapshotParticipants = new List<SnapshotParticipantEntry>();
 			var moduleEntries = new List<ModuleEntry>();
 			var passiveSyncEntries = new List<PassiveSnapshotSyncEntry>();
+			var moduleDeclareRuntime = LoadModuleDeclareRuntime();
 
 			var childCount = contextRoot.GetChildCount();
 			for (var index = 0; index < childCount; index++)
@@ -3089,7 +3343,7 @@ namespace GameFramework.Adapters.Godot
 
 				if (module != null)
 				{
-					moduleEntries.Add(new ModuleEntry(child, module, snapshotSync, index));
+					moduleEntries.Add(CreateModuleEntry(child, module, snapshotSync, index, moduleDeclareRuntime));
 				}
 
 				if (snapshotBinder != null || snapshotSync != null)
@@ -3244,12 +3498,56 @@ namespace GameFramework.Adapters.Godot
 			}
 		}
 
+		private ModuleEntry CreateModuleEntry(
+			Node ownerNode,
+			IObjectModule module,
+			IObjectSnapshotSync snapshotSync,
+			int siblingIndex,
+			IModuleDeclareRuntime moduleDeclareRuntime)
+		{
+			var priority = module.TickPriority;
+			var hasDeclareId = false;
+			var declareId = 0;
+			if (moduleDeclareRuntime != null
+				&& moduleDeclareRuntime.TryGetModuleDeclare(ResolveModuleName(module), out var declare))
+			{
+				priority = declare.Priority;
+				declareId = declare.Id;
+				hasDeclareId = true;
+			}
+
+			return new ModuleEntry(ownerNode, module, snapshotSync, siblingIndex, priority, hasDeclareId, declareId);
+		}
+
+		private IModuleDeclareRuntime LoadModuleDeclareRuntime()
+		{
+			if (_dataRuntime == null || string.IsNullOrEmpty(ModuleDeclareTableTemplateName))
+			{
+				return null;
+			}
+
+			try
+			{
+				return new ModuleDeclareRuntime(_dataRuntime, ModuleDeclareTableTemplateName);
+			}
+			catch (Exception ex)
+			{
+				_logger.Warning($"[GodotObjectRootNode] Failed to load module declare table '{ModuleDeclareTableTemplateName}': {ex.Message}");
+				return null;
+			}
+		}
+
 		private static int CompareModuleEntries(ModuleEntry left, ModuleEntry right)
 		{
-			var priorityCompare = right.Module.TickPriority.CompareTo(left.Module.TickPriority);
+			var priorityCompare = right.Priority.CompareTo(left.Priority);
 			if (priorityCompare != 0)
 			{
 				return priorityCompare;
+			}
+
+			if (left.HasDeclareId && right.HasDeclareId)
+			{
+				return left.DeclareId.CompareTo(right.DeclareId);
 			}
 
 			return left.SiblingIndex.CompareTo(right.SiblingIndex);
@@ -3593,7 +3891,10 @@ public partial class DataTableProvider : Node, IDataTableRuntime
 - \`scripts/godotCsharpDate/TickRunnerEventBusApiGuide.md\`
 - \`prefab/GameRoot.tscn\`
 - \`prefab/ObjectBase.tscn\`
-- \`dataEntity/systemInitOrder.json\`
+- \`dataEntity/systemModuleDeclare.json\`
+- \`dataEntity/systemEventTag.json\`
+- \`dataEntity/eventBusInitFilter.json\`
+- \`dataEntity/moduleDeclare.json\`
 - \`dataEntity/systemEvent.json\`
 
 再次执行 Godot C# 一键初始化时，只会更新工具注入的脚本和文档，不会覆盖你已经配置好的模板和场景内容。
@@ -3690,6 +3991,9 @@ DataTableProviderPath = NodePath("DataTableProvider")
 [node name="EventBus" type="Node" parent="."]
 script = ExtResource("2_bus")
 EventTableTemplateName = "${SYSTEM_EVENT_TEMPLATE_NAME}"
+TagTableTemplateName = "${SYSTEM_EVENT_TAG_TEMPLATE_NAME}"
+InitTagFilterTableTemplateName = "${EVENT_BUS_INIT_FILTER_TEMPLATE_NAME}"
+InitTagFilterProfileName = "${DEFAULT_WORLD_BUS_PROFILE_NAME}"
 
 [node name="DataTableProvider" type="Node" parent="."]
 script = ExtResource("3_provider")
@@ -3715,32 +4019,151 @@ script = ExtResource("1_root")
 ContextRootPath = NodePath("..")
 LocalEventBusPath = NodePath("../LocalEventBus")
 ObjectSnapshotSystemPath = NodePath("../ObjectSnapshotSystem")
+ModuleDeclareTableTemplateName = "moduleDeclare"
 
 [node name="LocalEventBus" type="Node" parent="."]
 script = ExtResource("2_bus")
 Mode = 1
 EventTableTemplateName = "${SYSTEM_EVENT_TEMPLATE_NAME}"
+TagTableTemplateName = "${SYSTEM_EVENT_TAG_TEMPLATE_NAME}"
 ScopeRootPath = NodePath("..")
 `;
   }
-  function buildSystemInitOrderTemplate() {
+  function buildSystemModuleDeclareTemplate() {
     return {
-      name: SYSTEM_INIT_ORDER_TEMPLATE_NAME,
+      name: SYSTEM_MODULE_DECLARE_TEMPLATE_NAME,
+      indexField: "moduleKey",
+      parameters: [
+        {
+          name: "moduleKey",
+          type: "string"
+        },
+        {
+          name: "priority",
+          type: "int"
+        },
+        {
+          name: "ticktype",
+          type: "int"
+        },
+        {
+          name: "tags",
+          type: "string"
+        }
+      ],
+      instances: [
+        buildBootstrapTemplateInstance({
+          templateName: SYSTEM_MODULE_DECLARE_TEMPLATE_NAME,
+          indexField: "moduleKey",
+          id: 0,
+          name: DEFAULT_SYSTEM_MODULE_DECLARE_INSTANCE_NAME,
+          payload: {
+            moduleKey: DEFAULT_SYSTEM_MODULE_DECLARE_INSTANCE_NAME,
+            priority: 0,
+            ticktype: 0,
+            tags: ""
+          }
+        })
+      ]
+    };
+  }
+  function buildSystemEventTemplate() {
+    return {
+      name: SYSTEM_EVENT_TEMPLATE_NAME,
       indexField: "name",
       parameters: [
         {
-          name: "ticktype",
+          name: "tags",
+          type: "string"
+        }
+      ],
+      instances: [
+        buildBootstrapTemplateInstance({
+          templateName: SYSTEM_EVENT_TEMPLATE_NAME,
+          indexField: "name",
+          id: 0,
+          name: DEFAULT_SYSTEM_EVENT_INSTANCE_NAME,
+          payload: {
+            tags: ""
+          }
+        })
+      ]
+    };
+  }
+  function buildSystemEventTagTemplate() {
+    return {
+      name: SYSTEM_EVENT_TAG_TEMPLATE_NAME,
+      indexField: "name",
+      parameters: [
+        {
+          name: "description",
+          type: "string"
+        }
+      ],
+      instances: [
+        buildBootstrapTemplateInstance({
+          templateName: SYSTEM_EVENT_TAG_TEMPLATE_NAME,
+          indexField: "name",
+          id: 0,
+          name: DEFAULT_SYSTEM_EVENT_TAG_INSTANCE_NAME,
+          payload: {
+            description: ""
+          }
+        })
+      ]
+    };
+  }
+  function buildEventBusInitFilterTemplate() {
+    return {
+      name: EVENT_BUS_INIT_FILTER_TEMPLATE_NAME,
+      indexField: "name",
+      parameters: [
+        {
+          name: "filters",
+          type: "string"
+        }
+      ],
+      instances: [
+        buildBootstrapTemplateInstance({
+          templateName: EVENT_BUS_INIT_FILTER_TEMPLATE_NAME,
+          indexField: "name",
+          id: 0,
+          name: DEFAULT_WORLD_BUS_PROFILE_NAME,
+          payload: {
+            filters: ""
+          }
+        })
+      ]
+    };
+  }
+  function buildModuleDeclareTemplate() {
+    return {
+      name: MODULE_DECLARE_TEMPLATE_NAME,
+      indexField: "moduleKey",
+      parameters: [
+        {
+          name: "moduleKey",
+          type: "string"
+        },
+        {
+          name: "tags",
+          type: "string"
+        },
+        {
+          name: "priority",
           type: "int"
         }
       ],
       instances: [
         buildBootstrapTemplateInstance({
-          templateName: SYSTEM_INIT_ORDER_TEMPLATE_NAME,
-          indexField: "name",
+          templateName: MODULE_DECLARE_TEMPLATE_NAME,
+          indexField: "moduleKey",
           id: 0,
-          name: DEFAULT_SYSTEM_INIT_ORDER_INSTANCE_NAME,
+          name: DEFAULT_MODULE_DECLARE_INSTANCE_NAME,
           payload: {
-            ticktype: 0
+            moduleKey: DEFAULT_MODULE_DECLARE_INSTANCE_NAME,
+            tags: "",
+            priority: 0
           }
         })
       ]
@@ -4120,6 +4543,12 @@ ScopeRootPath = NodePath("..")
           template: entry.name.slice(0, -5),
           path: entry.name
         });
+      }
+      if (manifest.some((item) => item.template === SYSTEM_MODULE_DECLARE_TEMPLATE_NAME)) {
+        const legacyIndex = manifest.findIndex((item) => item.template === "systemInitOrder");
+        if (legacyIndex >= 0) {
+          manifest.splice(legacyIndex, 1);
+        }
       }
       manifest.sort((a, b) => a.template.localeCompare(b.template, "zh-Hans-CN"));
       await writeTextFile(appState.dataEntityHandle, "manifest.json", JSON.stringify(manifest, null, 2));
@@ -4629,17 +5058,15 @@ ScopeRootPath = NodePath("..")
       }
       return results;
     }
-    async function ensureSystemInitOrderTemplate() {
+    async function ensureGeneratedTemplate(templateName, buildTemplate) {
       if (!appState.dataEntityHandle) {
         return null;
       }
       const selectionState = captureCurrentTemplateSelectionState();
-      let template = appState.templates.find(
-        (item) => item && item.name === SYSTEM_INIT_ORDER_TEMPLATE_NAME
-      );
+      let template = appState.templates.find((item) => item && item.name === templateName);
       let createdInMemory = false;
       if (!template) {
-        template = buildSystemInitOrderTemplate();
+        template = buildTemplate();
         normalizeTemplateParameterIndexes2(template);
         ensureTemplateUid2(template);
         template.__fromDisk = false;
@@ -4699,6 +5126,155 @@ ScopeRootPath = NodePath("..")
         csharpFileStatus
       };
     }
+    async function ensureSystemModuleDeclareTemplate() {
+      if (!appState.dataEntityHandle) {
+        return null;
+      }
+      const selectionState = captureCurrentTemplateSelectionState();
+      let template = appState.templates.find(
+        (item) => item && item.name === SYSTEM_MODULE_DECLARE_TEMPLATE_NAME
+      );
+      let createdInMemory = false;
+      if (!template) {
+        template = buildSystemModuleDeclareTemplate();
+        normalizeTemplateParameterIndexes2(template);
+        ensureTemplateUid2(template);
+        template.__fromDisk = false;
+        appState.templates.push(template);
+        appState.templates.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+        createdInMemory = true;
+        restoreTemplateSelectionState(selectionState, template.__uid);
+      } else {
+        normalizeTemplateParameterIndexes2(template);
+        ensureTemplateUid2(template);
+      }
+      const templateFileName = `${template.name}.json`;
+      const serializedTemplate = JSON.stringify(
+        {
+          name: template.name,
+          indexField: template.indexField || "id",
+          parameters: Array.isArray(template.parameters) ? template.parameters : [],
+          instances: Array.isArray(template.instances) ? template.instances : []
+        },
+        null,
+        2
+      );
+      const existingTemplateJson = await readTextFileIfExists(
+        appState.dataEntityHandle,
+        templateFileName
+      );
+      let templateFileStatus = "unchanged";
+      if (existingTemplateJson == null) {
+        await writeTextFile(appState.dataEntityHandle, templateFileName, serializedTemplate);
+        templateFileStatus = "created";
+      } else if (existingTemplateJson !== serializedTemplate) {
+        templateFileStatus = "skipped";
+      }
+      let csharpFileStatus = "not_applicable";
+      if (appState.csharpHandle) {
+        const csharpResult = await upsertManagedTextFile(
+          appState.csharpHandle,
+          `${template.name}.cs`,
+          generateCSContent(template)
+        );
+        csharpFileStatus = csharpResult.status;
+      }
+      if (templateFileStatus !== "skipped") {
+        await rebuildManifestFromDisk();
+        template.__fromDisk = true;
+        if (appState.lastSavedStructureSnapshot instanceof Map && template.__uid) {
+          appState.lastSavedStructureSnapshot.set(template.__uid, snapshotTemplateStructure2(template));
+        }
+      }
+      if (createdInMemory) {
+        refreshTemplateViews();
+      }
+      return {
+        templateName: template.name,
+        createdInMemory,
+        templateFileStatus,
+        csharpFileStatus
+      };
+    }
+    async function ensureModuleDeclareTemplate() {
+      if (!appState.dataEntityHandle) {
+        return null;
+      }
+      const selectionState = captureCurrentTemplateSelectionState();
+      let template = appState.templates.find(
+        (item) => item && item.name === MODULE_DECLARE_TEMPLATE_NAME
+      );
+      let createdInMemory = false;
+      if (!template) {
+        template = buildModuleDeclareTemplate();
+        normalizeTemplateParameterIndexes2(template);
+        ensureTemplateUid2(template);
+        template.__fromDisk = false;
+        appState.templates.push(template);
+        appState.templates.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+        createdInMemory = true;
+        restoreTemplateSelectionState(selectionState, template.__uid);
+      } else {
+        normalizeTemplateParameterIndexes2(template);
+        ensureTemplateUid2(template);
+      }
+      const templateFileName = `${template.name}.json`;
+      const serializedTemplate = JSON.stringify(
+        {
+          name: template.name,
+          indexField: template.indexField || "id",
+          parameters: Array.isArray(template.parameters) ? template.parameters : [],
+          instances: Array.isArray(template.instances) ? template.instances : []
+        },
+        null,
+        2
+      );
+      const existingTemplateJson = await readTextFileIfExists(
+        appState.dataEntityHandle,
+        templateFileName
+      );
+      let templateFileStatus = "unchanged";
+      if (existingTemplateJson == null) {
+        await writeTextFile(appState.dataEntityHandle, templateFileName, serializedTemplate);
+        templateFileStatus = "created";
+      } else if (existingTemplateJson !== serializedTemplate) {
+        templateFileStatus = "skipped";
+      }
+      let csharpFileStatus = "not_applicable";
+      if (appState.csharpHandle) {
+        const csharpResult = await upsertManagedTextFile(
+          appState.csharpHandle,
+          `${template.name}.cs`,
+          generateCSContent(template)
+        );
+        csharpFileStatus = csharpResult.status;
+      }
+      if (templateFileStatus !== "skipped") {
+        await rebuildManifestFromDisk();
+        template.__fromDisk = true;
+        if (appState.lastSavedStructureSnapshot instanceof Map && template.__uid) {
+          appState.lastSavedStructureSnapshot.set(template.__uid, snapshotTemplateStructure2(template));
+        }
+      }
+      if (createdInMemory) {
+        refreshTemplateViews();
+      }
+      return {
+        templateName: template.name,
+        createdInMemory,
+        templateFileStatus,
+        csharpFileStatus
+      };
+    }
+    async function ensureSystemEventTemplate() {
+      return ensureGeneratedTemplate(SYSTEM_EVENT_TEMPLATE_NAME, buildSystemEventTemplate);
+    }
+    async function ensureSystemEventTagTemplate() {
+      return ensureGeneratedTemplate(SYSTEM_EVENT_TAG_TEMPLATE_NAME, buildSystemEventTagTemplate);
+    }
+    async function ensureEventBusInitFilterTemplate() {
+      return ensureGeneratedTemplate(EVENT_BUS_INIT_FILTER_TEMPLATE_NAME, buildEventBusInitFilterTemplate);
+    }
     async function injectGameRootScene(prefabHandle, scriptOutputRootName) {
       if (!prefabHandle) {
         return null;
@@ -4742,18 +5318,19 @@ ScopeRootPath = NodePath("..")
       if (runtimeStats.skipped > 0) {
         parts.push(`kept ${runtimeStats.skipped} custom runtime files`);
       }
-      if (templateResult) {
-        if (templateResult.createdInMemory || templateResult.templateFileStatus === "created") {
-          parts.push(`prepared ${templateResult.templateName} template`);
-        } else if (templateResult.templateFileStatus === "unchanged") {
-          parts.push(`${templateResult.templateName} template ready`);
-        } else if (templateResult.templateFileStatus === "skipped") {
-          parts.push(`kept existing ${templateResult.templateName} template`);
+      const templateResults = Array.isArray(templateResult) ? templateResult.filter(Boolean) : templateResult ? [templateResult] : [];
+      for (const currentTemplateResult of templateResults) {
+        if (currentTemplateResult.createdInMemory || currentTemplateResult.templateFileStatus === "created") {
+          parts.push(`prepared ${currentTemplateResult.templateName} template`);
+        } else if (currentTemplateResult.templateFileStatus === "unchanged") {
+          parts.push(`${currentTemplateResult.templateName} template ready`);
+        } else if (currentTemplateResult.templateFileStatus === "skipped") {
+          parts.push(`kept existing ${currentTemplateResult.templateName} template`);
         }
-        if (templateResult.csharpFileStatus === "created") {
-          parts.push(`generated ${templateResult.templateName}.cs`);
-        } else if (templateResult.csharpFileStatus === "skipped") {
-          parts.push(`kept existing ${templateResult.templateName}.cs`);
+        if (currentTemplateResult.csharpFileStatus === "created") {
+          parts.push(`generated ${currentTemplateResult.templateName}.cs`);
+        } else if (currentTemplateResult.csharpFileStatus === "skipped") {
+          parts.push(`kept existing ${currentTemplateResult.templateName}.cs`);
         }
       }
       if (prefabResult && prefabResult.created) {
@@ -4800,7 +5377,13 @@ ScopeRootPath = NodePath("..")
           throw new Error("Unable to access script output directory");
         }
         const runtimeResults = await injectGodotRuntimeFiles(scriptOutputRootHandle, { overwrite: true });
-        const templateResult = await ensureSystemInitOrderTemplate();
+        const templateResult = [
+          await ensureSystemModuleDeclareTemplate(),
+          await ensureSystemEventTemplate(),
+          await ensureSystemEventTagTemplate(),
+          await ensureEventBusInitFilterTemplate(),
+          await ensureModuleDeclareTemplate()
+        ];
         const prefabResult = await ensurePrefabDirectory();
         const sceneResult = await injectGameRootScene(prefabResult.handle, scriptOutputRootHandle.name);
         const objectBaseResult = await injectObjectBaseScene(prefabResult.handle, scriptOutputRootHandle.name);

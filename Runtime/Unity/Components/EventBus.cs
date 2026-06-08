@@ -46,6 +46,12 @@ public class EventBus : MonoBehaviour, IEventBus
     [Tooltip("要加载的标签表模板名称，必须在运行时数据系统中定义。")]
     public string tagTableTemplateName;
 
+    [Tooltip("Optional DataEntity table template name that stores init tag filter profiles.")]
+    public string initTagFilterTableTemplateName;
+
+    [Tooltip("Optional profile instance name in the init tag filter table.")]
+    public string initTagFilterProfileName;
+
     [Tooltip("用于声明事件的过滤列表。每个元素使用 '|' 表示 AND，列表之间为 OR。")]
     public List<string> initTagFilters = new List<string>();
 
@@ -161,6 +167,8 @@ public class EventBus : MonoBehaviour, IEventBus
             Mode = mode == BusMode.Local ? EventBusScopeMode.Local : EventBusScopeMode.Global,
             EventTableTemplateName = eventTableTemplateName,
             TagTableTemplateName = tagTableTemplateName,
+            InitTagFilterTableTemplateName = initTagFilterTableTemplateName,
+            InitTagFilterProfileName = initTagFilterProfileName,
             InitTagFilters = initTagFilters ?? new List<string>(),
             EnableScopeCheckForLocal = enableScopeCheckForLocal,
             AllowTriggerTagAtRuntime = allowTriggerTagAtRuntime,
