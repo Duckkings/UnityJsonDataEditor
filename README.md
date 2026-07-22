@@ -1,5 +1,11 @@
 # Unity Json Data Editor
 
+## 🌐 在线试用
+
+> [**点击这里打开在线版，立即体验 →**](https://duckkings.github.io/UnityJsonDataEditor/)
+>
+> 无需安装，推荐使用 Chrome 或 Edge。
+
 这是一个面向游戏数据表的本地浏览器编辑器。它以 `dataEntity/*.json` 为核心数据源，支持三种生成模式：
 
 - `Unity`：生成 C# 数据结构、枚举、运行时读取器和 Unity 调试脚本。
