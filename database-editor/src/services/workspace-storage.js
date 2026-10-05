@@ -16,6 +16,7 @@
   buildSystemEventTemplate,
   buildSystemModuleDeclareTemplate,
 } from '../generators/godot-project-bootstrap-generator.js';
+import { buildGodotCSharpProjectContent, ensureGodotCSharpDependencies } from '../generators/godot-project-config.js';
 
 const DB_NAME = 'json-editor';
 const DB_STORE = 'handles';
@@ -229,7 +230,7 @@ export function createWorkspaceStorageModule(context) {
   }
 
   async function writeTextFile(dirHandle, fileName, content) {
-    if (!dirHandle) return;
+    if (!dirHandle) throw new Error(`无法写入 ${fileName}：目录不可用`);
     const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
     const writable = await fileHandle.createWritable({ keepExistingData: false });
     await writable.write(content);
@@ -794,7 +795,7 @@ export function createWorkspaceStorageModule(context) {
     appState.modelStructHandle = null;
   }
 
-  async function ensureSubFolders() {
+  async function ensureSubFolders({ dataOnly = false } = {}) {
     if (!appState.directoryHandle) return;
     appState.dataEntityHandle = await appState.directoryHandle.getDirectoryHandle('dataEntity', {
       create: true,
@@ -808,6 +809,8 @@ export function createWorkspaceStorageModule(context) {
       console.warn('无法创建或访问垃圾箱目录', err);
       appState.trashHandle = null;
     }
+
+    if (dataOnly) return;
 
     if (isCSharpMode()) {
       const csharpFolderName = isGodotMode() ? 'godotCsharpDate' : 'csharpDate';
@@ -1328,6 +1331,24 @@ export function createWorkspaceStorageModule(context) {
     }
 
     try {
+      const projects = [];
+      for await (const entry of appState.directoryHandle.values()) {
+        if (entry.kind === 'file' && entry.name.toLowerCase().endsWith('.csproj')) projects.push(entry);
+      }
+      if (projects.length > 1) throw new Error('工作目录存在多个 .csproj，请选择单个 Godot 项目目录');
+      if (projects.length === 0) {
+        const godotConfig = await readTextFileIfExists(appState.directoryHandle, 'project.godot');
+        const assembly = godotConfig?.match(/^project\/assembly_name\s*=\s*"([^"]+)"/m)?.[1]
+          || appState.directoryHandle.name || 'GameBootstrap';
+        if (/[<>:"/\\|?*]/.test(assembly)) throw new Error('Godot 程序集名称不能用于 .csproj 文件名');
+        await writeTextFile(appState.directoryHandle, `${assembly}.csproj`, buildGodotCSharpProjectContent());
+        addLogEntry('info', `已创建 ${assembly}.csproj（Godot 4.6.1 / .NET 8）`);
+      } else {
+        const project = projects[0];
+        const existing = await (await project.getFile()).text();
+        const updated = ensureGodotCSharpDependencies(existing);
+        if (updated !== existing) await writeTextFile(appState.directoryHandle, project.name, updated);
+      }
       await ensureSubFolders();
       await ensureModelStruct();
       await generateRuntimeLoaderArtifacts();

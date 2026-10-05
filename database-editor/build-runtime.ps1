@@ -10,7 +10,9 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 Push-Location $repoRoot
 try {
+  & (Join-Path $repoRoot 'build-godot-assets.ps1')
   npx esbuild $Entry --bundle --format=iife --charset=utf8 --outfile=$OutFile
+  if ($LASTEXITCODE -ne 0) { throw "esbuild failed with exit code $LASTEXITCODE" }
   $outputPath = Join-Path $repoRoot $OutFile
   if (Select-String -Path $outputPath -SimpleMatch -Pattern 'return $""{TrimForLog(text)}"";' -Quiet) {
     throw "Bundle validation failed: detected broken C# string escaping in generated runtime output."

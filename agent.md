@@ -197,6 +197,8 @@ Godot 模式还会创建：
 
 ## 保存与生成行为
 
+2026-10 更新：保存入口已支持 `saveAll({ refreshScripts })`。UI 默认只保存数据，跳过所有脚本生成、脚本删除和引擎冲突目录清理；下述生成行为只在选择“保存并刷新脚本”时执行。重复 ID、列表错误和异常模板会在写盘前阻止保存；加载后的磁盘 JSON 改动触发冲突检查。
+
 保存主入口是 `template-persistence.js -> saveAll()`。
 
 保存时会做这些事：
@@ -249,6 +251,8 @@ Godot 模式还会创建：
 相关逻辑在 `workspace-storage.js -> cleanConflictingEngineArtifacts()`。
 
 ## Godot 快速初始化
+
+当前通用脚本来自 `Runtime/GodotProject/` 的 PAS 快照，构建时由 `database-editor/build-godot-assets.ps1` 校验并嵌入 `godot-project-assets.js`。更新使用 `database-editor/sync-pas-runtime.ps1`。旧分文件 Runtime 示例不是当前注入源。快照还包含 `scripts/ui/UiSystemTypes.cs`、`UiSystemModule.cs`；新 GameRoot 和 systemModuleDeclare 默认只声明实际挂载的 UI 模块。初始化检查 `.csproj` 的 Newtonsoft.Json 和动态加载配置。
 
 这是当前工具新增的重要能力，入口按钮是：
 

@@ -1,0 +1,25 @@
+
+DataEntityRuntimeLoader for Godot
+================================
+
+1. Dependency
+- Add the Newtonsoft.Json package to your Godot C# project.
+- Generated files still use Newtonsoft.Json / Newtonsoft.Json.Linq, just like Unity mode.
+
+2. Initialize
+- Default data directory: `res://dataEntity`
+- Or pass an absolute path / `user://` / `res://` path manually.
+
+3. Read values
+- `DataEntityRuntimeLoader.GetValue<T>("Template", null, "indexKey", "damage")`
+- `DataEntityRuntimeLoader.GetValue<T>("Template", "InstanceName", null, "refParam", "hp")`
+- `DataEntityRuntimeLoader.GetIndexReference(...)`
+
+4. Reload
+- `DataEntityRuntimeLoader.Reload()`
+- Godot mode does not generate a Unity-style custom inspector or Editor pause behavior.
+
+Notes
+- Keep `manifest.json` and all template JSON files under `dataEntity/`.
+- Virtual Godot paths (`res://`, `user://`) are read via `Godot.FileAccess`.
+- Absolute OS paths are read via `System.IO`.

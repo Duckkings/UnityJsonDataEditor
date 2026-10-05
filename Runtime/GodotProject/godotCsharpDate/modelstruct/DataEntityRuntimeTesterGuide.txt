@@ -1,0 +1,20 @@
+
+DataEntityRuntimeTester (Godot C#) 使用说明
+================================
+
+挂载脚本
+1. 将 godotCsharpDate/DataEntityRuntimeTester.cs 挂到任意 Node。
+2. 默认读取 res://dataEntity；如果导出目录不在项目根目录，可在 DataDirectory 中填写绝对路径。
+3. Godot 侧没有 Unity Inspector 那样的自定义按钮面板，建议通过以下任一方式执行：
+   - 在 Inspector 中将 ExecuteOnReady 设为 true，然后直接运行场景。
+   - 在自己的调试脚本中调用 tester.ExecuteSelectedOperation()。
+
+操作说明
+- Initialize：初始化运行时缓存，空路径时默认使用 res://dataEntity。
+- Reload：重新读取 manifest.json 与全部模板 JSON。
+- GetValue：读取模板参数；若目标参数是索引参数，请在 GetParameter 中填写要追读的字段。
+
+注意事项
+- 该测试脚本依赖 DataEntityRuntimeLoader.cs 与 modelCsharpe.cs 一起存在。
+- Godot 项目需要引用 Newtonsoft.Json。
+- 输出日志使用 GD.Print / GD.PushError，可在 Output 面板查看。

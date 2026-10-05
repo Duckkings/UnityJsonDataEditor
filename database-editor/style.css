@@ -90,6 +90,7 @@ body.dark input.invalid-name {
 /* 工具栏 */
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   padding: 8px 12px;
   background-color: #fff;
@@ -680,6 +681,12 @@ body.dark .param-item.selecting {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.toolbar #saveMode {
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 14px;
 }
 
 .param-item input,

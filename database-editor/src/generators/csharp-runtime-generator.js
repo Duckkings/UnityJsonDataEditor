@@ -1,3 +1,5 @@
+import { getGodotProjectAsset } from './godot-project-assets.js';
+
 function ensureContext(context) {
   if (!context || typeof context !== 'object') {
     throw new Error('createCSharpRuntimeGeneratorModule requires a context object');
@@ -7,7 +9,8 @@ function ensureContext(context) {
   }
 }
 
-export function buildModelStructContent() {
+export function buildModelStructContent({ godot = false } = {}) {
+  if (godot) return getGodotProjectAsset('godotCsharpDate/modelstruct/modelCsharpe.cs');
   return [
     'using System;',
     'using System.Collections.Generic;',
@@ -1267,105 +1270,11 @@ function buildGodotLoaderHelpersBlock() {
 }
 
 export function buildGodotRuntimeLoaderContent() {
-  return buildUnityRuntimeLoaderContent()
-    .replace(
-      `using UnityEngine;
-#if UNITY_EDITOR
-using UnityEditor;
-#endif`,
-      `using Godot;
-using GodotFileAccess = Godot.FileAccess;`,
-    )
-    .replace(
-      `_dataDirectory = string.IsNullOrWhiteSpace(dataDirectory)
-            ? Path.GetFullPath(Path.Combine(Application.dataPath, "dataEntity"))
-            : Path.GetFullPath(dataDirectory);`,
-      `_dataDirectory = NormalizeDataDirectory(dataDirectory);`,
-    )
-    .replace(
-      `public static void Reload()
-    {
-#if UNITY_EDITOR
-        var wasPaused = EditorApplication.isPaused;
-        if (!wasPaused)
-        {
-            EditorApplication.isPaused = true;
-        }
-#endif
-        try
-        {
-            if (string.IsNullOrWhiteSpace(_dataDirectory))
-            {
-                throw new InvalidOperationException("\\u8bf7\\u5148\\u8c03\\u7528 Initialize \\u6307\\u5b9a\\u6570\\u636e\\u76ee\\u5f55\\u3002");
-            }
-            LoadAll();
-        }
-        finally
-        {
-#if UNITY_EDITOR
-            if (!wasPaused)
-            {
-                EditorApplication.isPaused = false;
-            }
-#endif
-        }
-    }`,
-      buildGodotReloadBlock(),
-    )
-    .replaceAll('Debug.LogError', 'LogError')
-    .replaceAll('File.Exists', 'FileExists')
-    .replaceAll('File.ReadAllText', 'ReadAllText')
-    .replace(
-      `    private static string ResolvePath(string relativePath)
-    {
-        if (string.IsNullOrWhiteSpace(relativePath))
-        {
-            return _dataDirectory;
-        }
-        if (Path.IsPathRooted(relativePath))
-        {
-            return relativePath;
-        }
-        var sanitized = relativePath.Replace("\\\\", "/").TrimStart('.', '/');
-        if (sanitized.StartsWith("dataEntity/", StringComparison.OrdinalIgnoreCase))
-        {
-            sanitized = sanitized.Substring("dataEntity/".Length);
-        }
-        var combined = string.IsNullOrEmpty(_dataDirectory) ? sanitized : Path.Combine(_dataDirectory, sanitized);
-        return Path.GetFullPath(combined);
-    }`,
-      buildGodotResolvePathBlock(),
-    )
-    .replace('    private class ManifestRecord', `${buildGodotLoaderHelpersBlock()}    private class ManifestRecord`);
+  return getGodotProjectAsset('godotCsharpDate/modelstruct/DataEntityRuntimeLoader.cs');
 }
 
 export function buildGodotRuntimeLoaderGuideContent() {
-  return `
-DataEntityRuntimeLoader for Godot
-================================
-
-1. Dependency
-- Add the Newtonsoft.Json package to your Godot C# project.
-- Generated files still use Newtonsoft.Json / Newtonsoft.Json.Linq, just like Unity mode.
-
-2. Initialize
-- Default data directory: \`res://dataEntity\`
-- Or pass an absolute path / \`user://\` / \`res://\` path manually.
-
-3. Read values
-- \`DataEntityRuntimeLoader.GetValue<T>("Template", null, "indexKey", "damage")\`
-- \`DataEntityRuntimeLoader.GetValue<T>("Template", "InstanceName", null, "refParam", "hp")\`
-- \`DataEntityRuntimeLoader.GetIndexReference(...)\`
-
-4. Reload
-- \`DataEntityRuntimeLoader.Reload()\`
-- Godot mode does not generate a Unity-style custom inspector or Editor pause behavior.
-
-Notes
-- Keep \`manifest.json\` and all template JSON files under \`dataEntity/\`.
-- Virtual Godot paths (\`res://\`, \`user://\`) are read via \`Godot.FileAccess\`.
-- Absolute OS paths are read via \`System.IO\`.
-`;
+  return getGodotProjectAsset('godotCsharpDate/modelstruct/DataEntityRuntimeLoaderGuide.txt');
 }
 
 function buildGodotRuntimeTesterContentDraft() {
@@ -1563,199 +1472,11 @@ Notes
 }
 
 export function buildGodotRuntimeTesterContent() {
-  return `
-using System;
-using System.Collections.Generic;
-using Godot;
-
-[GlobalClass]
-public partial class DataEntityRuntimeTester : Node
-{
-    public enum TestOperation
-    {
-        Initialize,
-        Reload,
-        GetValue,
-    }
-
-    [Export]
-    public bool ExecuteOnReady { get; set; }
-
-    [Export]
-    public TestOperation Operation { get; set; } = TestOperation.Initialize;
-
-    [Export]
-    public string DataDirectory { get; set; } = string.Empty;
-
-    [Export]
-    public string TemplateName { get; set; } = string.Empty;
-
-    [Export]
-    public string InstanceName { get; set; } = string.Empty;
-
-    [Export]
-    public string IndexKey { get; set; } = string.Empty;
-
-    [Export]
-    public string ParameterName { get; set; } = string.Empty;
-
-    [Export]
-    public string ParameterType { get; set; } = "string";
-
-    [Export]
-    public string GetParameter { get; set; } = string.Empty;
-
-    public override void _Ready()
-    {
-        if (ExecuteOnReady)
-        {
-            ExecuteSelectedOperation();
-        }
-    }
-
-    public void ExecuteSelectedOperation()
-    {
-        try
-        {
-            switch (Operation)
-            {
-                case TestOperation.Initialize:
-                    ExecuteInitialize();
-                    break;
-                case TestOperation.Reload:
-                    ExecuteReload();
-                    break;
-                case TestOperation.GetValue:
-                    ExecuteGetValue();
-                    break;
-                default:
-                    GD.PushError("Unsupported operation");
-                    break;
-            }
-        }
-        catch (Exception ex)
-        {
-            GD.PushError($"[DataEntityRuntimeTester] {ex.Message}\\n{ex}");
-        }
-    }
-
-    private void ExecuteInitialize()
-    {
-        var path = string.IsNullOrWhiteSpace(DataDirectory) ? null : DataDirectory;
-        DataEntityRuntimeLoader.Initialize(path);
-        GD.Print("[DataEntityRuntimeTester] Initialize completed");
-    }
-
-    private void ExecuteReload()
-    {
-        DataEntityRuntimeLoader.Reload();
-        GD.Print("[DataEntityRuntimeTester] Reload completed");
-    }
-
-    private void ExecuteGetValue()
-    {
-        if (string.IsNullOrWhiteSpace(TemplateName) || string.IsNullOrWhiteSpace(ParameterName))
-        {
-            GD.PushError("输入不合法");
-            return;
-        }
-
-        var type = ResolveParameterType(ParameterType);
-        if (type == null)
-        {
-            GD.PushError("参数类型不合法");
-            return;
-        }
-
-        var instance = string.IsNullOrWhiteSpace(InstanceName) ? null : InstanceName;
-        var index = string.IsNullOrWhiteSpace(IndexKey) ? null : IndexKey;
-
-        object value;
-        if (string.IsNullOrWhiteSpace(GetParameter))
-        {
-            value = DataEntityRuntimeLoader.GetValue(TemplateName, instance, index, ParameterName, type);
-        }
-        else
-        {
-            value = DataEntityRuntimeLoader.GetValue(TemplateName, instance, index, ParameterName, type, GetParameter);
-        }
-
-        var identifier = !string.IsNullOrWhiteSpace(instance) ? instance : index;
-        var valueText = value == null ? "<null>" : value.ToString();
-        GD.Print($"{TemplateName}/{identifier ?? "(null)"}/{ParameterName}/{valueText}");
-    }
-
-    private static Type ResolveParameterType(string typeName)
-    {
-        if (string.IsNullOrWhiteSpace(typeName))
-        {
-            return typeof(object);
-        }
-
-        var normalized = typeName.Trim();
-        if (TypeMappings.TryGetValue(normalized, out var mapped))
-        {
-            return mapped;
-        }
-        if (TypeMappings.TryGetValue(normalized.ToLowerInvariant(), out mapped))
-        {
-            return mapped;
-        }
-        try
-        {
-            return Type.GetType(normalized, false);
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static readonly Dictionary<string, Type> TypeMappings = new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase)
-    {
-        { "bool", typeof(bool) },
-        { "byte", typeof(byte) },
-        { "sbyte", typeof(sbyte) },
-        { "char", typeof(char) },
-        { "decimal", typeof(decimal) },
-        { "double", typeof(double) },
-        { "float", typeof(float) },
-        { "int", typeof(int) },
-        { "uint", typeof(uint) },
-        { "long", typeof(long) },
-        { "ulong", typeof(ulong) },
-        { "short", typeof(short) },
-        { "ushort", typeof(ushort) },
-        { "string", typeof(string) },
-        { "datetime", typeof(DateTime) },
-        { "guid", typeof(Guid) },
-    };
-}
-`;
+  return getGodotProjectAsset('godotCsharpDate/DataEntityRuntimeTester.cs');
 }
 
 export function buildGodotRuntimeTesterGuideContent() {
-  return `
-DataEntityRuntimeTester (Godot C#) 使用说明
-================================
-
-挂载脚本
-1. 将 godotCsharpDate/DataEntityRuntimeTester.cs 挂到任意 Node。
-2. 默认读取 res://dataEntity；如果导出目录不在项目根目录，可在 DataDirectory 中填写绝对路径。
-3. Godot 侧没有 Unity Inspector 那样的自定义按钮面板，建议通过以下任一方式执行：
-   - 在 Inspector 中将 ExecuteOnReady 设为 true，然后直接运行场景。
-   - 在自己的调试脚本中调用 tester.ExecuteSelectedOperation()。
-
-操作说明
-- Initialize：初始化运行时缓存，空路径时默认使用 res://dataEntity。
-- Reload：重新读取 manifest.json 与全部模板 JSON。
-- GetValue：读取模板参数；若目标参数是索引参数，请在 GetParameter 中填写要追读的字段。
-
-注意事项
-- 该测试脚本依赖 DataEntityRuntimeLoader.cs 与 modelCsharpe.cs 一起存在。
-- Godot 项目需要引用 Newtonsoft.Json。
-- 输出日志使用 GD.Print / GD.PushError，可在 Output 面板查看。
-`;
+  return getGodotProjectAsset('godotCsharpDate/modelstruct/DataEntityRuntimeTesterGuide.txt');
 }
 
 export function createCSharpRuntimeGeneratorModule(context) {
@@ -1795,7 +1516,7 @@ export function createCSharpRuntimeGeneratorModule(context) {
       await writeTextFile(
         appState.modelStructHandle,
         'modelCsharpe.cs',
-        buildModelStructContent(),
+        buildModelStructContent({ godot: isGodotMode() }),
       );
     } catch (err) {
       console.warn('ensureModelStruct failed', err);

@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="./database-editor/style.css" />
     <script src="./database-editor/vendor/luckysheet/dist/plugins/js/plugin.js" defer></script>
     <script src="./database-editor/vendor/luckysheet/dist/luckysheet.umd.js" defer></script>
-    <script src="./database-editor/script.js?v=20260609005622" defer></script>
+    <script src="./database-editor/script.js?v=20261006033720" defer></script>
   </head>
   <body class="dark">
     <div id="app">
@@ -19,6 +19,10 @@
         <button id="chooseDir">选择工作目录</button>
         <span id="currentDir" class="dir-label"></span>
         <button id="saveBtn">保存</button>
+        <select id="saveMode" aria-label="保存方式" title="只保存数据不会生成、覆盖或清理任何脚本；修改表结构后请按需生成脚本">
+          <option value="dataOnly" selected>只保存数据</option>
+          <option value="withScripts">保存并刷新脚本</option>
+        </select>
         <button id="refreshBtn">刷新</button>
         <button id="toggleEditMode" data-mode="classic">表格模式</button>
         <button id="engineModeToggle">切换引擎模式</button>

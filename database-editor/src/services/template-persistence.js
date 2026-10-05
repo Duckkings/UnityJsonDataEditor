@@ -20,14 +20,15 @@ export function createTemplatePersistenceModule(context) {
     ensureEngineGenerationConsent = async () => true,
     cleanConflictingEngineArtifacts = async () => {},
     ensureSubFolders = async () => {},
+    resolveScriptOutputRootHandle = async () => null,
     ensureModelStruct = async () => {},
     ensureTrashDirectory = async () => appState.trashHandle,
     saveEnumTemplateCache = async () => {},
     loadEnumTemplateCache = async () => null,
     clearEnumTemplateCache = async () => {},
     readTextFileIfExists = async () => null,
-    writeTextFile = async () => {},
-    deleteDataEntityFileIfExists = async () => {},
+    writeTextFile: writeTextFileRaw = async () => {},
+    deleteDataEntityFileIfExists: deleteDataEntityFileRaw = async () => {},
     deleteCSharpFileIfExists = async () => {},
     moveTemplateJsonToTrash = async () => ({ moved: false }),
     persistEditorConfig = async () => {},
@@ -61,6 +62,62 @@ export function createTemplatePersistenceModule(context) {
   } = context;
 
   const isCSharpMode = () => isUnityMode() || isGodotMode();
+  let saving = false;
+  let diskSnapshot = null;
+  let loadErrors = [];
+
+  async function assertFileUnchanged(name) {
+    if (!diskSnapshot) return;
+    const current = await readTextFileIfExists(appState.dataEntityHandle, name);
+    if (current !== (diskSnapshot.get(name) ?? null)) throw new Error(`磁盘文件已被外部修改：${name}，请刷新核对后重试`);
+  }
+
+  async function writeTextFile(handle, name, content) {
+    if (handle === appState.dataEntityHandle) await assertFileUnchanged(name);
+    await writeTextFileRaw(handle, name, content);
+    if (handle === appState.dataEntityHandle && diskSnapshot) diskSnapshot.set(name, content);
+  }
+
+  async function deleteDataEntityFileIfExists(name) {
+    await assertFileUnchanged(name);
+    await deleteDataEntityFileRaw(name);
+    // Confirm deletion: storage helpers may report a failure without throwing.
+    const remaining = await readTextFileIfExists(appState.dataEntityHandle, name);
+    if (remaining !== null) throw new Error(`未能删除 ${name}`);
+    if (diskSnapshot) diskSnapshot.delete(name);
+  }
+
+  async function assertDiskUnchanged() {
+    if (!diskSnapshot) throw new Error('请先加载工作目录，再保存');
+    const current = new Map();
+    for await (const entry of appState.dataEntityHandle.values()) {
+      if (entry.kind !== 'file' || !entry.name.toLowerCase().endsWith('.json')) continue;
+      current.set(entry.name, await (await entry.getFile()).text());
+    }
+    const names = new Set([...diskSnapshot.keys(), ...current.keys()]);
+    const changed = [...names].filter((name) => diskSnapshot.get(name) !== current.get(name));
+    if (changed.length) {
+      throw new Error(`磁盘数据已被外部修改：${changed.join('、')}。请先备份当前编辑内容，再点击刷新核对，避免覆盖外部修改`);
+    }
+  }
+
+  function validateBeforeSave() {
+    if (loadErrors.length) throw new Error(`加载时存在异常文件：${loadErrors.join('、')}，请修复并刷新后保存`);
+    const names = new Set();
+    for (const tpl of appState.templates) {
+      const name = String(tpl?.name || '');
+      const key = name.toLowerCase();
+      if (!name.trim() || /[<>:"/\\|?*\x00-\x1f]/.test(name) || /[. ]$/.test(name) ||
+          /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name) || key === 'manifest' || names.has(key)) {
+        throw new Error(`模板名称无效或重名：${name}`);
+      }
+      names.add(key);
+      if (collectDuplicateIdInfo(tpl).byIndex.size) throw new Error(`模板 ${name} 存在重复 ID，请修正后保存（未写入任何数据）`);
+      if (!isEnumTemplate(tpl) && collectListTypeViolations(tpl).invalidInstances.size) {
+        throw new Error(`模板 ${name} 存在无效列表数据，请修正后保存（未写入任何数据）`);
+      }
+    }
+  }
 
   function buildEnumTemplateJson(tpl) {
     if (!tpl || !isEnumTemplate(tpl)) return null;
@@ -138,6 +195,8 @@ export function createTemplatePersistenceModule(context) {
   }
 
   function resetTemplateLoadState() {
+    diskSnapshot = new Map();
+    loadErrors = [];
     appState.templates.length = 0;
     appState.currentTemplateIndex = -1;
     appState.currentInstanceIndex = -1;
@@ -204,17 +263,26 @@ export function createTemplatePersistenceModule(context) {
       if (entry.kind !== 'file' || !entry.name.toLowerCase().endsWith('.json')) {
         continue;
       }
-      if (entry.name.toLowerCase() === 'manifest.json') continue;
       try {
         const file = await entry.getFile();
-        const obj = JSON.parse(await file.text());
+        const text = await file.text();
+        diskSnapshot.set(entry.name, text);
+        if (entry.name.toLowerCase() === 'manifest.json') continue;
+        const obj = JSON.parse(text);
         const template = hydrateTemplateFromJson(obj);
-        if (!template) continue;
+        // The data directory can also contain standalone settings JSON.
+        if (!template && !obj?.name) continue;
+        if (!template || entry.name !== `${template.name}.json`) {
+          loadErrors.push(entry.name);
+          showMessage(`模板格式或文件名不匹配：${entry.name}，保存已阻止`, 'warn');
+          continue;
+        }
         if (isEnumTemplate(template)) {
           enumLoadedFromJson = true;
         }
         appState.templates.push(template);
       } catch (_err) {
+        loadErrors.push(entry.name);
         showMessage(`无法解析 ${entry.name}，已跳过`);
       }
     }
@@ -390,6 +458,15 @@ export function createTemplatePersistenceModule(context) {
   }
 
   async function collectCSharpSavePlan() {
+    let targetHandle = null;
+    const scriptRoot = await resolveScriptOutputRootHandle({ create: false });
+    if (scriptRoot) {
+      try {
+        targetHandle = await scriptRoot.getDirectoryHandle(isGodotMode() ? 'godotCsharpDate' : 'csharpDate', { create: false });
+      } catch (err) {
+        if (err?.name !== 'NotFoundError') throw err;
+      }
+    }
     const templateDecisions = new Map();
     const csCache = new Map();
     const pendingStructureDecision = [];
@@ -398,12 +475,8 @@ export function createTemplatePersistenceModule(context) {
       ensureTemplateUid(tpl);
       if (isEnumTemplate(tpl)) continue;
       const structureChanged = hasTemplateStructureChanged(tpl);
-      if (!structureChanged) {
-        templateDecisions.set(tpl.__uid, { decision: 'jsonOnly', structureChanged: false });
-        continue;
-      }
       const csContent = generateCSContent(tpl);
-      const existingCs = await readTextFileIfExists(appState.csharpHandle, `${tpl.name}.cs`);
+      const existingCs = await readTextFileIfExists(targetHandle, `${tpl.name}.cs`);
       csCache.set(tpl.__uid, csContent);
       if (existingCs != null && normalizeContent(existingCs) === normalizeContent(csContent)) {
         templateDecisions.set(tpl.__uid, { decision: 'jsonOnly', structureChanged: true });
@@ -417,6 +490,7 @@ export function createTemplatePersistenceModule(context) {
       if (answer === 'cancel') {
         return { canceled: true };
       }
+      if (answer === 'jsonOnly') return { canceled: false, dataOnly: true, templateDecisions: new Map(), csCache: new Map() };
       for (const tpl of pendingStructureDecision) {
         templateDecisions.set(tpl.__uid, {
           decision: answer === 'replace' ? 'replace' : 'jsonOnly',
@@ -478,9 +552,10 @@ export function createTemplatePersistenceModule(context) {
       const duplicateIndices = new Set(duplicateIdInfo.byIndex.keys());
       const listValidation = collectListTypeViolations(tpl);
       const { invalidListIndices, warning } = buildInvalidListEntry(tpl, listValidation);
-      const cleanedInstances = Array.isArray(tpl.instances)
-        ? tpl.instances.filter((_, idx) => !duplicateIndices.has(idx) && !invalidListIndices.has(idx))
-        : [];
+      if (duplicateIndices.size || invalidListIndices.size) {
+        throw new Error(`模板 ${tpl.name} 校验失败，保存已中止，未剔除任何实例`);
+      }
+      const cleanedInstances = Array.isArray(tpl.instances) ? tpl.instances : [];
 
       if (duplicateIndices.size > 0) {
         duplicateIdWarnings.push({
@@ -518,7 +593,7 @@ export function createTemplatePersistenceModule(context) {
     return { enumTemplateSaved, duplicateIdWarnings, listValidationWarnings };
   }
 
-  async function processPendingDeletions() {
+  async function processPendingDeletions(refreshScripts) {
     const trashFailures = [];
     const deletionsToProcess = [];
     for (const [name] of Array.from(appState.pendingTemplateDeletions.entries())) {
@@ -532,10 +607,12 @@ export function createTemplatePersistenceModule(context) {
     if (deletionsToProcess.length > 0) {
       await ensureTrashDirectory();
       for (const name of deletionsToProcess) {
+        await assertFileUnchanged(`${name}.json`);
         const result = await moveTemplateJsonToTrash(name);
         if (result && result.moved) {
+          if (diskSnapshot) diskSnapshot.delete(`${name}.json`);
           appState.pendingTemplateDeletions.delete(name);
-          await deleteCSharpFileIfExists(name);
+          if (refreshScripts) await deleteCSharpFileIfExists(name);
         } else {
           trashFailures.push(name);
         }
@@ -565,6 +642,7 @@ export function createTemplatePersistenceModule(context) {
     duplicateIdWarnings,
     listValidationWarnings,
     ueInvalidNameMessage,
+    refreshScripts,
   }) {
     if (duplicateIdWarnings.length > 0) {
       const detail = duplicateIdWarnings
@@ -630,37 +708,40 @@ export function createTemplatePersistenceModule(context) {
     if (warningMessages.length > 0) {
       showMessage(warningMessages.join('；'), 'warn');
     } else {
-      showMessage('已保存所有更改');
+      showMessage(refreshScripts ? '已保存数据并刷新脚本' : '已保存数据（未刷新脚本）');
     }
   }
 
-  async function saveAll() {
-    const commitResult = commitActiveSheetEdits();
-    if (commitResult && commitResult.ok === false) {
-      if (isSheetModeActive()) {
-        updateSheetTemplateNav();
-      }
+  async function saveAll({ refreshScripts = false } = {}) {
+    if (saving) {
+      showMessage('正在保存，请稍候', 'warn');
       return;
     }
-    if (!appState.directoryHandle) {
-      alert('请先选择工作目录');
-      return;
-    }
-
+    saving = true;
     try {
-      const consent = await ensureEngineGenerationConsent('保存并生成文件');
-      if (!consent) return;
-
-      await cleanConflictingEngineArtifacts();
-      await ensureSubFolders();
-      if (isCSharpMode()) {
-        await ensureModelStruct();
+      const commitResult = commitActiveSheetEdits();
+      if (commitResult && commitResult.ok === false) {
+        if (isSheetModeActive()) {
+          updateSheetTemplateNav();
+        }
+        return;
       }
-      await ensureTrashDirectory();
+      if (!appState.directoryHandle) {
+        alert('请先选择工作目录');
+        return;
+      }
+
+      validateBeforeSave();
+      await assertDiskUnchanged();
+      if (refreshScripts) {
+        const consent = await ensureEngineGenerationConsent('保存并生成文件');
+        if (!consent) return;
+      }
 
       let templateDecisions = new Map();
       let csCache = new Map();
-      if (isCSharpMode()) {
+      if (refreshScripts && isCSharpMode()) {
+        // Inspect existing scripts without cleanup, so cancel/data-only are side-effect free.
         const plan = await collectCSharpSavePlan();
         if (plan.canceled) {
           showMessage('已取消保存');
@@ -668,15 +749,26 @@ export function createTemplatePersistenceModule(context) {
         }
         templateDecisions = plan.templateDecisions;
         csCache = plan.csCache;
+        if (plan.dataOnly) refreshScripts = false;
       }
+
+      if (refreshScripts) await cleanConflictingEngineArtifacts();
+      await ensureSubFolders({ dataOnly: !refreshScripts });
+      if (refreshScripts && isCSharpMode()) await ensureModelStruct();
+      await ensureTrashDirectory();
+      await assertDiskUnchanged();
+      // Edits made while asynchronous I/O runs must remain marked as unsaved.
+      const savedTemplateSnapshot = getCurrentTemplatePersistenceSnapshot();
+      const savedStructureSnapshot = captureCurrentStructureSnapshot();
 
       const {
         enumTemplateSaved,
         duplicateIdWarnings,
         listValidationWarnings,
       } = await writeTemplateJsonFiles(templateDecisions, csCache);
-      const { trashFailures } = await processPendingDeletions();
-      const { ueInvalidNameMessage } = await runPostSaveGenerators();
+      const { trashFailures } = await processPendingDeletions(refreshScripts);
+      if (trashFailures.length) throw new Error(`部分模板移入垃圾箱失败：${trashFailures.join('、')}；其他文件可能已保存，请检查后重试`);
+      const { ueInvalidNameMessage } = refreshScripts ? await runPostSaveGenerators() : { ueInvalidNameMessage: '' };
 
       if (!enumTemplateSaved) {
         await clearEnumTemplateCache();
@@ -684,12 +776,12 @@ export function createTemplatePersistenceModule(context) {
       }
 
       await writeManifestForTemplates();
-      if (isCSharpMode()) {
+      if (refreshScripts && isCSharpMode()) {
         await generateRuntimeLoaderArtifacts();
       }
       await persistEditorConfig();
-      appState.lastSavedStructureSnapshot = captureCurrentStructureSnapshot();
-      appState.lastLoadedTemplateSnapshot = getCurrentTemplatePersistenceSnapshot();
+      if (refreshScripts) appState.lastSavedStructureSnapshot = savedStructureSnapshot;
+      appState.lastLoadedTemplateSnapshot = savedTemplateSnapshot;
       await refreshTrashButtonState();
       await refreshTrashOverlayContents();
 
@@ -698,10 +790,13 @@ export function createTemplatePersistenceModule(context) {
         duplicateIdWarnings,
         listValidationWarnings,
         ueInvalidNameMessage,
+        refreshScripts,
       });
     } catch (err) {
       console.error(err);
-      showMessage('保存失败，请检查权限');
+      showMessage(`保存失败：${err?.message || '请检查权限'}。若已开始写入，部分文件可能已保存`, 'warn');
+    } finally {
+      saving = false;
     }
   }
 

@@ -1,0 +1,2 @@
+# Preserve the source bytes used by the Godot snapshot SHA-256 manifest.
+Runtime/GodotProject/** -text whitespace=cr-at-eol

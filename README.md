@@ -24,8 +24,31 @@
 2. 点击“选择工作目录”，让编辑器绑定你的数据工作区。
 3. 点击“切换模式”，在 `Unity / Godot C# / UE` 中选择目标引擎。
 4. 在三列模式或表格模式编辑模板、实例、参数。
-5. 点击保存或重新生成对应模式的代码。
+5. 选择保存方式后点击保存（`Ctrl+S` 使用同一选项）：默认“只保存数据”，需要同步代码时选择“保存并刷新脚本”。
 6. Godot C# 模式下可额外点击 Godot 一键初始化，自动写入运行时脚本、场景和基础表。
+
+### 保存方式与冲突检查
+
+- **只保存数据（默认）**：保存模板 JSON、`enum.json`、`manifest.json`、编辑器配置，并处理模板垃圾箱；不生成、覆盖或删除 C# / C++ 脚本，也不清理其他引擎的输出目录。删除模板后，对应旧脚本仍保留。
+- **保存并刷新脚本**：执行当前引擎的代码生成及冲突目录清理。C# 替换提示中选择“只保存 JSON”也会跳过全部脚本生成和清理。
+- 修改字段、类型、枚举或新增模板后，只保存数据可能使代码与数据结构不同步；需要时再生成脚本。
+- 保存前校验所有模板。重复 ID、无效列表、重名/非法文件名或加载异常会阻止保存，不再剔除错误实例后写盘。
+- 编辑器加载后，外部工具或 AI 对 `dataEntity` JSON 的新增、修改、删除会阻止旧内容覆盖磁盘。先备份尚未保存的编辑内容，再点击“刷新”重新加载核对。一键初始化等直接写盘操作后也应刷新。
+- 保存不是跨文件事务：权限、磁盘空间等错误可能造成部分文件已写入。失败时会保留未保存状态并显示原因，请检查文件后重试。
+
+回归验证：`node --test database-editor/tests/save.test.mjs`。可设置 `PAS_DATA_DIR` 读取真实项目表并在内存中验证保存，测试不会写入目标项目。
+
+### 当前 PAS 运行时注入源
+
+Godot C# 保存刷新与一键初始化的通用脚本已同步为 PAS 当前版本。正式注入源位于 `Runtime/GodotProject/`，包含完整 EventBus / TickRunner / ObjectRoot / ObjectSnapshot、UI 接口与通用 UI 系统，以及数据模型、加载器、测试器和说明文件；`manifest.json` 记录逐文件来源与 SHA-256。旧 `Runtime/Shared`、`Runtime/Godot` 分文件示例不作为当前一键注入源，不应与整包注入同时加入项目，以免类型重复。
+
+新项目选择 Godot C# 模式后，点击“一键初始化配置”：注入框架和 UI 脚本，创建基础表及 `GameRoot.tscn` / `ObjectBase.tscn`。新 GameRoot 默认挂载 `UiSystemModule`，声明表与场景一致，不再留下阻塞初始化的 `examplesystem` 占位记录。模块声明支持 `uiPrefabPath`、`uiPriority`。
+
+初始化会检查工作目录的 `.csproj`，补齐缺失的 `Newtonsoft.Json` 与 `EnableDynamicLoading=true`，保留原 SDK、目标框架和已有包版本；无 `.csproj` 时按项目程序集名称创建 Godot 4.6.1 / .NET 8 的配置。仍需安装对应 Godot .NET 版本和 .NET SDK；工具不会安装引擎、复制 PAS 业务模块或修改既有场景与表实例。已有框架脚本和说明文件会由“一键初始化”更新。
+
+以后 PAS 的通用框架更新后，可在工具根目录执行 `./database-editor/sync-pas-runtime.ps1 -ProjectRoot C:/Project/PASgodot`，同步这组明确列出的源文件并重建浏览器运行文件。普通重建会校验快照哈希，避免忘记同步或手动修改快照后混入旧代码。
+
+验证命令：`node --test database-editor/tests/*.test.mjs`；`node database-editor/tests/emit-bootstrap-fixture.mjs` 会在工具仓库的 `.validation/godot-bootstrap/` 生成最小验收工程，可执行 `dotnet build` 并用 Godot .NET 无头运行。该验收覆盖数据加载、UI 服务、快照绑定与同步、动态模块替换、对象与根框架释放，不使用 PAS 的业务脚本。
 
 ## 一键生成/导入产物
 

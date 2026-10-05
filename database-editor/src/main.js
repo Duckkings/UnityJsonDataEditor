@@ -2041,6 +2041,7 @@ import { createUEGeneratorModule } from './generators/ue-generator.js';
 
   templatePersistenceModule = createTemplatePersistenceModule({
     appState,
+    resolveScriptOutputRootHandle: (...args) => workspaceStorageModule.resolveScriptOutputRootHandle(...args),
     isUnityMode: (...args) => appModeModule.isUnityMode(...args),
     isGodotMode: (...args) => appModeModule.isGodotMode(...args),
     isSheetModeActive: (...args) => appModeModule.isSheetModeActive(...args),
@@ -2404,8 +2405,8 @@ import { createUEGeneratorModule } from './generators/ue-generator.js';
     return systemPanelsModule.restoreTemplateFromTrash(...args);
   }
 
-  async function saveAll(...args) {
-    return templatePersistenceModule.saveAll(...args);
+  async function saveAll() {
+    return templatePersistenceModule.saveAll({ refreshScripts: $("saveMode")?.value === 'withScripts' });
   }
 
   async function refreshCurrentWorkspace(...args) {
