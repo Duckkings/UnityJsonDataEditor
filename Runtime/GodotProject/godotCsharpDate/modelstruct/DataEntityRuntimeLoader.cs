@@ -23,17 +23,25 @@ public static class DataEntityRuntimeLoader
 		},
 	};
 
-	private static readonly Dictionary<string, string> ManifestIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-	private static readonly Dictionary<string, TableSchema> SchemaCache = new Dictionary<string, TableSchema>(StringComparer.OrdinalIgnoreCase);
+	private static Dictionary<string, string> ManifestIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+	private static Dictionary<string, TableSchema> SchemaCache = new Dictionary<string, TableSchema>(StringComparer.OrdinalIgnoreCase);
 	private static string _dataDirectory = string.Empty;
 	private static bool _initialized;
 
 	public static IReadOnlyDictionary<string, TableSchema> Schemas => SchemaCache;
+	// Immutable source snapshot of the tables actually committed, not files edited since startup.
+	private static IReadOnlyDictionary<string, string> _committedTableContents = new Dictionary<string, string>();
+	public static IReadOnlyDictionary<string, string> CommittedTableContents
+	{
+		get { EnsureInitialized(); return _committedTableContents; }
+	}
 
 	public static void Initialize(string dataDirectory = null)
 	{
+		var previousDirectory = _dataDirectory;
 		_dataDirectory = NormalizeDataDirectory(dataDirectory);
-		LoadAll();
+		try { LoadAll(); }
+		catch { _dataDirectory = previousDirectory; throw; }
 	}
 
 	public static TableSchema GetSchema(string templateName)
@@ -206,10 +214,12 @@ public static class DataEntityRuntimeLoader
 		}
 	}
 
-	private static void LoadAll()
+	public static ReloadSnapshot PrepareReload()
 	{
-		ManifestIndex.Clear();
-		SchemaCache.Clear();
+		var savingPath = ResolvePath(".data-save-in-progress");
+		if (FileExists(savingPath)) throw new IOException("The data editor has an unfinished save; complete saving before hot reload.");
+		var manifest = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		var schemas = new Dictionary<string, TableSchema>(StringComparer.OrdinalIgnoreCase);
 
 		var manifestPath = ResolvePath(DefaultManifestName);
 		if (!FileExists(manifestPath))
@@ -218,59 +228,85 @@ public static class DataEntityRuntimeLoader
 		}
 
 		var manifestContent = ReadAllText(manifestPath);
-		var manifestEntries = JsonConvert.DeserializeObject<List<ManifestRecord>>(manifestContent, SerializerSettings) ?? new List<ManifestRecord>();
+		var contents = new Dictionary<string, string>();
+		var manifestEntries = JsonConvert.DeserializeObject<List<ManifestRecord>>(manifestContent, SerializerSettings) ?? throw new InvalidDataException("Manifest must be an array, not null.");
 		foreach (var entry in manifestEntries)
 		{
-			if (string.IsNullOrWhiteSpace(entry.template) || string.IsNullOrWhiteSpace(entry.path))
-			{
-				continue;
-			}
+			if (entry == null || string.IsNullOrWhiteSpace(entry.template) || string.IsNullOrWhiteSpace(entry.path))
+				throw new InvalidDataException("Manifest entry requires a template and path.");
 			var normalized = entry.template.Trim();
-			ManifestIndex[normalized] = ResolvePath(entry.path);
+			if (!manifest.TryAdd(normalized, ResolvePath(entry.path)))
+				throw new InvalidDataException($"Duplicate manifest template: {normalized}");
 		}
 
-		foreach (var kv in ManifestIndex)
+		foreach (var kv in manifest)
 		{
 			try
 			{
-				var schema = LoadSchema(kv.Key, kv.Value);
-				SchemaCache[kv.Key] = schema;
+				var text = ReadAllText(kv.Value);
+				contents[kv.Value] = text;
+				var schema = LoadSchema(kv.Key, kv.Value, text);
+				schemas[kv.Key] = schema;
 			}
 			catch (Exception ex)
 			{
-				LogError($"\u52a0\u8f7d\u6a21\u677f {kv.Key} \u5931\u8d25: {ex.Message}\n{ex.StackTrace}");
+				throw new InvalidDataException($"Failed to load table {kv.Key}: {ex.Message}", ex);
 			}
 		}
 
-		foreach (var schema in SchemaCache.Values)
+		foreach (var schema in schemas.Values)
 		{
 			if (schema?.parameters == null) continue;
 			foreach (var param in schema.parameters)
 			{
 				if (param?.parameterIndexes == null) continue;
-				if (string.IsNullOrEmpty(param.parameterIndexes.indexField) && !string.IsNullOrEmpty(param.parameterIndexes.template) && SchemaCache.TryGetValue(param.parameterIndexes.template, out var target))
+				if (string.IsNullOrEmpty(param.parameterIndexes.indexField) && !string.IsNullOrEmpty(param.parameterIndexes.template) && schemas.TryGetValue(param.parameterIndexes.template, out var target))
 				{
 					param.parameterIndexes.indexField = target.indexField ?? "id";
 				}
 			}
 		}
 
-		foreach (var kvp in SchemaCache)
+		foreach (var kvp in schemas)
 		{
-			HydrateIndexReferences(kvp.Value);
+			HydrateIndexReferences(kvp.Value, schemas);
 		}
 
-		_initialized = true;
+		if (FileExists(savingPath) || ReadAllText(manifestPath) != manifestContent || contents.Any(pair => ReadAllText(pair.Key) != pair.Value))
+			throw new IOException("Data files changed during hot reload; wait for saving to finish and retry.");
+		return new ReloadSnapshot(manifest, schemas, manifest.ToDictionary(pair => pair.Key, pair => contents[pair.Value], StringComparer.Ordinal));
 	}
 
-	private static TableSchema LoadSchema(string templateName, string filePath)
+	public sealed class ReloadSnapshot
+	{
+		private readonly Dictionary<string, string> _manifest;
+		private readonly IReadOnlyDictionary<string, string> _contents;
+		public IReadOnlyDictionary<string, TableSchema> Schemas { get; }
+		internal ReloadSnapshot(Dictionary<string, string> manifest, Dictionary<string, TableSchema> schemas, Dictionary<string, string> contents)
+		{
+			_manifest = manifest;
+			Schemas = schemas;
+			_contents = new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(contents);
+		}
+		public void Commit()
+		{
+			ManifestIndex = _manifest;
+			SchemaCache = (Dictionary<string, TableSchema>)Schemas;
+			_committedTableContents = _contents;
+			_initialized = true;
+		}
+	}
+
+	private static void LoadAll() => PrepareReload().Commit();
+
+	private static TableSchema LoadSchema(string templateName, string filePath, string content = null)
 	{
 		if (!FileExists(filePath))
 		{
 			throw new FileNotFoundException($"\u627e\u4e0d\u5230\u6a21\u677f {templateName} \u7684\u6570\u636e\u6587\u4ef6", filePath);
 		}
-		var json = ReadAllText(filePath);
-		var raw = JsonConvert.DeserializeObject<RawTableSchema>(json, SerializerSettings) ?? new RawTableSchema();
+		var json = content ?? ReadAllText(filePath);
+		var raw = JsonConvert.DeserializeObject<RawTableSchema>(json, SerializerSettings) ?? throw new InvalidDataException($"Table {templateName} must be an object, not null.");
 		if (raw.parameters != null)
 		{
 			foreach (var param in raw.parameters)
@@ -343,13 +379,13 @@ public static class DataEntityRuntimeLoader
 
 		if (duplicateMessages.Count > 0)
 		{
-			LogError($"{string.Join(",", duplicateMessages)} \u91cd\u590d\u5b9e\u4f8b \u8fd9\u4e9b\u5b9e\u4f8b\u7684index\u91cd\u590d\u5bfc\u5165\u5931\u8d25");
+			throw new InvalidDataException($"{string.Join(",", duplicateMessages)} \u91cd\u590d\u5b9e\u4f8b \u8fd9\u4e9b\u5b9e\u4f8b\u7684index\u91cd\u590d\u5bfc\u5165\u5931\u8d25");
 		}
 
 		return result;
 	}
 
-	private static void HydrateIndexReferences(TableSchema schema)
+	private static void HydrateIndexReferences(TableSchema schema, IReadOnlyDictionary<string, TableSchema> schemas)
 	{
 		if (schema?.parameters == null || schema.instances == null)
 		{
@@ -376,7 +412,7 @@ public static class DataEntityRuntimeLoader
 					continue;
 				}
 				ApplyReferenceDefaults(dataRef, param.parameterIndexes);
-				EnsureDataRefInstance(schema, param, payloadName, payloadIndex, dataRef);
+				EnsureDataRefInstance(schema, param, payloadName, payloadIndex, dataRef, schemas);
 				payload[param.name] = dataRef;
 			}
 		}
@@ -431,7 +467,7 @@ public static class DataEntityRuntimeLoader
 		}
 	}
 
-	private static void EnsureDataRefInstance(TableSchema ownerSchema, ParamDef paramDef, string instanceName, string indexKey, DataRef dataRef)
+	private static void EnsureDataRefInstance(TableSchema ownerSchema, ParamDef paramDef, string instanceName, string indexKey, DataRef dataRef, IReadOnlyDictionary<string, TableSchema> schemas = null)
 	{
 		if (dataRef == null || dataRef.instance != null)
 		{
@@ -439,13 +475,13 @@ public static class DataEntityRuntimeLoader
 		}
 		var binding = paramDef?.parameterIndexes;
 		var targetTemplate = !string.IsNullOrEmpty(dataRef.template) ? dataRef.template : binding?.template;
-		if (string.IsNullOrEmpty(targetTemplate))
+		if (string.IsNullOrEmpty(targetTemplate) || string.IsNullOrWhiteSpace(dataRef.value))
 		{
 			return;
 		}
-		if (!SchemaCache.TryGetValue(targetTemplate, out var targetSchema) || targetSchema?.instances == null)
+		if (!(schemas ?? SchemaCache).TryGetValue(targetTemplate, out var targetSchema) || targetSchema?.instances == null)
 		{
-			LogError($"{FormatInstanceIdentifier(ownerSchema?.name, instanceName, indexKey, paramDef?.name)} \u5f15\u7528\u7684\u6a21\u677f {targetTemplate} \u672a\u52a0\u8f7d\u3002");
+			throw new InvalidDataException($"{FormatInstanceIdentifier(ownerSchema?.name, instanceName, indexKey, paramDef?.name)} \u5f15\u7528\u7684\u6a21\u677f {targetTemplate} \u672a\u52a0\u8f7d\u3002");
 			return;
 		}
 		var matchField = !string.IsNullOrEmpty(dataRef.by) ? dataRef.by : binding?.param;
@@ -465,7 +501,7 @@ public static class DataEntityRuntimeLoader
 		var resolved = FindInstanceByField(targetSchema, matchField, dataRef.value);
 		if (resolved == null)
 		{
-			LogError($"{FormatInstanceIdentifier(ownerSchema?.name, instanceName, indexKey, paramDef?.name)} \u7d22\u5f15 {targetTemplate}.{matchField} = {dataRef.value} \u672a\u627e\u5230\u7d22\u5f15\u5b9e\u4f8b\u3002");
+			throw new InvalidDataException($"{FormatInstanceIdentifier(ownerSchema?.name, instanceName, indexKey, paramDef?.name)} \u7d22\u5f15 {targetTemplate}.{matchField} = {dataRef.value} \u672a\u627e\u5230\u7d22\u5f15\u5b9e\u4f8b\u3002");
 			return;
 		}
 		dataRef.instance = resolved;
@@ -631,7 +667,8 @@ public static class DataEntityRuntimeLoader
 		{
 			return Path.GetFullPath(relativePath);
 		}
-		var sanitized = NormalizeSeparators(relativePath).TrimStart('.', '/');
+		var sanitized = NormalizeSeparators(relativePath).TrimStart('/');
+		while (sanitized.StartsWith("./", StringComparison.Ordinal)) sanitized = sanitized.Substring(2);
 		if (sanitized.StartsWith("dataEntity/", StringComparison.OrdinalIgnoreCase))
 		{
 			sanitized = sanitized.Substring("dataEntity/".Length);

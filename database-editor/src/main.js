@@ -4212,11 +4212,7 @@ import { createUEGeneratorModule } from './generators/ue-generator.js';
       configDirHandle = null;
       currentDirLabel.textContent = directoryHandle.name;
       await loadEditorConfigState();
-      await ensureSubFolders();
-      if (isCSharpMode()) {
-        await ensureModelStruct();
-        await generateRuntimeLoaderArtifacts();
-      }
+      await ensureSubFolders({ dataOnly: true });
       await loadAllTemplates();
       refreshTemplates();
       updateIndexTemplateOptions();
@@ -4238,11 +4234,7 @@ import { createUEGeneratorModule } from './generators/ue-generator.js';
       configDirHandle = null;
       currentDirLabel.textContent = directoryHandle.name;
       await loadEditorConfigState();
-      await ensureSubFolders();
-      if (isCSharpMode()) {
-        await ensureModelStruct();
-        await generateRuntimeLoaderArtifacts();
-      }
+      await ensureSubFolders({ dataOnly: true });
       await loadAllTemplates();
       refreshTemplates();
       updateIndexTemplateOptions();
@@ -4314,9 +4306,9 @@ import { createUEGeneratorModule } from './generators/ue-generator.js';
     }
   }
 
-  async function ensureSubFolders() {
+  async function ensureSubFolders({ dataOnly = false } = {}) {
     if (workspaceStorageModule) {
-      return workspaceStorageModule.ensureSubFolders();
+      return workspaceStorageModule.ensureSubFolders({ dataOnly });
     }
     if (!directoryHandle) return;
     dataEntityHandle = await directoryHandle.getDirectoryHandle("dataEntity", { create: true });
@@ -4326,6 +4318,7 @@ import { createUEGeneratorModule } from './generators/ue-generator.js';
       console.warn('无法创建或访问垃圾箱目录', err);
       trashHandle = null;
     }
+    if (dataOnly) return;
     if (isUnityMode()) {
       cppModelHandle = null;
       cppEnumHandle = null;

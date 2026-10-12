@@ -1,12 +1,27 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 
 namespace GameFramework.Adapters.Godot
 {
 	[GlobalClass]
-	public partial class GodotObjectRootNode : Node, IObjectRuntime
-	{
+	public partial class GodotObjectRootNode : Node, IObjectRuntime, IDataHotReloadParticipant
+{
+		public int DataReloadOrder => 80;
+		public Action PrepareDataReload(IDataTableRuntime candidate)
+		{
+			if (!_initialized) return null;
+			var declarations = new ModuleDeclareRuntime(candidate, ModuleDeclareTableTemplateName);
+			var entries = _orderedModules.Select(entry => CreateModuleEntry(entry.OwnerNode, entry.Module, entry.SnapshotSync, entry.SiblingIndex, declarations)).ToList();
+			entries.Sort(CompareModuleEntries);
+			return () => {
+				UnsubscribeModuleTagSubscriptions();
+				_orderedModules.Clear(); _orderedModules.AddRange(entries);
+				foreach (var entry in entries) SubscribeModuleTags(entry, entry.OwnerNode.GetParent());
+			};
+		}
+
 		private sealed class ModuleEntry
 		{
 			public ModuleEntry(

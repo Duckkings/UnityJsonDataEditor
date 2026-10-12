@@ -70,8 +70,11 @@ namespace GameFramework.Adapters.Godot
 	}
 
 	[GlobalClass]
-	public partial class GodotEventBusNode : Node, IEventBus
-	{
+	public partial class GodotEventBusNode : Node, IEventBus, IValueEventBus, IDataHotReloadParticipant
+{
+		public int DataReloadOrder => 5;
+		public Action PrepareDataReload(IDataTableRuntime candidate) => _core?.PrepareDataReload(candidate);
+
 		public enum BusMode
 		{
 			Global,
@@ -81,7 +84,7 @@ namespace GameFramework.Adapters.Godot
 		public struct Envelope
 		{
 			public string eventName;
-			public List<string> tags;
+			public IReadOnlyList<string> tags;
 			public Node busOwner;
 			public Node sender;
 			public float time;
@@ -157,7 +160,7 @@ namespace GameFramework.Adapters.Godot
 			EnsureCore().Init(dbRuntime, resolvedBusOwner);
 			if (!_hasLoggedInitialization)
 			{
-				_logger.Info($"[GodotEventBusNode] {ResolveInitializationRootName(resolvedBusOwner)} 初始化完成");
+				_logger.Info($"[EventBus] Initialized under {ResolveInitializationRootName(resolvedBusOwner)}");
 				_hasLoggedInitialization = true;
 			}
 		}
@@ -187,6 +190,9 @@ namespace GameFramework.Adapters.Godot
 			return EnsureCore().SubscribeTag(owner, tagName, onEnvelope);
 		}
 
+		SubscriptionToken IValueEventBus.SubscribeValueEvent<T>(object owner,string name,Action<T> callback,Func<object,T> legacy)=>EnsureCore().SubscribeValueEvent(owner,name,callback,legacy);
+		void IValueEventBus.PublishValueEvent<T>(object sender,string name,T value)=>EnsureCore().PublishValueEvent(sender,name,value);
+		bool IValueEventBus.RequiresLegacyEventPayload(string name)=>EnsureCore().RequiresLegacyEventPayload(name);
 		public void PublishEvent(object sender, string eventName, object payload)
 		{
 			EnsureCore().PublishEvent(sender, eventName, payload);

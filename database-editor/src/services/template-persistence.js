@@ -718,6 +718,8 @@ export function createTemplatePersistenceModule(context) {
       return;
     }
     saving = true;
+    let saveMarkerWritten = false;
+    let saveCompleted = false;
     try {
       const commitResult = commitActiveSheetEdits();
       if (commitResult && commitResult.ok === false) {
@@ -761,6 +763,8 @@ export function createTemplatePersistenceModule(context) {
       const savedTemplateSnapshot = getCurrentTemplatePersistenceSnapshot();
       const savedStructureSnapshot = captureCurrentStructureSnapshot();
 
+      await writeTextFileRaw(appState.dataEntityHandle, '.data-save-in-progress', String(Date.now()));
+      saveMarkerWritten = true;
       const {
         enumTemplateSaved,
         duplicateIdWarnings,
@@ -785,6 +789,7 @@ export function createTemplatePersistenceModule(context) {
       await refreshTrashButtonState();
       await refreshTrashOverlayContents();
 
+      saveCompleted = true;
       reportSaveWarnings({
         trashFailures,
         duplicateIdWarnings,
@@ -796,6 +801,11 @@ export function createTemplatePersistenceModule(context) {
       console.error(err);
       showMessage(`保存失败：${err?.message || '请检查权限'}。若已开始写入，部分文件可能已保存`, 'warn');
     } finally {
+      // Keep failed-save markers: runtime must not accept a partly written batch.
+      if (saveMarkerWritten && saveCompleted) {
+        try { await appState.dataEntityHandle.removeEntry('.data-save-in-progress'); }
+        catch (err) { showMessage(`数据已写入，但未能解除热重载保存标记：${err?.message || err}，请重试保存`, 'warn'); }
+      }
       saving = false;
     }
   }

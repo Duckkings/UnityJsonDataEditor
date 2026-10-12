@@ -99,6 +99,21 @@ namespace GameFramework
 			return TryGetFieldValue(columnName, out var value) ? value : defaultValue;
 		}
 
+		// Mutation is owned by the experimental table transaction, never by UI widgets.
+		public void SetFieldValue(string columnName, object value)
+		{
+			if (_fields.TryGetValue("payload", out var payloadObject) && payloadObject is IDictionary<string, object> payload)
+				payload[columnName] = value;
+			else _fields[columnName] = value;
+		}
+
+		public void RemoveFieldValue(string columnName)
+		{
+			if (_fields.TryGetValue("payload", out var payloadObject) && payloadObject is IDictionary<string, object> payload)
+				payload.Remove(columnName);
+			else _fields.Remove(columnName);
+		}
+
 		public IReadOnlyList<string> GetFieldNames()
 		{
 			if (_fields == null)
@@ -145,12 +160,30 @@ namespace GameFramework
 	public struct EventEnvelope
 	{
 		public string EventName;
-		public List<string> Tags;
+		public IReadOnlyList<string> Tags;
 		public object BusOwner;
 		public object Sender;
 		public float Time;
 		public object Payload;
 	}
+
+// Preparation must be read-only. Commits run synchronously on Godot's main thread.
+internal sealed class DataReloadValidationLogger : IRuntimeLogger
+{
+    private readonly IRuntimeLogger _logger;
+    public DataReloadValidationLogger(IRuntimeLogger logger) => _logger = logger;
+    public void Info(string message) { }
+    public void Warning(string message) => _logger.Warning(message);
+    public void Error(string message) => throw new InvalidOperationException(message);
+}
+
+public interface IDataHotReloadParticipant
+{
+    int DataReloadOrder => 100;
+    Action PrepareDataReload(IDataTableRuntime candidate);
+    bool DataReloadResourcesReady(out string error) { error = null; return true; }
+}
+
 
 	public interface IDataTableRuntime
 	{
@@ -250,6 +283,10 @@ namespace GameFramework
 		SubscriptionToken SubscribeTag(object owner, string tagName, Action<EventEnvelope> onEnvelope);
 
 		void PublishEvent(object sender, string eventName, object payload);
+        SubscriptionToken SubscribeValueEvent<T>(object owner,string name,Action<T> callback,Func<object,T> legacy=null) where T:struct
+        {return this is IValueEventBus typed?typed.SubscribeValueEvent(owner,name,callback,legacy):SubscribeEvent(owner,name,p=>{if(p is T value)callback(value);else if(legacy!=null)callback(legacy(p));});}
+        void PublishValueEvent<T>(object sender,string name,T value) where T:struct
+        {if(this is IValueEventBus typed)typed.PublishValueEvent(sender,name,value);else PublishEvent(sender,name,value);}
 
 		void TriggerTagForTest(object sender, string tagName, string reasonEventName = "__DebugTagTrigger__", object payload = null);
 
@@ -331,6 +368,10 @@ namespace GameFramework
 		bool IsDirty { get; }
 
 		void Set(string key, object value);
+        void Set<T>(string key,T value)
+        {if(this is ITypedObjectSnapshotRegion typed)typed.SetTyped(key,value);else Set(key,(object)value);}
+        bool TryGet<T>(string key,out T value)
+        {if(this is ITypedObjectSnapshotRegion typed)return typed.TryGetTyped(key,out value);if(TryGet(key,out object raw)&&raw is T found){value=found;return true;}value=default;return false;}
 
 		bool TryGet(string key, out object value);
 
@@ -471,6 +512,20 @@ namespace GameFramework.Core
 		{
 			_logger = logger ?? throw new ArgumentNullException(nameof(logger));
 		}
+
+        public Action PrepareDataReload(IDataTableRuntime candidate)
+        {
+            var probe = new RootTickRunnerCore(new DataReloadValidationLogger(_logger)) { _dataRuntime = candidate };
+            probe.LoadSystemModuleDeclare(_moduleDeclareTableName);
+            if (!_moduleTable.Keys.OrderBy(key => key).SequenceEqual(probe._moduleTable.Keys.OrderBy(key => key)))
+                throw new InvalidOperationException("Adding/removing system module declarations requires a framework restart; existing modules retained.");
+            return () => {
+                foreach (var pair in _moduleTable) {
+                    var next = probe._moduleTable[pair.Key];
+                    pair.Value.Priority = next.Priority; pair.Value.Order = next.Order; pair.Value.TickType = next.TickType; pair.Value.Tags = next.Tags;
+                }
+            };
+        }
 
 		public void Initialize(IDataTableRuntime dataRuntime, IEventBus eventBus, string initTableName = "systemModuleDeclare")
 		{
@@ -761,12 +816,13 @@ namespace GameFramework.Core
 
 namespace GameFramework.Core
 {
-	public sealed class EventBusCore
+	public sealed partial class EventBusCore
 	{
 		private struct EventDef
 		{
 			public string EventName;
 			public HashSet<string> Tags;
+            public IReadOnlyList<string> PublishedTags;
 			public bool IsDeclaredFromTable;
 		}
 
@@ -776,7 +832,7 @@ namespace GameFramework.Core
 			public object Owner;
 			public string Key;
 			public bool IsTagSubscription;
-			public Delegate Callback;
+			public object Callback;
 			public bool IsActive;
 		}
 
@@ -794,7 +850,10 @@ namespace GameFramework.Core
 		private readonly Dictionary<object, List<SubscriptionToken>> _ownerTokens = new Dictionary<object, List<SubscriptionToken>>();
 		private readonly Dictionary<int, Subscription> _tokenToSub = new Dictionary<int, Subscription>();
 
-		private int _nextTokenId = 1;
+		private readonly Dictionary<List<Subscription>,Subscription[]> _subscriptionSnapshots=new();
+        private Subscription[] DispatchSnapshot(List<Subscription> list)
+        {if(!_subscriptionSnapshots.TryGetValue(list,out var snapshot))_subscriptionSnapshots[list]=snapshot=list.ToArray();return snapshot;}
+        private int _nextTokenId = 1;
 		private object _busOwner;
 		private IDataTableRuntime _dbRuntime;
 
@@ -845,6 +904,18 @@ namespace GameFramework.Core
 				_logger.Warning($"[EventBus] Event table template name is empty on bus '{_busName}'. No events will be declared by default.");
 			}
 		}
+
+        public Action PrepareDataReload(IDataTableRuntime candidate)
+        {
+            var probe = new EventBusCore(_busName, _config, new DataReloadValidationLogger(_logger), _timeProvider, _scopeResolver);
+            probe.Init(candidate, _busOwner);
+            var definitions = probe._eventDefs.ToArray(); var tags = probe._validTags.ToArray();
+            return () => {
+                foreach (var key in _eventDefs.Where(pair => pair.Value.IsDeclaredFromTable).Select(pair => pair.Key).ToArray()) _eventDefs.Remove(key);
+                foreach (var pair in definitions) if (!_eventDefs.ContainsKey(pair.Key)) _eventDefs.Add(pair.Key, pair.Value);
+                _validTags.Clear(); foreach (var tag in tags) _validTags.Add(tag);
+            };
+        }
 
 		public void RegisterCustomEvent(string eventName, string tagExpression)
 		{
@@ -901,6 +972,7 @@ namespace GameFramework.Core
 			}
 
 			list.Add(subscription);
+            _subscriptionSnapshots.Remove(list);
 			_tokenToSub[token.Id] = subscription;
 			TrackOwnerToken(owner, token);
 			return token;
@@ -944,6 +1016,7 @@ namespace GameFramework.Core
 			}
 
 			list.Add(subscription);
+            _subscriptionSnapshots.Remove(list);
 			_tokenToSub[token.Id] = subscription;
 			TrackOwnerToken(owner, token);
 			return token;
@@ -957,15 +1030,15 @@ namespace GameFramework.Core
 			}
 
 			var actualPayload = payload ?? NoDataPayload;
-			List<string> eventTags;
+			IReadOnlyList<string> eventTags;
 			if (_eventDefs.TryGetValue(eventName, out var definition))
 			{
-				eventTags = new List<string>(definition.Tags);
+				eventTags = definition.PublishedTags;
 			}
 			else
 			{
 				_logger.Warning($"[EventBus] Publishing unknown event '{eventName}' on bus '{_busName}'. No tags will be dispatched unless event was declared previously.");
-				eventTags = new List<string>();
+				eventTags = Array.Empty<string>();
 			}
 
 			if (_config.LogPublishedEvents)
@@ -975,13 +1048,15 @@ namespace GameFramework.Core
 
 			if (_eventSubs.TryGetValue(eventName, out var subscriptions))
 			{
-				foreach (var subscription in subscriptions.ToArray())
+				foreach (var subscription in DispatchSnapshot(subscriptions))
 				{
 					if (!subscription.IsActive)
 					{
 						continue;
 					}
 
+                    if(subscription.Callback is IValueSink sink)
+					{try{sink.InvokeLegacy(actualPayload);}catch(Exception ex){_logger.Error($"[EventBus] Typed subscriber '{eventName}': {ex}");}continue;}
 					if (subscription.Callback is Action<object> callback)
 					{
 						try
@@ -1006,14 +1081,15 @@ namespace GameFramework.Core
 				Payload = actualPayload
 			};
 
-			foreach (var tag in eventTags)
-			{
+			for(int tagIndex=0;tagIndex<eventTags.Count;tagIndex++)
+            {
+                var tag=eventTags[tagIndex];
 				if (!_tagSubs.TryGetValue(tag, out var tagSubscriptions))
 				{
 					continue;
 				}
 
-				foreach (var subscription in tagSubscriptions.ToArray())
+				foreach (var subscription in DispatchSnapshot(tagSubscriptions))
 				{
 					if (!subscription.IsActive)
 					{
@@ -1069,7 +1145,7 @@ namespace GameFramework.Core
 				return;
 			}
 
-			foreach (var subscription in subscriptions.ToArray())
+			foreach (var subscription in DispatchSnapshot(subscriptions))
 			{
 				if (!subscription.IsActive)
 				{
@@ -1105,11 +1181,13 @@ namespace GameFramework.Core
 				if (_tagSubs.TryGetValue(subscription.Key, out var tagSubscriptions))
 				{
 					tagSubscriptions.Remove(subscription);
+                    _subscriptionSnapshots.Remove(tagSubscriptions);
 				}
 			}
 			else if (_eventSubs.TryGetValue(subscription.Key, out var eventSubscriptions))
 			{
 				eventSubscriptions.Remove(subscription);
+                _subscriptionSnapshots.Remove(eventSubscriptions);
 			}
 		}
 
@@ -1419,8 +1497,11 @@ namespace GameFramework.Core
 
 		private void DeclareEvent(string eventName, HashSet<string> tags, bool fromTable)
 		{
-			if (_eventDefs.ContainsKey(eventName))
+			if (_eventDefs.TryGetValue(eventName, out var existing))
 			{
+                // Multiple modules may require the same event. Identical declarations
+                // are idempotent; conflicting tags still retain the original and warn.
+                if (existing.Tags.SetEquals(tags)) return;
 				_logger.Warning($"[EventBus] Attempt to redeclare event '{eventName}' on bus '{_busName}'. Original declaration is retained.");
 				return;
 			}
@@ -1429,6 +1510,7 @@ namespace GameFramework.Core
 			{
 				EventName = eventName,
 				Tags = tags,
+                PublishedTags=Array.AsReadOnly(tags.ToArray()),
 				IsDeclaredFromTable = fromTable
 			};
 		}
@@ -1449,7 +1531,7 @@ namespace GameFramework.Core
 			return _config.Mode == EventBusScopeMode.Local && _config.EnableScopeCheckForLocal;
 		}
 
-		private string BuildPublishLogMessage(object sender, string eventName, object payload, List<string> tags)
+		private string BuildPublishLogMessage(object sender, string eventName, object payload, IReadOnlyList<string> tags)
 		{
 			var tagText = tags != null && tags.Count > 0 ? string.Join(", ", tags) : "<none>";
 			return $"[EventBus] Published event '{eventName}' on bus '{_busName}' (sender={DescribeValueForLog(sender)}, tags={tagText}, payload={DescribeValueForLog(payload)}).";

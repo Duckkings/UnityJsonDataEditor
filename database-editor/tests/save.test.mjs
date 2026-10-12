@@ -16,6 +16,9 @@ function harness(mode = 'godot', initial = [sample()]) {
   const messages = [];
   const scripts = { kind: 'scripts' };
   const data = {
+    async removeEntry(name) {
+      if (!files.delete(name)) throw Object.assign(new Error(name), { name: 'NotFoundError' });
+    },
     async *values() {
       for (const [name, value] of files) yield { kind: 'file', name, getFile: async () => ({ text: async () => value }) };
     },

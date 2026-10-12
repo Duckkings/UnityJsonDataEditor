@@ -4,6 +4,10 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $assetRoot = Join-Path $repoRoot 'Runtime/GodotProject'
 $paths = @(
   'EventBusTickRunner/Shared/GameFrameworkRuntime.cs',
+  'EventBusTickRunner/Shared/GameFrameworkValueEvents.cs',
+  'EventBusTickRunner/Shared/TypedSnapshotRegion.cs',
+  'EventBusTickRunner/Shared/SnapshotValueExtensions.cs',
+  'EventBusTickRunner/Shared/FixedValueQueue.cs',
   'EventBusTickRunner/Godot/GodotRuntimeSupport.cs',
   'EventBusTickRunner/Godot/GodotEventBusNode.cs',
   'EventBusTickRunner/Godot/GodotObjectModuleBase.cs',
@@ -30,7 +34,19 @@ $entries = foreach ($path in $paths) {
   $source = Join-Path $ProjectRoot "scripts/$path"
   $target = Join-Path $assetRoot $path
   [IO.Directory]::CreateDirectory((Split-Path -Parent $target)) | Out-Null
-  [IO.File]::Copy($source, $target, $true)
+  $content = [IO.File]::ReadAllText($source)
+  # The generic bootstrap must not depend on PAS actors, ECS scheduling or localization.
+  if ($path -eq 'EventBusTickRunner/Godot/GodotObjectRootNode.cs') {
+    $content = [regex]::Replace($content, '(?m)^.*(?:_crowdGraphVersion|private NonMechEcsRuntime|public bool IsCombatEcsScheduled|internal void AdvanceEcsDomain|_combatEcs\?\.UnregisterDomain|if\(owner is Actor|if\(ResolveContextRoot\(\) is Actor|for\(Node owner=ResolveContextRoot).*(?:\r?\n|$)', '')
+    $content = $content.Replace('_combatEcs==null&&', '').Replace('if (_combatEcs == null) TickModules();', 'TickModules();')
+  }
+  if ($path -eq 'EventBusTickRunner/Godot/GodotEventBusNode.cs') {
+    $content = $content.Replace('PasText.Format("text.763f30aa5aea", (ResolveInitializationRootName(resolvedBusOwner)))', '$"[EventBus] Initialized under {ResolveInitializationRootName(resolvedBusOwner)}"')
+  }
+  if ($content -match '\b(?:PasText|NonMechEcsRuntime|CombatTrialTargetModule|ActorAttributeModule)\b|_combatEcs|_crowdGraphVersion') {
+    throw "Project-specific dependency remains in $path; review the generic adapter before syncing."
+  }
+  [IO.File]::WriteAllText($target, $content, [Text.UTF8Encoding]::new($false))
   [ordered]@{ path = $path; source = "scripts/$path"; sha256 = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() }
 }
 $manifest = [ordered]@{ sourceProject = [IO.Path]::GetFullPath($ProjectRoot); syncedAt = [DateTimeOffset]::Now.ToString('o'); files = @($entries) }

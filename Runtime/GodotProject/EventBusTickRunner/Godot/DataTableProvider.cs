@@ -9,7 +9,7 @@ public partial class DataTableProvider : Node, IDataTableRuntime
     [Export]
     public string DataDir { get; set; } = "res://dataEntity";
 
-    public override void _Ready()
+    public void Init()
     {
         var path = string.IsNullOrWhiteSpace(DataDir) ? null : DataDir;
         DataEntityRuntimeLoader.Initialize(path);

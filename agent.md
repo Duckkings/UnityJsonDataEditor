@@ -23,6 +23,10 @@
 - 源码维护入口：`database-editor/src/main.js`
 - 运行 bundle 重建脚本：`database-editor/build-runtime.ps1`
 
+选择目录、自动恢复上次目录和刷新只加载数据，不生成运行时脚本。脚本生成仅由显式的保存并刷新脚本、生成操作或 Godot 一键初始化触发。
+
+`database-editor/sync-pas-runtime.ps1` 同步 PAS 的通用运行时及类型化事件／快照依赖，再重建 bundle。对象域模板使用普通模块调度，不带 PAS 专属 Actor／NPC ECS 分支；EventBus 日志不依赖 PAS 本地化。同步器会检查残留的项目依赖。同步后运行 `node --test database-editor/tests/*.test.mjs`，并用 `emit-bootstrap-fixture.mjs` 生成独立工程编译、运行验收。
+
 如果修改了 `database-editor/src/`，需要重新执行：
 
 ```powershell

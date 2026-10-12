@@ -79,6 +79,10 @@ export function buildGodotDataTableProviderContent() {
 
 export function buildGodotRuntimeFiles() {
   return [
+    ...['GameFrameworkValueEvents.cs', 'TypedSnapshotRegion.cs', 'SnapshotValueExtensions.cs', 'FixedValueQueue.cs'].map((name) => ({
+      relativePath: `${GODOT_RUNTIME_FOLDER_NAME}/Shared/${name}`,
+      content: getGodotProjectAsset(`${GODOT_RUNTIME_FOLDER_NAME}/Shared/${name}`),
+    })),
     ...['UiSystemTypes.cs', 'UiSystemModule.cs'].map((name) => ({
       relativePath: `ui/${name}`,
       content: getGodotProjectAsset(`ui/${name}`),

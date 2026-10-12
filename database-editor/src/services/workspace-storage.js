@@ -612,11 +612,8 @@ export function createWorkspaceStorageModule(context) {
       appState.configDirHandle = null;
       setCurrentDirectoryLabel(handle.name || '');
       await loadEditorConfigState();
-      await ensureSubFolders();
-      if (isCSharpMode()) {
-        await ensureModelStruct();
-        await generateRuntimeLoaderArtifacts();
-      }
+      // Opening/restoring a workspace must not overwrite project-owned runtime code.
+      await ensureSubFolders({ dataOnly: true });
       await loadAllTemplates();
       refreshTemplates();
       updateIndexTemplateOptions();
@@ -707,7 +704,7 @@ export function createWorkspaceStorageModule(context) {
 
       const selectionState = captureCurrentTemplateSelectionState();
       await loadEditorConfigState();
-      await ensureSubFolders();
+      await ensureSubFolders({ dataOnly: true });
       await loadAllTemplates();
       restoreTemplateSelectionState(selectionState);
       appState.anchorTemplate = appState.currentTemplateIndex >= 0 ? appState.currentTemplateIndex : null;

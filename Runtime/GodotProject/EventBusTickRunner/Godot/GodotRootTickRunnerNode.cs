@@ -5,8 +5,11 @@ using Godot;
 namespace GameFramework.Adapters.Godot
 {
 	[GlobalClass]
-	public partial class GodotRootTickRunnerNode : Node, IRootRuntime
-	{
+	public partial class GodotRootTickRunnerNode : Node, IRootRuntime, IDataHotReloadParticipant
+{
+		public int DataReloadOrder => 1;
+		public System.Action PrepareDataReload(IDataTableRuntime candidate) => _core?.PrepareDataReload(candidate);
+
 		public static GodotRootTickRunnerNode Instance { get; private set; }
 
 		[Export]
@@ -135,6 +138,7 @@ namespace GameFramework.Adapters.Godot
 			{
 				if (providerNode is IDataTableRuntime runtime)
 				{
+					if (providerNode is global::DataTableProvider dataProvider) dataProvider.Init();
 					return runtime;
 				}
 

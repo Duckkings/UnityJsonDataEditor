@@ -1077,6 +1077,21 @@ namespace GameFramework
 			return TryGetFieldValue(columnName, out var value) ? value : defaultValue;
 		}
 
+		// Mutation is owned by the experimental table transaction, never by UI widgets.
+		public void SetFieldValue(string columnName, object value)
+		{
+			if (_fields.TryGetValue("payload", out var payloadObject) && payloadObject is IDictionary<string, object> payload)
+				payload[columnName] = value;
+			else _fields[columnName] = value;
+		}
+
+		public void RemoveFieldValue(string columnName)
+		{
+			if (_fields.TryGetValue("payload", out var payloadObject) && payloadObject is IDictionary<string, object> payload)
+				payload.Remove(columnName);
+			else _fields.Remove(columnName);
+		}
+
 		public IReadOnlyList<string> GetFieldNames()
 		{
 			if (_fields == null)
@@ -1123,12 +1138,30 @@ namespace GameFramework
 	public struct EventEnvelope
 	{
 		public string EventName;
-		public List<string> Tags;
+		public IReadOnlyList<string> Tags;
 		public object BusOwner;
 		public object Sender;
 		public float Time;
 		public object Payload;
 	}
+
+// Preparation must be read-only. Commits run synchronously on Godot's main thread.
+internal sealed class DataReloadValidationLogger : IRuntimeLogger
+{
+    private readonly IRuntimeLogger _logger;
+    public DataReloadValidationLogger(IRuntimeLogger logger) => _logger = logger;
+    public void Info(string message) { }
+    public void Warning(string message) => _logger.Warning(message);
+    public void Error(string message) => throw new InvalidOperationException(message);
+}
+
+public interface IDataHotReloadParticipant
+{
+    int DataReloadOrder => 100;
+    Action PrepareDataReload(IDataTableRuntime candidate);
+    bool DataReloadResourcesReady(out string error) { error = null; return true; }
+}
+
 
 	public interface IDataTableRuntime
 	{
@@ -1228,6 +1261,10 @@ namespace GameFramework
 		SubscriptionToken SubscribeTag(object owner, string tagName, Action<EventEnvelope> onEnvelope);
 
 		void PublishEvent(object sender, string eventName, object payload);
+        SubscriptionToken SubscribeValueEvent<T>(object owner,string name,Action<T> callback,Func<object,T> legacy=null) where T:struct
+        {return this is IValueEventBus typed?typed.SubscribeValueEvent(owner,name,callback,legacy):SubscribeEvent(owner,name,p=>{if(p is T value)callback(value);else if(legacy!=null)callback(legacy(p));});}
+        void PublishValueEvent<T>(object sender,string name,T value) where T:struct
+        {if(this is IValueEventBus typed)typed.PublishValueEvent(sender,name,value);else PublishEvent(sender,name,value);}
 
 		void TriggerTagForTest(object sender, string tagName, string reasonEventName = "__DebugTagTrigger__", object payload = null);
 
@@ -1309,6 +1346,10 @@ namespace GameFramework
 		bool IsDirty { get; }
 
 		void Set(string key, object value);
+        void Set<T>(string key,T value)
+        {if(this is ITypedObjectSnapshotRegion typed)typed.SetTyped(key,value);else Set(key,(object)value);}
+        bool TryGet<T>(string key,out T value)
+        {if(this is ITypedObjectSnapshotRegion typed)return typed.TryGetTyped(key,out value);if(TryGet(key,out object raw)&&raw is T found){value=found;return true;}value=default;return false;}
 
 		bool TryGet(string key, out object value);
 
@@ -1449,6 +1490,20 @@ namespace GameFramework.Core
 		{
 			_logger = logger ?? throw new ArgumentNullException(nameof(logger));
 		}
+
+        public Action PrepareDataReload(IDataTableRuntime candidate)
+        {
+            var probe = new RootTickRunnerCore(new DataReloadValidationLogger(_logger)) { _dataRuntime = candidate };
+            probe.LoadSystemModuleDeclare(_moduleDeclareTableName);
+            if (!_moduleTable.Keys.OrderBy(key => key).SequenceEqual(probe._moduleTable.Keys.OrderBy(key => key)))
+                throw new InvalidOperationException("Adding/removing system module declarations requires a framework restart; existing modules retained.");
+            return () => {
+                foreach (var pair in _moduleTable) {
+                    var next = probe._moduleTable[pair.Key];
+                    pair.Value.Priority = next.Priority; pair.Value.Order = next.Order; pair.Value.TickType = next.TickType; pair.Value.Tags = next.Tags;
+                }
+            };
+        }
 
 		public void Initialize(IDataTableRuntime dataRuntime, IEventBus eventBus, string initTableName = "systemModuleDeclare")
 		{
@@ -1739,12 +1794,13 @@ namespace GameFramework.Core
 
 namespace GameFramework.Core
 {
-	public sealed class EventBusCore
+	public sealed partial class EventBusCore
 	{
 		private struct EventDef
 		{
 			public string EventName;
 			public HashSet<string> Tags;
+            public IReadOnlyList<string> PublishedTags;
 			public bool IsDeclaredFromTable;
 		}
 
@@ -1754,7 +1810,7 @@ namespace GameFramework.Core
 			public object Owner;
 			public string Key;
 			public bool IsTagSubscription;
-			public Delegate Callback;
+			public object Callback;
 			public bool IsActive;
 		}
 
@@ -1772,7 +1828,10 @@ namespace GameFramework.Core
 		private readonly Dictionary<object, List<SubscriptionToken>> _ownerTokens = new Dictionary<object, List<SubscriptionToken>>();
 		private readonly Dictionary<int, Subscription> _tokenToSub = new Dictionary<int, Subscription>();
 
-		private int _nextTokenId = 1;
+		private readonly Dictionary<List<Subscription>,Subscription[]> _subscriptionSnapshots=new();
+        private Subscription[] DispatchSnapshot(List<Subscription> list)
+        {if(!_subscriptionSnapshots.TryGetValue(list,out var snapshot))_subscriptionSnapshots[list]=snapshot=list.ToArray();return snapshot;}
+        private int _nextTokenId = 1;
 		private object _busOwner;
 		private IDataTableRuntime _dbRuntime;
 
@@ -1823,6 +1882,18 @@ namespace GameFramework.Core
 				_logger.Warning($"[EventBus] Event table template name is empty on bus '{_busName}'. No events will be declared by default.");
 			}
 		}
+
+        public Action PrepareDataReload(IDataTableRuntime candidate)
+        {
+            var probe = new EventBusCore(_busName, _config, new DataReloadValidationLogger(_logger), _timeProvider, _scopeResolver);
+            probe.Init(candidate, _busOwner);
+            var definitions = probe._eventDefs.ToArray(); var tags = probe._validTags.ToArray();
+            return () => {
+                foreach (var key in _eventDefs.Where(pair => pair.Value.IsDeclaredFromTable).Select(pair => pair.Key).ToArray()) _eventDefs.Remove(key);
+                foreach (var pair in definitions) if (!_eventDefs.ContainsKey(pair.Key)) _eventDefs.Add(pair.Key, pair.Value);
+                _validTags.Clear(); foreach (var tag in tags) _validTags.Add(tag);
+            };
+        }
 
 		public void RegisterCustomEvent(string eventName, string tagExpression)
 		{
@@ -1879,6 +1950,7 @@ namespace GameFramework.Core
 			}
 
 			list.Add(subscription);
+            _subscriptionSnapshots.Remove(list);
 			_tokenToSub[token.Id] = subscription;
 			TrackOwnerToken(owner, token);
 			return token;
@@ -1922,6 +1994,7 @@ namespace GameFramework.Core
 			}
 
 			list.Add(subscription);
+            _subscriptionSnapshots.Remove(list);
 			_tokenToSub[token.Id] = subscription;
 			TrackOwnerToken(owner, token);
 			return token;
@@ -1935,15 +2008,15 @@ namespace GameFramework.Core
 			}
 
 			var actualPayload = payload ?? NoDataPayload;
-			List<string> eventTags;
+			IReadOnlyList<string> eventTags;
 			if (_eventDefs.TryGetValue(eventName, out var definition))
 			{
-				eventTags = new List<string>(definition.Tags);
+				eventTags = definition.PublishedTags;
 			}
 			else
 			{
 				_logger.Warning($"[EventBus] Publishing unknown event '{eventName}' on bus '{_busName}'. No tags will be dispatched unless event was declared previously.");
-				eventTags = new List<string>();
+				eventTags = Array.Empty<string>();
 			}
 
 			if (_config.LogPublishedEvents)
@@ -1953,13 +2026,15 @@ namespace GameFramework.Core
 
 			if (_eventSubs.TryGetValue(eventName, out var subscriptions))
 			{
-				foreach (var subscription in subscriptions.ToArray())
+				foreach (var subscription in DispatchSnapshot(subscriptions))
 				{
 					if (!subscription.IsActive)
 					{
 						continue;
 					}
 
+                    if(subscription.Callback is IValueSink sink)
+					{try{sink.InvokeLegacy(actualPayload);}catch(Exception ex){_logger.Error($"[EventBus] Typed subscriber '{eventName}': {ex}");}continue;}
 					if (subscription.Callback is Action<object> callback)
 					{
 						try
@@ -1984,14 +2059,15 @@ namespace GameFramework.Core
 				Payload = actualPayload
 			};
 
-			foreach (var tag in eventTags)
-			{
+			for(int tagIndex=0;tagIndex<eventTags.Count;tagIndex++)
+            {
+                var tag=eventTags[tagIndex];
 				if (!_tagSubs.TryGetValue(tag, out var tagSubscriptions))
 				{
 					continue;
 				}
 
-				foreach (var subscription in tagSubscriptions.ToArray())
+				foreach (var subscription in DispatchSnapshot(tagSubscriptions))
 				{
 					if (!subscription.IsActive)
 					{
@@ -2047,7 +2123,7 @@ namespace GameFramework.Core
 				return;
 			}
 
-			foreach (var subscription in subscriptions.ToArray())
+			foreach (var subscription in DispatchSnapshot(subscriptions))
 			{
 				if (!subscription.IsActive)
 				{
@@ -2083,11 +2159,13 @@ namespace GameFramework.Core
 				if (_tagSubs.TryGetValue(subscription.Key, out var tagSubscriptions))
 				{
 					tagSubscriptions.Remove(subscription);
+                    _subscriptionSnapshots.Remove(tagSubscriptions);
 				}
 			}
 			else if (_eventSubs.TryGetValue(subscription.Key, out var eventSubscriptions))
 			{
 				eventSubscriptions.Remove(subscription);
+                _subscriptionSnapshots.Remove(eventSubscriptions);
 			}
 		}
 
@@ -2397,8 +2475,11 @@ namespace GameFramework.Core
 
 		private void DeclareEvent(string eventName, HashSet<string> tags, bool fromTable)
 		{
-			if (_eventDefs.ContainsKey(eventName))
-			{
+			if (_eventDefs.TryGetValue(eventName, out var existing))\r
+			{\r
+                // Multiple modules may require the same event. Identical declarations\r
+                // are idempotent; conflicting tags still retain the original and warn.\r
+                if (existing.Tags.SetEquals(tags)) return;\r
 				_logger.Warning($"[EventBus] Attempt to redeclare event '{eventName}' on bus '{_busName}'. Original declaration is retained.");
 				return;
 			}
@@ -2407,6 +2488,7 @@ namespace GameFramework.Core
 			{
 				EventName = eventName,
 				Tags = tags,
+                PublishedTags=Array.AsReadOnly(tags.ToArray()),
 				IsDeclaredFromTable = fromTable
 			};
 		}
@@ -2427,7 +2509,7 @@ namespace GameFramework.Core
 			return _config.Mode == EventBusScopeMode.Local && _config.EnableScopeCheckForLocal;
 		}
 
-		private string BuildPublishLogMessage(object sender, string eventName, object payload, List<string> tags)
+		private string BuildPublishLogMessage(object sender, string eventName, object payload, IReadOnlyList<string> tags)
 		{
 			var tagText = tags != null && tags.Count > 0 ? string.Join(", ", tags) : "<none>";
 			return $"[EventBus] Published event '{eventName}' on bus '{_busName}' (sender={DescribeValueForLog(sender)}, tags={tagText}, payload={DescribeValueForLog(payload)}).";
@@ -2510,126 +2592,166 @@ namespace GameFramework.Core
 		}
 	}
 }
-`, "EventBusTickRunner/Godot/GodotRuntimeSupport.cs": "\nusing System;\nusing Godot;\n\nnamespace GameFramework.Adapters.Godot\n{\n    public interface IGodotDataTableProvider\n    {\n        EventBusTableSchema GetSchema(string templateName);\n    }\n\n    public sealed class GodotDataTableRuntimeAdapter : IDataTableRuntime\n    {\n        private readonly IGodotDataTableProvider _provider;\n\n        public GodotDataTableRuntimeAdapter(IGodotDataTableProvider provider)\n        {\n            _provider = provider ?? throw new ArgumentNullException(nameof(provider));\n        }\n\n        public EventBusTableSchema GetSchema(string templateName)\n        {\n            return _provider.GetSchema(templateName);\n        }\n    }\n\n    public sealed class GodotRuntimeLogger : IRuntimeLogger\n    {\n        public void Info(string message)\n        {\n            GD.Print(message);\n        }\n\n        public void Warning(string message)\n        {\n            GD.PushWarning(message);\n        }\n\n        public void Error(string message)\n        {\n            GD.PushError(message);\n        }\n    }\n\n    public sealed class GodotScopeResolver : IScopeResolver\n    {\n        public bool IsInScope(object owner, object busOwner)\n        {\n            if (!(owner is Node current) || !(busOwner is Node root))\n            {\n                return false;\n            }\n\n            while (current != null)\n            {\n                if (ReferenceEquals(current, root))\n                {\n                    return true;\n                }\n\n                current = current.GetParent();\n            }\n\n            return false;\n        }\n    }\n\n    public sealed class GodotTimeProvider : ITimeProvider\n    {\n        public float Now => global::Godot.Time.GetTicksMsec() / 1000f;\n    }\n}\n", "EventBusTickRunner/Godot/GodotEventBusNode.cs": '\nusing System;\nusing System.Collections.Generic;\nusing GameFramework;\nusing GameFramework.Core;\nusing Godot;\n\nnamespace GameFramework.Adapters.Godot\n{\n	public static class GodotEventBusRuntimeSettings\n	{\n		private static readonly List<WeakReference<GodotEventBusNode>> RegisteredBuses = new();\n\n		public static bool PublishedEventLoggingEnabled { get; private set; }\n\n		public static void SetPublishedEventLoggingEnabled(bool enabled)\n		{\n			PublishedEventLoggingEnabled = enabled;\n			for (var index = RegisteredBuses.Count - 1; index >= 0; index--)\n			{\n				if (!RegisteredBuses[index].TryGetTarget(out var bus)\n					|| bus == null\n					|| !GodotObject.IsInstanceValid(bus))\n				{\n					RegisteredBuses.RemoveAt(index);\n					continue;\n				}\n				bus.ApplyPublishedEventLogging(enabled);\n			}\n		}\n\n		internal static void Register(GodotEventBusNode bus)\n		{\n			if (bus == null)\n			{\n				return;\n			}\n			for (var index = RegisteredBuses.Count - 1; index >= 0; index--)\n			{\n				if (!RegisteredBuses[index].TryGetTarget(out var existing)\n					|| existing == null\n					|| !GodotObject.IsInstanceValid(existing))\n				{\n					RegisteredBuses.RemoveAt(index);\n					continue;\n				}\n				if (ReferenceEquals(existing, bus))\n				{\n					bus.ApplyPublishedEventLogging(PublishedEventLoggingEnabled);\n					return;\n				}\n			}\n			RegisteredBuses.Add(new WeakReference<GodotEventBusNode>(bus));\n			bus.ApplyPublishedEventLogging(PublishedEventLoggingEnabled);\n		}\n\n		internal static void Unregister(GodotEventBusNode bus)\n		{\n			for (var index = RegisteredBuses.Count - 1; index >= 0; index--)\n			{\n				if (!RegisteredBuses[index].TryGetTarget(out var existing)\n					|| existing == null\n					|| !GodotObject.IsInstanceValid(existing)\n					|| ReferenceEquals(existing, bus))\n				{\n					RegisteredBuses.RemoveAt(index);\n				}\n			}\n		}\n	}\n\n	[GlobalClass]\n	public partial class GodotEventBusNode : Node, IEventBus\n	{\n		public enum BusMode\n		{\n			Global,\n			Local\n		}\n\n		public struct Envelope\n		{\n			public string eventName;\n			public List<string> tags;\n			public Node busOwner;\n			public Node sender;\n			public float time;\n			public object payload;\n\n			internal static Envelope FromEnvelope(EventEnvelope envelope)\n			{\n				return new Envelope\n				{\n					eventName = envelope.EventName,\n					tags = envelope.Tags,\n					busOwner = envelope.BusOwner as Node,\n					sender = envelope.Sender as Node,\n					time = envelope.Time,\n					payload = envelope.Payload\n				};\n			}\n		}\n\n		[Export]\n		public BusMode Mode { get; set; } = BusMode.Global;\n\n		[Export]\n		public string EventTableTemplateName { get; set; }\n\n		[Export]\n		public string TagTableTemplateName { get; set; }\n\n		[Export]\n		public string InitTagFilterTableTemplateName { get; set; }\n\n		[Export]\n		public string InitTagFilterProfileName { get; set; }\n\n		[Export]\n		public string[] InitTagFilters { get; set; } = Array.Empty<string>();\n\n		[Export]\n		public bool EnableScopeCheckForLocal { get; set; } = true;\n\n		[Export]\n		public bool AllowTriggerTagAtRuntime { get; set; }\n\n		[Export]\n		public bool LogVerbose { get; set; }\n\n		[Export]\n		public bool LogPublishedEvents { get; set; }\n\n		[Export]\n		public NodePath ScopeRootPath { get; set; }\n\n		private readonly GodotRuntimeLogger _logger = new GodotRuntimeLogger();\n		private readonly GodotTimeProvider _timeProvider = new GodotTimeProvider();\n		private readonly GodotScopeResolver _scopeResolver = new GodotScopeResolver();\n\n		private EventBusCore _core;\n		private EventBusConfig _coreConfig;\n		private bool _hasLoggedInitialization;\n\n		public bool RuntimeLogPublishedEventsEnabled =>\n			_coreConfig?.LogPublishedEvents ?? GodotEventBusRuntimeSettings.PublishedEventLoggingEnabled;\n\n		public void Init(IDataTableRuntime dbRuntime)\n		{\n			Init(dbRuntime, ResolveDefaultBusOwner());\n		}\n\n		public void Init(IDataTableRuntime dbRuntime, object busOwner)\n		{\n			GodotEventBusRuntimeSettings.Register(this);\n			var resolvedBusOwner = busOwner ?? ResolveDefaultBusOwner();\n			EnsureCore().Init(dbRuntime, resolvedBusOwner);\n			if (!_hasLoggedInitialization)\n			{\n				_logger.Info($"[GodotEventBusNode] {ResolveInitializationRootName(resolvedBusOwner)} 初始化完成");\n				_hasLoggedInitialization = true;\n			}\n		}\n\n		public void RegisterCustomEvent(string eventName, string tagExpression)\n		{\n			EnsureCore().RegisterCustomEvent(eventName, tagExpression);\n		}\n\n		public SubscriptionToken SubscribeEvent(object owner, string eventName, Action<object> onEvent)\n		{\n			return EnsureCore().SubscribeEvent(owner, eventName, onEvent);\n		}\n\n		public SubscriptionToken SubscribeTag(object owner, string tagName, Action<Envelope> onEnvelope)\n		{\n			if (onEnvelope == null)\n			{\n				return default;\n			}\n\n			return EnsureCore().SubscribeTag(owner, tagName, envelope => onEnvelope(Envelope.FromEnvelope(envelope)));\n		}\n\n		SubscriptionToken IEventBus.SubscribeTag(object owner, string tagName, Action<EventEnvelope> onEnvelope)\n		{\n			return EnsureCore().SubscribeTag(owner, tagName, onEnvelope);\n		}\n\n		public void PublishEvent(object sender, string eventName, object payload)\n		{\n			EnsureCore().PublishEvent(sender, eventName, payload);\n		}\n\n		public void PublishEvent(Node sender, string eventName, object payload)\n		{\n			PublishEvent((object)sender, eventName, payload);\n		}\n\n		public void TriggerTagForTest(object sender, string tagName, string reasonEventName = "__DebugTagTrigger__", object payload = null)\n		{\n			EnsureCore().TriggerTagForTest(sender, tagName, reasonEventName, payload);\n		}\n\n		public void TriggerTagForTest(Node sender, string tagName, string reasonEventName = "__DebugTagTrigger__", object payload = null)\n		{\n			TriggerTagForTest((object)sender, tagName, reasonEventName, payload);\n		}\n\n		public void Unsubscribe(SubscriptionToken token)\n		{\n			EnsureCore().Unsubscribe(token);\n		}\n\n		public void UnsubscribeAll(object owner)\n		{\n			EnsureCore().UnsubscribeAll(owner);\n		}\n\n		public void UnsubscribeAll(Node owner)\n		{\n			UnsubscribeAll((object)owner);\n		}\n\n		public void DumpSubscribersOfEvent(string eventName)\n		{\n			EnsureCore().DumpSubscribersOfEvent(eventName);\n		}\n\n		public void DumpSubscribersOfTag(string tagName)\n		{\n			EnsureCore().DumpSubscribersOfTag(tagName);\n		}\n\n		private EventBusCore EnsureCore()\n		{\n			if (_core == null)\n			{\n				GodotEventBusRuntimeSettings.Register(this);\n				_coreConfig = BuildConfig();\n				_core = new EventBusCore(Name.ToString(), _coreConfig, _logger, _timeProvider, _scopeResolver);\n			}\n\n			return _core;\n		}\n\n		private EventBusConfig BuildConfig()\n		{\n			return new EventBusConfig\n			{\n				Mode = Mode == BusMode.Local ? EventBusScopeMode.Local : EventBusScopeMode.Global,\n				EventTableTemplateName = EventTableTemplateName,\n				TagTableTemplateName = TagTableTemplateName,\n				InitTagFilterTableTemplateName = InitTagFilterTableTemplateName,\n				InitTagFilterProfileName = InitTagFilterProfileName,\n				InitTagFilters = InitTagFilters == null ? new List<string>() : new List<string>(InitTagFilters),\n				EnableScopeCheckForLocal = EnableScopeCheckForLocal,\n				AllowTriggerTagAtRuntime = AllowTriggerTagAtRuntime,\n				LogVerbose = LogVerbose,\n				LogPublishedEvents = GodotEventBusRuntimeSettings.PublishedEventLoggingEnabled\n			};\n		}\n\n		internal void ApplyPublishedEventLogging(bool enabled)\n		{\n			LogPublishedEvents = enabled;\n			if (_coreConfig != null)\n			{\n				_coreConfig.LogPublishedEvents = enabled;\n			}\n		}\n\n		public override void _ExitTree()\n		{\n			GodotEventBusRuntimeSettings.Unregister(this);\n		}\n\n		private object ResolveDefaultBusOwner()\n		{\n			var scopeRootPathText = ScopeRootPath.ToString();\n			if (!string.IsNullOrEmpty(scopeRootPathText))\n			{\n				var configuredScopeRoot = GetNodeOrNull<Node>(ScopeRootPath);\n				if (configuredScopeRoot != null)\n				{\n					return configuredScopeRoot;\n				}\n\n				_logger.Warning(\n					"[GodotEventBusNode] ScopeRootPath is configured but the target node was not found. Falling back to the default scope root.");\n			}\n\n			if (Mode == BusMode.Local)\n			{\n				return GetParent() ?? this;\n			}\n\n			return this;\n		}\n\n		private string ResolveInitializationRootName(object busOwner)\n		{\n			if (busOwner is Node busOwnerNode)\n			{\n				if (ReferenceEquals(busOwnerNode, this))\n				{\n					var parentNode = GetParent();\n					if (parentNode != null)\n					{\n						return ResolveNodeName(parentNode);\n					}\n				}\n\n				return ResolveNodeName(busOwnerNode);\n			}\n\n			return ResolveNodeName(GetParent() ?? this);\n		}\n\n		private static string ResolveNodeName(Node node)\n		{\n			if (node == null)\n			{\n				return "<unknown-root>";\n			}\n\n			var nodeName = node.Name.ToString();\n			return string.IsNullOrEmpty(nodeName) ? node.GetType().Name : nodeName;\n		}\n	}\n}\n', "EventBusTickRunner/Godot/GodotObjectModuleBase.cs": "\nusing GameFramework;\nusing GameFramework.Core;\nusing Godot;\n\nnamespace GameFramework.Adapters.Godot\n{\n    [GlobalClass]\n    public abstract partial class GodotObjectModuleBase : Node, IObjectModule, IObjectTagEventReceiver\n    {\n        [Export]\n        public int TickPriority { get; set; }\n\n        [Export]\n        public string ModuleKey { get; set; } = string.Empty;\n\n        string IObjectModule.Name => string.IsNullOrWhiteSpace(ModuleKey)\n            ? Name.ToString()\n            : ModuleKey.Trim();\n\n        int IObjectModule.TickPriority => TickPriority;\n\n        public virtual void Init(IObjectRuntime root, IEventBus localEventBus, IEventBus globalEventBus)\n        {\n        }\n\n        public virtual void Tick()\n        {\n        }\n\n        public virtual void Shutdown()\n        {\n        }\n\n        public virtual void OnTagEvent(string matchedTag, EventEnvelope envelope)\n        {\n            switch (envelope.EventName)\n            {\n                default:\n                    return;\n            }\n        }\n    }\n}\n", "EventBusTickRunner/Godot/GodotObjectSnapshotSystemNode.cs": `using System;
+`, "EventBusTickRunner/Shared/GameFrameworkValueEvents.cs": `using System;
 using System.Collections.Generic;
-using Godot;
 
-namespace GameFramework.Adapters.Godot
+namespace GameFramework
 {
-	[GlobalClass]
-	public partial class GodotObjectSnapshotSystemNode : Node, IObjectSnapshotSystem
-	{
-		private sealed class SnapshotRegion : IObjectSnapshotRegion
-		{
-			private readonly Dictionary<string, object> _values = new Dictionary<string, object>();
-
-			public SnapshotRegion(object owner, string regionName)
-			{
-				Owner = owner ?? throw new ArgumentNullException(nameof(owner));
-				RegionName = regionName ?? throw new ArgumentNullException(nameof(regionName));
-			}
-
-			public string RegionName { get; }
-
-			public object Owner { get; }
-
-			public int Version { get; private set; }
-
-			public bool IsDirty { get; private set; }
-
-			public void Set(string key, object value)
-			{
-				if (string.IsNullOrWhiteSpace(key))
-				{
-					throw new ArgumentException("Snapshot key cannot be empty.", nameof(key));
-				}
-
-				_values[key] = value;
-				Version++;
-				IsDirty = true;
-			}
-
-			public bool TryGet(string key, out object value)
-			{
-				if (string.IsNullOrWhiteSpace(key))
-				{
-					value = null;
-					return false;
-				}
-
-				return _values.TryGetValue(key, out value);
-			}
-
-			public IReadOnlyDictionary<string, object> GetValues()
-			{
-				return _values;
-			}
-		}
-
-		private readonly Dictionary<string, IObjectSnapshotRegion> _regions =
-			new Dictionary<string, IObjectSnapshotRegion>(StringComparer.Ordinal);
-
-		public IObjectSnapshotRegion RegisterRegion(object owner, string regionName)
-		{
-			if (owner == null)
-			{
-				throw new ArgumentNullException(nameof(owner));
-			}
-
-			if (string.IsNullOrWhiteSpace(regionName))
-			{
-				throw new ArgumentException("Snapshot region name cannot be empty.", nameof(regionName));
-			}
-
-			if (_regions.ContainsKey(regionName))
-			{
-				throw new InvalidOperationException($"Snapshot region '{regionName}' is already registered.");
-			}
-
-			var region = new SnapshotRegion(owner, regionName);
-			_regions.Add(regionName, region);
-			return region;
-		}
-
-		public bool TryGetRegion(string regionName, out IObjectSnapshotRegion region)
-		{
-			if (string.IsNullOrWhiteSpace(regionName))
-			{
-				region = null;
-				return false;
-			}
-
-			return _regions.TryGetValue(regionName, out region);
-		}
-
-		public IReadOnlyDictionary<string, IObjectSnapshotRegion> GetRegions()
-		{
-			return _regions;
-		}
-
-		public void ClearRegions()
-		{
-			_regions.Clear();
-		}
-
-		public void UnregisterOwner(object owner)
-		{
-			var names = new List<string>();
-			foreach (var pair in _regions)
-				if (ReferenceEquals(pair.Value.Owner, owner)) names.Add(pair.Key);
-			foreach (var name in names) _regions.Remove(name);
-		}
-	}
+    public interface IValueEventBus
+    {
+        SubscriptionToken SubscribeValueEvent<T>(object owner,string name,Action<T> callback,Func<object,T> legacy=null) where T:struct;
+        void PublishValueEvent<T>(object sender,string name,T value) where T:struct;
+        bool RequiresLegacyEventPayload(string name);
+    }
 }
+namespace GameFramework.Core
+{
+    public sealed partial class EventBusCore
+    {
+        private interface IValueSink {void InvokeLegacy(object value);}
+        private sealed class ValueSink<T>:IValueSink where T:struct
+        {
+            public readonly Action<T> Callback;private readonly Func<object,T> _legacy;
+            public ValueSink(Action<T> callback,Func<object,T> legacy){Callback=callback;_legacy=legacy;}
+            public void InvokeLegacy(object value){if(value is T typed)Callback(typed);else if(_legacy!=null)Callback(_legacy(value));}
+        }
+        public SubscriptionToken SubscribeValueEvent<T>(object owner,string name,Action<T> callback,Func<object,T> legacy=null) where T:struct
+        {
+            if(owner==null||string.IsNullOrEmpty(name)||callback==null)return default;
+            if(RequiresScopeCheck()&&!_scopeResolver.IsInScope(owner,_busOwner))return default;
+            var token=new SubscriptionToken(_nextTokenId++);
+            var sub=new Subscription{Token=token,Owner=owner,Key=name,Callback=new ValueSink<T>(callback,legacy),IsActive=true};
+            if(!_eventSubs.TryGetValue(name,out var list))_eventSubs[name]=list=new();
+            list.Add(sub);_subscriptionSnapshots.Remove(list);_tokenToSub[token.Id]=sub;TrackOwnerToken(owner,token);return token;
+        }
+        public bool RequiresLegacyEventPayload(string name)
+        {
+            if(_config.LogPublishedEvents)return true;
+            if(_eventSubs.TryGetValue(name,out var subs))foreach(var sub in subs)if(sub.IsActive&&sub.Callback is Action<object>)return true;
+            if(_eventDefs.TryGetValue(name,out var def))foreach(var tag in def.Tags)
+                if(_tagSubs.TryGetValue(tag,out var tagged))foreach(var sub in tagged)if(sub.IsActive)return true;
+            return false;
+        }
+        public void PublishValueEvent<T>(object sender,string name,T value) where T:struct
+        {
+            if(string.IsNullOrEmpty(name))return;
+            IReadOnlyList<string> tags=Array.Empty<string>();
+            if(_eventDefs.TryGetValue(name,out var def))tags=def.PublishedTags;
+            else _logger.Warning($"[EventBus] Publishing unknown value event '{name}' on bus '{_busName}'.");
+            object boxed=null;
+            if(_config.LogPublishedEvents){boxed=value;_logger.Info(BuildPublishLogMessage(sender,name,boxed,tags));}
+            if(_eventSubs.TryGetValue(name,out var list))foreach(var sub in DispatchSnapshot(list))
+            {
+                if(!sub.IsActive)continue;
+                try
+                {
+                    if(sub.Callback is ValueSink<T> typed)typed.Callback(value);
+                    else if(sub.Callback is Action<object> legacy){boxed??=value;legacy(boxed);}
+                }
+                catch(Exception ex){_logger.Error($"[EventBus] Value subscriber '{name}': {ex}");}
+            }
+            // Legacy envelopes retain independent payload boxes; never borrow a mutable pooled payload.
+            for(int i=0;i<tags.Count;i++)if(_tagSubs.TryGetValue(tags[i],out var tagged))
+                foreach(var sub in DispatchSnapshot(tagged))
+                {
+                    if(!sub.IsActive||sub.Callback is not Action<EventEnvelope> callback)continue;
+                    boxed??=value;
+                    try{callback(new EventEnvelope{EventName=name,Tags=tags,Sender=sender,BusOwner=_busOwner,Time=_timeProvider.Now,Payload=boxed});}
+                    catch(Exception ex){_logger.Error($"[EventBus] Value tag subscriber '{tags[i]}': {ex}");}
+                }
+        }
+    }
+}
+`, "EventBusTickRunner/Shared/TypedSnapshotRegion.cs": 'using System;\r\nusing System.Collections;\r\nusing System.Collections.Generic;\r\nusing System.Runtime.CompilerServices;\r\n\r\nnamespace GameFramework;\r\n\r\npublic interface ITypedObjectSnapshotRegion\r\n{\r\n    void SetTyped<T>(string key,T value);\r\n    bool TryGetTyped<T>(string key,out T value);\r\n    bool TryGetNumber(string key,out double value);\r\n}\r\n\r\n// Handles resolve metadata once; values retain their actual T, including engine structs.\r\npublic readonly struct SnapshotField<T>\r\n{\r\n    internal readonly TypedSnapshotRegion Owner;\r\n    internal readonly int Index,Generation;\r\n    internal SnapshotField(TypedSnapshotRegion owner,int index,int generation){Owner=owner;Index=index;Generation=generation;}\r\n    public bool IsValid=>Owner!=null&&Owner.Generation==Generation;\r\n}\r\n\r\npublic sealed class TypedSnapshotRegion:IObjectSnapshotRegion,ITypedObjectSnapshotRegion\r\n{\r\n    private interface ISlot\r\n    {\r\n        string Key {get;}\r\n        bool HasValue {get;}\r\n        object Boxed();\r\n        bool Number(out double value);\r\n        bool SetBoxed(object value,bool pending);\r\n        void Commit();void Cancel();\r\n        void CopyTo(IObjectSnapshotRegion target,string key);\r\n    }\r\n    private sealed class Slot<T>:ISlot\r\n    {\r\n        public string Key {get;}\r\n        public T Value,Next;\r\n        public bool Present,NextPresent,Pending;\r\n        private object _boxed;private bool _boxValid;\r\n        public Slot(string key){Key=key;}\r\n        public bool HasValue=>Present;\r\n        public void Set(T value,bool pending)\r\n        {\r\n            if(pending){Next=value;NextPresent=true;Pending=true;return;}\r\n            if(!Present||!EqualityComparer<T>.Default.Equals(Value,value))_boxValid=false;\r\n            Value=value;Present=true;\r\n        }\r\n        public bool SetBoxed(object value,bool pending)\r\n        {\r\n            if(value is T typed){Set(typed,pending);return true;}\r\n            if(value!=null)return false;\r\n            if(pending){Next=default;NextPresent=false;Pending=true;}\r\n            else{Value=default;Present=false;_boxed=null;_boxValid=false;}\r\n            return true;\r\n        }\r\n        public object Boxed(){if(!Present)return null;if(!_boxValid){_boxed=Value;_boxValid=true;}return _boxed;}\r\n        public bool Number(out double value)\r\n        {\r\n            value=0;if(!Present)return false;\r\n            if(typeof(T)==typeof(float))value=Unsafe.As<T,float>(ref Value);\r\n            else if(typeof(T)==typeof(double))value=Unsafe.As<T,double>(ref Value);\r\n            else if(typeof(T)==typeof(int))value=Unsafe.As<T,int>(ref Value);\r\n            else if(typeof(T)==typeof(uint))value=Unsafe.As<T,uint>(ref Value);\r\n            else if(typeof(T)==typeof(long))value=Unsafe.As<T,long>(ref Value);\r\n            else if(typeof(T)==typeof(ulong))value=Unsafe.As<T,ulong>(ref Value);\r\n            else if(typeof(T)==typeof(bool))value=Unsafe.As<T,bool>(ref Value)?1:0;\r\n            else return false;return true;\r\n        }\r\n        public void Commit(){if(!Pending)return;Pending=false;if(NextPresent)Set(Next,false);else SetBoxed(null,false);Next=default;}\r\n        public void Cancel(){Pending=false;Next=default;NextPresent=false;}\r\n        public void CopyTo(IObjectSnapshotRegion target,string key){if(Present)target.Set(key,Value);else target.Set(key,null);}\r\n    }\r\n    private sealed class LegacyView:IReadOnlyDictionary<string,object>\r\n    {\r\n        private readonly TypedSnapshotRegion _owner;\r\n        public LegacyView(TypedSnapshotRegion owner){_owner=owner;}\r\n        public int Count=>_owner._indices.Count;\r\n        public IEnumerable<string> Keys=>_owner._indices.Keys;\r\n        public IEnumerable<object> Values {get{foreach(var pair in _owner._indices)yield return _owner._slots[pair.Value].Boxed();}}\r\n        public object this[string key]=>_owner._slots[_owner._indices[key]].Boxed();\r\n        public bool ContainsKey(string key)=>_owner._indices.ContainsKey(key);\r\n        public bool TryGetValue(string key,out object value)=>_owner.TryGet(key,out value);\r\n        public IEnumerator<KeyValuePair<string,object>> GetEnumerator(){foreach(var pair in _owner._indices)yield return new(pair.Key,_owner._slots[pair.Value].Boxed());}\r\n        IEnumerator IEnumerable.GetEnumerator()=>GetEnumerator();\r\n    }\r\n    private readonly Dictionary<string,int> _indices=new(StringComparer.Ordinal);\r\n    private readonly List<ISlot> _slots=new(32);\r\n    private readonly LegacyView _view;\r\n    private bool _writing;private int _pendingWrites;\r\n    public object Owner {get;}\r\n    public string RegionName {get;}\r\n    public int Version {get;private set;}\r\n    public bool IsDirty {get;private set;}\r\n    internal int Generation {get;private set;}\r\n    public bool IsWriting=>_writing;\r\n    public TypedSnapshotRegion(object owner,string name){Owner=owner??throw new ArgumentNullException(nameof(owner));RegionName=name??throw new ArgumentNullException(nameof(name));_view=new(this);}\r\n    private static void Validate(string key){if(string.IsNullOrWhiteSpace(key))throw new ArgumentException("Snapshot key cannot be empty.",nameof(key));}\r\n    private Slot<T> Resolve<T>(string key)\r\n    {\r\n        Validate(key);\r\n        if(_indices.TryGetValue(key,out var i))\r\n        {\r\n            if(_slots[i] is Slot<T> slot)return slot;\r\n            // A schema may change type at a configuration boundary. Legacy reads remain compatible.\r\n            if(_writing)throw new InvalidOperationException("Register snapshot types before publication.");\r\n            var next=new Slot<T>(key);_slots[i]=next;return next;\r\n        }\r\n        if(_writing)throw new InvalidOperationException("Register snapshot fields before publication.");\r\n        var value=new Slot<T>(key);_indices.Add(key,_slots.Count);_slots.Add(value);return value;\r\n    }\r\n    public SnapshotField<T> RegisterField<T>(string key){Resolve<T>(key);return new(this,_indices[key],Generation);}\r\n    public void Set<T>(SnapshotField<T> field,T value)\r\n    {if(!ReferenceEquals(field.Owner,this)||!field.IsValid||_slots[field.Index] is not Slot<T> slot)throw new InvalidOperationException("Stale or foreign snapshot field.");slot.Set(value,_writing);Written();}\r\n    public bool TryGet<T>(SnapshotField<T> field,out T value)\r\n    {value=default;if(!ReferenceEquals(field.Owner,this)||!field.IsValid||_slots[field.Index] is not Slot<T> slot||!slot.Present)return false;value=slot.Value;return true;}\r\n    public void SetTyped<T>(string key,T value){if(typeof(T)==typeof(object)){Set(key,(object)value);return;}Resolve<T>(key).Set(value,_writing);Written();}\r\n    public void Set(string key,object value)\r\n    {Validate(key);if(_indices.TryGetValue(key,out var i)&&_slots[i].SetBoxed(value,_writing)){Written();return;}Resolve<object>(key).Set(value,_writing);Written();}\r\n    private void Written(){if(_writing)_pendingWrites++;else{Version++;IsDirty=true;}}\r\n    public bool TryGetTyped<T>(string key,out T value)\r\n    {\r\n        value=default;if(key==null||!_indices.TryGetValue(key,out var i))return false;\r\n        if(_slots[i] is Slot<T> slot&&slot.Present){value=slot.Value;return true;}\r\n        if(_slots[i] is Slot<object> legacy&&legacy.Present&&legacy.Value is T typed){value=typed;return true;}\r\n        if(!typeof(T).IsValueType&&_slots[i].Boxed() is T compatible){value=compatible;return true;}\r\n        return false;\r\n    }\r\n    public bool TryGetNumber(string key,out double value){value=0;return key!=null&&_indices.TryGetValue(key,out var i)&&_slots[i].Number(out value);}\r\n    public bool TryGet(string key,out object value){value=null;if(string.IsNullOrWhiteSpace(key)||!_indices.TryGetValue(key,out var i))return false;value=_slots[i].Boxed();return true;}\r\n    public IReadOnlyDictionary<string,object> GetValues()=>_view;\r\n    // Opt-in publication transaction. Existing synchronous module ordering remains immediate by default.\r\n    public void BeginWrite(){if(_writing)throw new InvalidOperationException("Nested snapshot publication.");_writing=true;_pendingWrites=0;}\r\n    public void CommitWrite(){if(!_writing)throw new InvalidOperationException("No snapshot publication.");foreach(var slot in _slots)slot?.Commit();_writing=false;Version+=_pendingWrites;IsDirty|=_pendingWrites>0;_pendingWrites=0;}\r\n    public void CancelWrite(){foreach(var slot in _slots)slot?.Cancel();_writing=false;_pendingWrites=0;}\r\n    public void CopyTo(IObjectSnapshotRegion target,Func<string,string> map=null,Action<string> visit=null)\r\n    {foreach(var pair in _indices){var key=map==null?pair.Key:map(pair.Key);_slots[pair.Value].CopyTo(target,key);visit?.Invoke(key);}}\r\n    public bool Remove(string key){if(!_indices.Remove(key,out var i))return false;_slots[i]=null;Generation++;return true;}\r\n    public void Clear(){_indices.Clear();_slots.Clear();Generation++;_writing=false;_pendingWrites=0;}\r\n}\r\n', "EventBusTickRunner/Shared/SnapshotValueExtensions.cs": "using System.Collections.Generic;\r\nnamespace GameFramework;\r\npublic static class SnapshotValueExtensions\r\n{\r\n    // Compare the typed value before crossing the object API, so stable fields do not allocate boxes.\r\n    public static void SetIfChanged<T>(this IObjectSnapshotRegion region,string key,T value)\r\n    {\r\n        if(region.TryGet<T>(key,out var previous)&&EqualityComparer<T>.Default.Equals(previous,value))return;\r\n        region.Set(key,value);\r\n    }\r\n}\r\n", "EventBusTickRunner/Shared/FixedValueQueue.cs": 'using System;\n\nnamespace GameFramework;\n\n// Capacity is a configuration budget. Never resize a combat command/event queue in a tick.\npublic sealed class FixedValueQueue<T> where T:struct\n{\n    private readonly T[] _buffer;\n    private int _head,_count;\n    public int Count=>_count;\n    public int Capacity=>_buffer.Length;\n    public FixedValueQueue(int capacity){if(capacity<1)throw new ArgumentOutOfRangeException(nameof(capacity));_buffer=new T[capacity];}\n    public bool TryEnqueue(T value){if(_count==Capacity)return false;_buffer[(_head+_count)%Capacity]=value;_count++;return true;}\n    public void Enqueue(T value){if(!TryEnqueue(value))throw new InvalidOperationException("Combat queue capacity exceeded.");}\n    public T Dequeue(){if(_count==0)throw new InvalidOperationException("Combat queue is empty.");var value=_buffer[_head];_buffer[_head]=default;_head=(_head+1)%Capacity;_count--;return value;}\n    public void Clear(){Array.Clear(_buffer);_head=_count=0;}\n}\n', "EventBusTickRunner/Godot/GodotRuntimeSupport.cs": "\nusing System;\nusing Godot;\n\nnamespace GameFramework.Adapters.Godot\n{\n    public interface IGodotDataTableProvider\n    {\n        EventBusTableSchema GetSchema(string templateName);\n    }\n\n    public sealed class GodotDataTableRuntimeAdapter : IDataTableRuntime\n    {\n        private readonly IGodotDataTableProvider _provider;\n\n        public GodotDataTableRuntimeAdapter(IGodotDataTableProvider provider)\n        {\n            _provider = provider ?? throw new ArgumentNullException(nameof(provider));\n        }\n\n        public EventBusTableSchema GetSchema(string templateName)\n        {\n            return _provider.GetSchema(templateName);\n        }\n    }\n\n    public sealed class GodotRuntimeLogger : IRuntimeLogger\n    {\n        public void Info(string message)\n        {\n            GD.Print(message);\n        }\n\n        public void Warning(string message)\n        {\n            GD.PushWarning(message);\n        }\n\n        public void Error(string message)\n        {\n            GD.PushError(message);\n        }\n    }\n\n    public sealed class GodotScopeResolver : IScopeResolver\n    {\n        public bool IsInScope(object owner, object busOwner)\n        {\n            if (!(owner is Node current) || !(busOwner is Node root))\n            {\n                return false;\n            }\n\n            while (current != null)\n            {\n                if (ReferenceEquals(current, root))\n                {\n                    return true;\n                }\n\n                current = current.GetParent();\n            }\n\n            return false;\n        }\n    }\n\n    public sealed class GodotTimeProvider : ITimeProvider\n    {\n        public float Now => global::Godot.Time.GetTicksMsec() / 1000f;\n    }\n}\n", "EventBusTickRunner/Godot/GodotEventBusNode.cs": '\nusing System;\nusing System.Collections.Generic;\nusing GameFramework;\nusing GameFramework.Core;\nusing Godot;\n\nnamespace GameFramework.Adapters.Godot\n{\n	public static class GodotEventBusRuntimeSettings\n	{\n		private static readonly List<WeakReference<GodotEventBusNode>> RegisteredBuses = new();\n\n		public static bool PublishedEventLoggingEnabled { get; private set; }\n\n		public static void SetPublishedEventLoggingEnabled(bool enabled)\n		{\n			PublishedEventLoggingEnabled = enabled;\n			for (var index = RegisteredBuses.Count - 1; index >= 0; index--)\n			{\n				if (!RegisteredBuses[index].TryGetTarget(out var bus)\n					|| bus == null\n					|| !GodotObject.IsInstanceValid(bus))\n				{\n					RegisteredBuses.RemoveAt(index);\n					continue;\n				}\n				bus.ApplyPublishedEventLogging(enabled);\n			}\n		}\n\n		internal static void Register(GodotEventBusNode bus)\n		{\n			if (bus == null)\n			{\n				return;\n			}\n			for (var index = RegisteredBuses.Count - 1; index >= 0; index--)\n			{\n				if (!RegisteredBuses[index].TryGetTarget(out var existing)\n					|| existing == null\n					|| !GodotObject.IsInstanceValid(existing))\n				{\n					RegisteredBuses.RemoveAt(index);\n					continue;\n				}\n				if (ReferenceEquals(existing, bus))\n				{\n					bus.ApplyPublishedEventLogging(PublishedEventLoggingEnabled);\n					return;\n				}\n			}\n			RegisteredBuses.Add(new WeakReference<GodotEventBusNode>(bus));\n			bus.ApplyPublishedEventLogging(PublishedEventLoggingEnabled);\n		}\n\n		internal static void Unregister(GodotEventBusNode bus)\n		{\n			for (var index = RegisteredBuses.Count - 1; index >= 0; index--)\n			{\n				if (!RegisteredBuses[index].TryGetTarget(out var existing)\n					|| existing == null\n					|| !GodotObject.IsInstanceValid(existing)\n					|| ReferenceEquals(existing, bus))\n				{\n					RegisteredBuses.RemoveAt(index);\n				}\n			}\n		}\n	}\n\n	[GlobalClass]\n	public partial class GodotEventBusNode : Node, IEventBus, IValueEventBus, IDataHotReloadParticipant\n{\n		public int DataReloadOrder => 5;\n		public Action PrepareDataReload(IDataTableRuntime candidate) => _core?.PrepareDataReload(candidate);\n\n		public enum BusMode\n		{\n			Global,\n			Local\n		}\n\n		public struct Envelope\n		{\n			public string eventName;\n			public IReadOnlyList<string> tags;\n			public Node busOwner;\n			public Node sender;\n			public float time;\n			public object payload;\n\n			internal static Envelope FromEnvelope(EventEnvelope envelope)\n			{\n				return new Envelope\n				{\n					eventName = envelope.EventName,\n					tags = envelope.Tags,\n					busOwner = envelope.BusOwner as Node,\n					sender = envelope.Sender as Node,\n					time = envelope.Time,\n					payload = envelope.Payload\n				};\n			}\n		}\n\n		[Export]\n		public BusMode Mode { get; set; } = BusMode.Global;\n\n		[Export]\n		public string EventTableTemplateName { get; set; }\n\n		[Export]\n		public string TagTableTemplateName { get; set; }\n\n		[Export]\n		public string InitTagFilterTableTemplateName { get; set; }\n\n		[Export]\n		public string InitTagFilterProfileName { get; set; }\n\n		[Export]\n		public string[] InitTagFilters { get; set; } = Array.Empty<string>();\n\n		[Export]\n		public bool EnableScopeCheckForLocal { get; set; } = true;\n\n		[Export]\n		public bool AllowTriggerTagAtRuntime { get; set; }\n\n		[Export]\n		public bool LogVerbose { get; set; }\n\n		[Export]\n		public bool LogPublishedEvents { get; set; }\n\n		[Export]\n		public NodePath ScopeRootPath { get; set; }\n\n		private readonly GodotRuntimeLogger _logger = new GodotRuntimeLogger();\n		private readonly GodotTimeProvider _timeProvider = new GodotTimeProvider();\n		private readonly GodotScopeResolver _scopeResolver = new GodotScopeResolver();\n\n		private EventBusCore _core;\n		private EventBusConfig _coreConfig;\n		private bool _hasLoggedInitialization;\n\n		public bool RuntimeLogPublishedEventsEnabled =>\n			_coreConfig?.LogPublishedEvents ?? GodotEventBusRuntimeSettings.PublishedEventLoggingEnabled;\n\n		public void Init(IDataTableRuntime dbRuntime)\n		{\n			Init(dbRuntime, ResolveDefaultBusOwner());\n		}\n\n		public void Init(IDataTableRuntime dbRuntime, object busOwner)\n		{\n			GodotEventBusRuntimeSettings.Register(this);\n			var resolvedBusOwner = busOwner ?? ResolveDefaultBusOwner();\n			EnsureCore().Init(dbRuntime, resolvedBusOwner);\n			if (!_hasLoggedInitialization)\n			{\n				_logger.Info($"[EventBus] Initialized under {ResolveInitializationRootName(resolvedBusOwner)}");\n				_hasLoggedInitialization = true;\n			}\n		}\n\n		public void RegisterCustomEvent(string eventName, string tagExpression)\n		{\n			EnsureCore().RegisterCustomEvent(eventName, tagExpression);\n		}\n\n		public SubscriptionToken SubscribeEvent(object owner, string eventName, Action<object> onEvent)\n		{\n			return EnsureCore().SubscribeEvent(owner, eventName, onEvent);\n		}\n\n		public SubscriptionToken SubscribeTag(object owner, string tagName, Action<Envelope> onEnvelope)\n		{\n			if (onEnvelope == null)\n			{\n				return default;\n			}\n\n			return EnsureCore().SubscribeTag(owner, tagName, envelope => onEnvelope(Envelope.FromEnvelope(envelope)));\n		}\n\n		SubscriptionToken IEventBus.SubscribeTag(object owner, string tagName, Action<EventEnvelope> onEnvelope)\n		{\n			return EnsureCore().SubscribeTag(owner, tagName, onEnvelope);\n		}\n\n		SubscriptionToken IValueEventBus.SubscribeValueEvent<T>(object owner,string name,Action<T> callback,Func<object,T> legacy)=>EnsureCore().SubscribeValueEvent(owner,name,callback,legacy);\n		void IValueEventBus.PublishValueEvent<T>(object sender,string name,T value)=>EnsureCore().PublishValueEvent(sender,name,value);\n		bool IValueEventBus.RequiresLegacyEventPayload(string name)=>EnsureCore().RequiresLegacyEventPayload(name);\n		public void PublishEvent(object sender, string eventName, object payload)\n		{\n			EnsureCore().PublishEvent(sender, eventName, payload);\n		}\n\n		public void PublishEvent(Node sender, string eventName, object payload)\n		{\n			PublishEvent((object)sender, eventName, payload);\n		}\n\n		public void TriggerTagForTest(object sender, string tagName, string reasonEventName = "__DebugTagTrigger__", object payload = null)\n		{\n			EnsureCore().TriggerTagForTest(sender, tagName, reasonEventName, payload);\n		}\n\n		public void TriggerTagForTest(Node sender, string tagName, string reasonEventName = "__DebugTagTrigger__", object payload = null)\n		{\n			TriggerTagForTest((object)sender, tagName, reasonEventName, payload);\n		}\n\n		public void Unsubscribe(SubscriptionToken token)\n		{\n			EnsureCore().Unsubscribe(token);\n		}\n\n		public void UnsubscribeAll(object owner)\n		{\n			EnsureCore().UnsubscribeAll(owner);\n		}\n\n		public void UnsubscribeAll(Node owner)\n		{\n			UnsubscribeAll((object)owner);\n		}\n\n		public void DumpSubscribersOfEvent(string eventName)\n		{\n			EnsureCore().DumpSubscribersOfEvent(eventName);\n		}\n\n		public void DumpSubscribersOfTag(string tagName)\n		{\n			EnsureCore().DumpSubscribersOfTag(tagName);\n		}\n\n		private EventBusCore EnsureCore()\n		{\n			if (_core == null)\n			{\n				GodotEventBusRuntimeSettings.Register(this);\n				_coreConfig = BuildConfig();\n				_core = new EventBusCore(Name.ToString(), _coreConfig, _logger, _timeProvider, _scopeResolver);\n			}\n\n			return _core;\n		}\n\n		private EventBusConfig BuildConfig()\n		{\n			return new EventBusConfig\n			{\n				Mode = Mode == BusMode.Local ? EventBusScopeMode.Local : EventBusScopeMode.Global,\n				EventTableTemplateName = EventTableTemplateName,\n				TagTableTemplateName = TagTableTemplateName,\n				InitTagFilterTableTemplateName = InitTagFilterTableTemplateName,\n				InitTagFilterProfileName = InitTagFilterProfileName,\n				InitTagFilters = InitTagFilters == null ? new List<string>() : new List<string>(InitTagFilters),\n				EnableScopeCheckForLocal = EnableScopeCheckForLocal,\n				AllowTriggerTagAtRuntime = AllowTriggerTagAtRuntime,\n				LogVerbose = LogVerbose,\n				LogPublishedEvents = GodotEventBusRuntimeSettings.PublishedEventLoggingEnabled\n			};\n		}\n\n		internal void ApplyPublishedEventLogging(bool enabled)\n		{\n			LogPublishedEvents = enabled;\n			if (_coreConfig != null)\n			{\n				_coreConfig.LogPublishedEvents = enabled;\n			}\n		}\n\n		public override void _ExitTree()\n		{\n			GodotEventBusRuntimeSettings.Unregister(this);\n		}\n\n		private object ResolveDefaultBusOwner()\n		{\n			var scopeRootPathText = ScopeRootPath.ToString();\n			if (!string.IsNullOrEmpty(scopeRootPathText))\n			{\n				var configuredScopeRoot = GetNodeOrNull<Node>(ScopeRootPath);\n				if (configuredScopeRoot != null)\n				{\n					return configuredScopeRoot;\n				}\n\n				_logger.Warning(\n					"[GodotEventBusNode] ScopeRootPath is configured but the target node was not found. Falling back to the default scope root.");\n			}\n\n			if (Mode == BusMode.Local)\n			{\n				return GetParent() ?? this;\n			}\n\n			return this;\n		}\n\n		private string ResolveInitializationRootName(object busOwner)\n		{\n			if (busOwner is Node busOwnerNode)\n			{\n				if (ReferenceEquals(busOwnerNode, this))\n				{\n					var parentNode = GetParent();\n					if (parentNode != null)\n					{\n						return ResolveNodeName(parentNode);\n					}\n				}\n\n				return ResolveNodeName(busOwnerNode);\n			}\n\n			return ResolveNodeName(GetParent() ?? this);\n		}\n\n		private static string ResolveNodeName(Node node)\n		{\n			if (node == null)\n			{\n				return "<unknown-root>";\n			}\n\n			var nodeName = node.Name.ToString();\n			return string.IsNullOrEmpty(nodeName) ? node.GetType().Name : nodeName;\n		}\n	}\n}\n', "EventBusTickRunner/Godot/GodotObjectModuleBase.cs": "\nusing GameFramework;\nusing GameFramework.Core;\nusing Godot;\n\nnamespace GameFramework.Adapters.Godot\n{\n    [GlobalClass]\n    public abstract partial class GodotObjectModuleBase : Node, IObjectModule, IObjectTagEventReceiver\n    {\n        [Export]\n        public int TickPriority { get; set; }\n\n        [Export]\n        public string ModuleKey { get; set; } = string.Empty;\n\n        string IObjectModule.Name => string.IsNullOrWhiteSpace(ModuleKey)\n            ? Name.ToString()\n            : ModuleKey.Trim();\n\n        int IObjectModule.TickPriority => TickPriority;\n\n        public virtual void Init(IObjectRuntime root, IEventBus localEventBus, IEventBus globalEventBus)\n        {\n        }\n\n        public virtual void Tick()\n        {\n        }\n\n        public virtual void Shutdown()\n        {\n        }\n\n        public virtual void OnTagEvent(string matchedTag, EventEnvelope envelope)\n        {\n            switch (envelope.EventName)\n            {\n                default:\n                    return;\n            }\n        }\n    }\n}\n", "EventBusTickRunner/Godot/GodotObjectSnapshotSystemNode.cs": `using System;\r
+using System.Collections.Generic;\r
+using Godot;\r
+\r
+namespace GameFramework.Adapters.Godot\r
+{\r
+	[GlobalClass]\r
+	public partial class GodotObjectSnapshotSystemNode : Node, IObjectSnapshotSystem\r
+	{\r
+		private readonly Dictionary<string, IObjectSnapshotRegion> _regions =\r
+			new Dictionary<string, IObjectSnapshotRegion>(StringComparer.Ordinal);\r
+\r
+		public IObjectSnapshotRegion RegisterRegion(object owner, string regionName)\r
+		{\r
+			if (owner == null)\r
+			{\r
+				throw new ArgumentNullException(nameof(owner));\r
+			}\r
+\r
+			if (string.IsNullOrWhiteSpace(regionName))\r
+			{\r
+				throw new ArgumentException("Snapshot region name cannot be empty.", nameof(regionName));\r
+			}\r
+\r
+			if (_regions.ContainsKey(regionName))\r
+			{\r
+				throw new InvalidOperationException($"Snapshot region '{regionName}' is already registered.");\r
+			}\r
+\r
+			var region = new TypedSnapshotRegion(owner, regionName);\r
+			_regions.Add(regionName, region);\r
+			return region;\r
+		}\r
+\r
+		public bool TryGetRegion(string regionName, out IObjectSnapshotRegion region)\r
+		{\r
+			if (string.IsNullOrWhiteSpace(regionName))\r
+			{\r
+				region = null;\r
+				return false;\r
+			}\r
+\r
+			return _regions.TryGetValue(regionName, out region);\r
+		}\r
+\r
+		public IReadOnlyDictionary<string, IObjectSnapshotRegion> GetRegions()\r
+		{\r
+			return _regions;\r
+		}\r
+\r
+		public void ClearRegions()\r
+		{\r
+			foreach(var region in _regions.Values)if(region is TypedSnapshotRegion typed)typed.Clear();\r
+			_regions.Clear();\r
+		}\r
+\r
+		private readonly List<string> _ownerRegionNames=new();\r
+        public void UnregisterOwner(object owner)\r
+		{\r
+			var names = _ownerRegionNames;names.Clear();\r
+			foreach (var pair in _regions)\r
+				if (ReferenceEquals(pair.Value.Owner, owner)) names.Add(pair.Key);\r
+			foreach (var name in names){if(_regions[name] is TypedSnapshotRegion typed)typed.Clear();_regions.Remove(name);}names.Clear();\r
+		}\r
+	}\r
+}\r
 `, "EventBusTickRunner/Godot/GodotObjectRootNode.cs": `using System;
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 
 namespace GameFramework.Adapters.Godot
 {
 	[GlobalClass]
-	public partial class GodotObjectRootNode : Node, IObjectRuntime
-	{
+	public partial class GodotObjectRootNode : Node, IObjectRuntime, IDataHotReloadParticipant
+{
+		public int DataReloadOrder => 80;
+		public Action PrepareDataReload(IDataTableRuntime candidate)
+		{
+			if (!_initialized) return null;
+			var declarations = new ModuleDeclareRuntime(candidate, ModuleDeclareTableTemplateName);
+			var entries = _orderedModules.Select(entry => CreateModuleEntry(entry.OwnerNode, entry.Module, entry.SnapshotSync, entry.SiblingIndex, declarations)).ToList();
+			entries.Sort(CompareModuleEntries);
+			return () => {
+				UnsubscribeModuleTagSubscriptions();
+				_orderedModules.Clear(); _orderedModules.AddRange(entries);
+				foreach (var entry in entries) SubscribeModuleTags(entry, entry.OwnerNode.GetParent());
+			};
+		}
+
 		private sealed class ModuleEntry
 		{
 			public ModuleEntry(
@@ -3754,8 +3876,11 @@ using Godot;
 namespace GameFramework.Adapters.Godot
 {
 	[GlobalClass]
-	public partial class GodotRootTickRunnerNode : Node, IRootRuntime
-	{
+	public partial class GodotRootTickRunnerNode : Node, IRootRuntime, IDataHotReloadParticipant
+{
+		public int DataReloadOrder => 1;
+		public System.Action PrepareDataReload(IDataTableRuntime candidate) => _core?.PrepareDataReload(candidate);
+
 		public static GodotRootTickRunnerNode Instance { get; private set; }
 
 		[Export]
@@ -3884,6 +4009,7 @@ namespace GameFramework.Adapters.Godot
 			{
 				if (providerNode is IDataTableRuntime runtime)
 				{
+					if (providerNode is global::DataTableProvider dataProvider) dataProvider.Init();
 					return runtime;
 				}
 
@@ -3957,7 +4083,7 @@ namespace GameFramework.Adapters.Godot
 		}
 	}
 }
-`, "EventBusTickRunner/Godot/DataTableProvider.cs": '\nusing System.Collections.Generic;\nusing GameFramework;\nusing Godot;\n\n[GlobalClass]\npublic partial class DataTableProvider : Node, IDataTableRuntime\n{\n    [Export]\n    public string DataDir { get; set; } = "res://dataEntity";\n\n    public override void _Ready()\n    {\n        var path = string.IsNullOrWhiteSpace(DataDir) ? null : DataDir;\n        DataEntityRuntimeLoader.Initialize(path);\n    }\n\n    public void ReloadData()\n    {\n        DataEntityRuntimeLoader.Reload();\n    }\n\n    public EventBusTableSchema GetSchema(string templateName)\n    {\n        var sourceSchema = DataEntityRuntimeLoader.GetSchema(templateName);\n        if (sourceSchema == null)\n        {\n            return null;\n        }\n\n        return new EventBusTableSchema\n        {\n            instances = ConvertInstances(sourceSchema.instances)\n        };\n    }\n\n    private static Dictionary<string, EventBusTableInstance> ConvertInstances(Dictionary<string, object> sourceInstances)\n    {\n        var result = new Dictionary<string, EventBusTableInstance>();\n        if (sourceInstances == null)\n        {\n            return result;\n        }\n\n        foreach (var pair in sourceInstances)\n        {\n            if (pair.Value is Dictionary<string, object> fields)\n            {\n                result[pair.Key] = new EventBusTableInstance(fields);\n            }\n        }\n\n        return result;\n    }\n}\n', "ui/UiSystemTypes.cs": "using Godot;\n\nnamespace GameFramework\n{\n	public interface IUiSystem\n	{\n		ModuleUiHandle RegisterModuleUi(object owner, ModuleUiRequest request);\n\n		void UnregisterModuleUi(object owner);\n\n		bool TryGetView<TView>(object owner, out TView view) where TView : class;\n	}\n\n	public interface IRequireModuleUi\n	{\n		bool WantsScreenUi => true;\n\n		void BindModuleUi(ModuleUiHandle handle, IModuleUiView view);\n	}\n\n	public interface IModuleUiView\n	{\n		void Init(ModuleUiContext context);\n\n		void SetModuleVisible(bool visible);\n	}\n\n	public sealed class ModuleUiRequest\n	{\n		public string ModuleKey { get; set; }\n\n		public string UiPrefabPath { get; set; }\n\n		public int UiPriority { get; set; }\n\n		public int DeclareId { get; set; }\n	}\n\n	public readonly struct ModuleUiHandle\n	{\n		public ModuleUiHandle(int id, object owner, Node uiNode, IModuleUiView view)\n		{\n			Id = id;\n			Owner = owner;\n			UiNode = uiNode;\n			View = view;\n		}\n\n		public int Id { get; }\n\n		public object Owner { get; }\n\n		public Node UiNode { get; }\n\n		public IModuleUiView View { get; }\n\n		public bool IsValid => Id != 0 && Owner != null && UiNode != null;\n	}\n\n	public sealed class ModuleUiContext\n	{\n		public IUiSystem UiSystem { get; set; }\n\n		public object Owner { get; set; }\n\n		public string ModuleKey { get; set; }\n\n		public int UiPriority { get; set; }\n\n		public int DeclareId { get; set; }\n\n		public string UiPrefabPath { get; set; }\n	}\n}\n", "ui/UiSystemModule.cs": `using System;
+`, "EventBusTickRunner/Godot/DataTableProvider.cs": '\r\nusing System.Collections.Generic;\r\nusing GameFramework;\r\nusing Godot;\r\n\r\n[GlobalClass]\r\npublic partial class DataTableProvider : Node, IDataTableRuntime\r\n{\r\n    [Export]\r\n    public string DataDir { get; set; } = "res://dataEntity";\r\n\r\n    public void Init()\r\n    {\r\n        var path = string.IsNullOrWhiteSpace(DataDir) ? null : DataDir;\r\n        DataEntityRuntimeLoader.Initialize(path);\r\n    }\r\n\r\n    public void ReloadData()\r\n    {\r\n        DataEntityRuntimeLoader.Reload();\r\n    }\r\n\r\n    public EventBusTableSchema GetSchema(string templateName)\r\n    {\r\n        var sourceSchema = DataEntityRuntimeLoader.GetSchema(templateName);\r\n        if (sourceSchema == null)\r\n        {\r\n            return null;\r\n        }\r\n\r\n        return new EventBusTableSchema\r\n        {\r\n            instances = ConvertInstances(sourceSchema.instances)\r\n        };\r\n    }\r\n\r\n    private static Dictionary<string, EventBusTableInstance> ConvertInstances(Dictionary<string, object> sourceInstances)\r\n    {\r\n        var result = new Dictionary<string, EventBusTableInstance>();\r\n        if (sourceInstances == null)\r\n        {\r\n            return result;\r\n        }\r\n\r\n        foreach (var pair in sourceInstances)\r\n        {\r\n            if (pair.Value is Dictionary<string, object> fields)\r\n            {\r\n                result[pair.Key] = new EventBusTableInstance(fields);\r\n            }\r\n        }\r\n\r\n        return result;\r\n    }\r\n}\r\n', "ui/UiSystemTypes.cs": "using Godot;\n\nnamespace GameFramework\n{\n	public interface IUiSystem\n	{\n		ModuleUiHandle RegisterModuleUi(object owner, ModuleUiRequest request);\n\n		void UnregisterModuleUi(object owner);\n\n		bool TryGetView<TView>(object owner, out TView view) where TView : class;\n	}\n\n	public interface IRequireModuleUi\n	{\n		bool WantsScreenUi => true;\n\n		void BindModuleUi(ModuleUiHandle handle, IModuleUiView view);\n	}\n\n	public interface IModuleUiView\n	{\n		void Init(ModuleUiContext context);\n\n		void SetModuleVisible(bool visible);\n	}\n\n	public sealed class ModuleUiRequest\n	{\n		public string ModuleKey { get; set; }\n\n		public string UiPrefabPath { get; set; }\n\n		public int UiPriority { get; set; }\n\n		public int DeclareId { get; set; }\n	}\n\n	public readonly struct ModuleUiHandle\n	{\n		public ModuleUiHandle(int id, object owner, Node uiNode, IModuleUiView view)\n		{\n			Id = id;\n			Owner = owner;\n			UiNode = uiNode;\n			View = view;\n		}\n\n		public int Id { get; }\n\n		public object Owner { get; }\n\n		public Node UiNode { get; }\n\n		public IModuleUiView View { get; }\n\n		public bool IsValid => Id != 0 && Owner != null && UiNode != null;\n	}\n\n	public sealed class ModuleUiContext\n	{\n		public IUiSystem UiSystem { get; set; }\n\n		public object Owner { get; set; }\n\n		public string ModuleKey { get; set; }\n\n		public int UiPriority { get; set; }\n\n		public int DeclareId { get; set; }\n\n		public string UiPrefabPath { get; set; }\n	}\n}\n", "ui/UiSystemModule.cs": `using System;
 using System.Collections.Generic;
 using GameFramework;
 using GameFramework.Adapters.Godot;
@@ -4338,17 +4464,25 @@ public static class DataEntityRuntimeLoader
 		},
 	};
 
-	private static readonly Dictionary<string, string> ManifestIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-	private static readonly Dictionary<string, TableSchema> SchemaCache = new Dictionary<string, TableSchema>(StringComparer.OrdinalIgnoreCase);
+	private static Dictionary<string, string> ManifestIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+	private static Dictionary<string, TableSchema> SchemaCache = new Dictionary<string, TableSchema>(StringComparer.OrdinalIgnoreCase);
 	private static string _dataDirectory = string.Empty;
 	private static bool _initialized;
 
 	public static IReadOnlyDictionary<string, TableSchema> Schemas => SchemaCache;
+	// Immutable source snapshot of the tables actually committed, not files edited since startup.
+	private static IReadOnlyDictionary<string, string> _committedTableContents = new Dictionary<string, string>();
+	public static IReadOnlyDictionary<string, string> CommittedTableContents
+	{
+		get { EnsureInitialized(); return _committedTableContents; }
+	}
 
 	public static void Initialize(string dataDirectory = null)
 	{
+		var previousDirectory = _dataDirectory;
 		_dataDirectory = NormalizeDataDirectory(dataDirectory);
-		LoadAll();
+		try { LoadAll(); }
+		catch { _dataDirectory = previousDirectory; throw; }
 	}
 
 	public static TableSchema GetSchema(string templateName)
@@ -4521,10 +4655,12 @@ public static class DataEntityRuntimeLoader
 		}
 	}
 
-	private static void LoadAll()
+	public static ReloadSnapshot PrepareReload()
 	{
-		ManifestIndex.Clear();
-		SchemaCache.Clear();
+		var savingPath = ResolvePath(".data-save-in-progress");
+		if (FileExists(savingPath)) throw new IOException("The data editor has an unfinished save; complete saving before hot reload.");
+		var manifest = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		var schemas = new Dictionary<string, TableSchema>(StringComparer.OrdinalIgnoreCase);
 
 		var manifestPath = ResolvePath(DefaultManifestName);
 		if (!FileExists(manifestPath))
@@ -4533,59 +4669,85 @@ public static class DataEntityRuntimeLoader
 		}
 
 		var manifestContent = ReadAllText(manifestPath);
-		var manifestEntries = JsonConvert.DeserializeObject<List<ManifestRecord>>(manifestContent, SerializerSettings) ?? new List<ManifestRecord>();
+		var contents = new Dictionary<string, string>();
+		var manifestEntries = JsonConvert.DeserializeObject<List<ManifestRecord>>(manifestContent, SerializerSettings) ?? throw new InvalidDataException("Manifest must be an array, not null.");
 		foreach (var entry in manifestEntries)
 		{
-			if (string.IsNullOrWhiteSpace(entry.template) || string.IsNullOrWhiteSpace(entry.path))
-			{
-				continue;
-			}
+			if (entry == null || string.IsNullOrWhiteSpace(entry.template) || string.IsNullOrWhiteSpace(entry.path))
+				throw new InvalidDataException("Manifest entry requires a template and path.");
 			var normalized = entry.template.Trim();
-			ManifestIndex[normalized] = ResolvePath(entry.path);
+			if (!manifest.TryAdd(normalized, ResolvePath(entry.path)))
+				throw new InvalidDataException($"Duplicate manifest template: {normalized}");
 		}
 
-		foreach (var kv in ManifestIndex)
+		foreach (var kv in manifest)
 		{
 			try
 			{
-				var schema = LoadSchema(kv.Key, kv.Value);
-				SchemaCache[kv.Key] = schema;
+				var text = ReadAllText(kv.Value);
+				contents[kv.Value] = text;
+				var schema = LoadSchema(kv.Key, kv.Value, text);
+				schemas[kv.Key] = schema;
 			}
 			catch (Exception ex)
 			{
-				LogError($"\\u52a0\\u8f7d\\u6a21\\u677f {kv.Key} \\u5931\\u8d25: {ex.Message}\\n{ex.StackTrace}");
+				throw new InvalidDataException($"Failed to load table {kv.Key}: {ex.Message}", ex);
 			}
 		}
 
-		foreach (var schema in SchemaCache.Values)
+		foreach (var schema in schemas.Values)
 		{
 			if (schema?.parameters == null) continue;
 			foreach (var param in schema.parameters)
 			{
 				if (param?.parameterIndexes == null) continue;
-				if (string.IsNullOrEmpty(param.parameterIndexes.indexField) && !string.IsNullOrEmpty(param.parameterIndexes.template) && SchemaCache.TryGetValue(param.parameterIndexes.template, out var target))
+				if (string.IsNullOrEmpty(param.parameterIndexes.indexField) && !string.IsNullOrEmpty(param.parameterIndexes.template) && schemas.TryGetValue(param.parameterIndexes.template, out var target))
 				{
 					param.parameterIndexes.indexField = target.indexField ?? "id";
 				}
 			}
 		}
 
-		foreach (var kvp in SchemaCache)
+		foreach (var kvp in schemas)
 		{
-			HydrateIndexReferences(kvp.Value);
+			HydrateIndexReferences(kvp.Value, schemas);
 		}
 
-		_initialized = true;
+		if (FileExists(savingPath) || ReadAllText(manifestPath) != manifestContent || contents.Any(pair => ReadAllText(pair.Key) != pair.Value))
+			throw new IOException("Data files changed during hot reload; wait for saving to finish and retry.");
+		return new ReloadSnapshot(manifest, schemas, manifest.ToDictionary(pair => pair.Key, pair => contents[pair.Value], StringComparer.Ordinal));
 	}
 
-	private static TableSchema LoadSchema(string templateName, string filePath)
+	public sealed class ReloadSnapshot
+	{
+		private readonly Dictionary<string, string> _manifest;
+		private readonly IReadOnlyDictionary<string, string> _contents;
+		public IReadOnlyDictionary<string, TableSchema> Schemas { get; }
+		internal ReloadSnapshot(Dictionary<string, string> manifest, Dictionary<string, TableSchema> schemas, Dictionary<string, string> contents)
+		{
+			_manifest = manifest;
+			Schemas = schemas;
+			_contents = new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(contents);
+		}
+		public void Commit()
+		{
+			ManifestIndex = _manifest;
+			SchemaCache = (Dictionary<string, TableSchema>)Schemas;
+			_committedTableContents = _contents;
+			_initialized = true;
+		}
+	}
+
+	private static void LoadAll() => PrepareReload().Commit();
+
+	private static TableSchema LoadSchema(string templateName, string filePath, string content = null)
 	{
 		if (!FileExists(filePath))
 		{
 			throw new FileNotFoundException($"\\u627e\\u4e0d\\u5230\\u6a21\\u677f {templateName} \\u7684\\u6570\\u636e\\u6587\\u4ef6", filePath);
 		}
-		var json = ReadAllText(filePath);
-		var raw = JsonConvert.DeserializeObject<RawTableSchema>(json, SerializerSettings) ?? new RawTableSchema();
+		var json = content ?? ReadAllText(filePath);
+		var raw = JsonConvert.DeserializeObject<RawTableSchema>(json, SerializerSettings) ?? throw new InvalidDataException($"Table {templateName} must be an object, not null.");
 		if (raw.parameters != null)
 		{
 			foreach (var param in raw.parameters)
@@ -4658,13 +4820,13 @@ public static class DataEntityRuntimeLoader
 
 		if (duplicateMessages.Count > 0)
 		{
-			LogError($"{string.Join(",", duplicateMessages)} \\u91cd\\u590d\\u5b9e\\u4f8b \\u8fd9\\u4e9b\\u5b9e\\u4f8b\\u7684index\\u91cd\\u590d\\u5bfc\\u5165\\u5931\\u8d25");
+			throw new InvalidDataException($"{string.Join(",", duplicateMessages)} \\u91cd\\u590d\\u5b9e\\u4f8b \\u8fd9\\u4e9b\\u5b9e\\u4f8b\\u7684index\\u91cd\\u590d\\u5bfc\\u5165\\u5931\\u8d25");
 		}
 
 		return result;
 	}
 
-	private static void HydrateIndexReferences(TableSchema schema)
+	private static void HydrateIndexReferences(TableSchema schema, IReadOnlyDictionary<string, TableSchema> schemas)
 	{
 		if (schema?.parameters == null || schema.instances == null)
 		{
@@ -4691,7 +4853,7 @@ public static class DataEntityRuntimeLoader
 					continue;
 				}
 				ApplyReferenceDefaults(dataRef, param.parameterIndexes);
-				EnsureDataRefInstance(schema, param, payloadName, payloadIndex, dataRef);
+				EnsureDataRefInstance(schema, param, payloadName, payloadIndex, dataRef, schemas);
 				payload[param.name] = dataRef;
 			}
 		}
@@ -4746,7 +4908,7 @@ public static class DataEntityRuntimeLoader
 		}
 	}
 
-	private static void EnsureDataRefInstance(TableSchema ownerSchema, ParamDef paramDef, string instanceName, string indexKey, DataRef dataRef)
+	private static void EnsureDataRefInstance(TableSchema ownerSchema, ParamDef paramDef, string instanceName, string indexKey, DataRef dataRef, IReadOnlyDictionary<string, TableSchema> schemas = null)
 	{
 		if (dataRef == null || dataRef.instance != null)
 		{
@@ -4754,13 +4916,13 @@ public static class DataEntityRuntimeLoader
 		}
 		var binding = paramDef?.parameterIndexes;
 		var targetTemplate = !string.IsNullOrEmpty(dataRef.template) ? dataRef.template : binding?.template;
-		if (string.IsNullOrEmpty(targetTemplate))
+		if (string.IsNullOrEmpty(targetTemplate) || string.IsNullOrWhiteSpace(dataRef.value))
 		{
 			return;
 		}
-		if (!SchemaCache.TryGetValue(targetTemplate, out var targetSchema) || targetSchema?.instances == null)
+		if (!(schemas ?? SchemaCache).TryGetValue(targetTemplate, out var targetSchema) || targetSchema?.instances == null)
 		{
-			LogError($"{FormatInstanceIdentifier(ownerSchema?.name, instanceName, indexKey, paramDef?.name)} \\u5f15\\u7528\\u7684\\u6a21\\u677f {targetTemplate} \\u672a\\u52a0\\u8f7d\\u3002");
+			throw new InvalidDataException($"{FormatInstanceIdentifier(ownerSchema?.name, instanceName, indexKey, paramDef?.name)} \\u5f15\\u7528\\u7684\\u6a21\\u677f {targetTemplate} \\u672a\\u52a0\\u8f7d\\u3002");
 			return;
 		}
 		var matchField = !string.IsNullOrEmpty(dataRef.by) ? dataRef.by : binding?.param;
@@ -4780,7 +4942,7 @@ public static class DataEntityRuntimeLoader
 		var resolved = FindInstanceByField(targetSchema, matchField, dataRef.value);
 		if (resolved == null)
 		{
-			LogError($"{FormatInstanceIdentifier(ownerSchema?.name, instanceName, indexKey, paramDef?.name)} \\u7d22\\u5f15 {targetTemplate}.{matchField} = {dataRef.value} \\u672a\\u627e\\u5230\\u7d22\\u5f15\\u5b9e\\u4f8b\\u3002");
+			throw new InvalidDataException($"{FormatInstanceIdentifier(ownerSchema?.name, instanceName, indexKey, paramDef?.name)} \\u7d22\\u5f15 {targetTemplate}.{matchField} = {dataRef.value} \\u672a\\u627e\\u5230\\u7d22\\u5f15\\u5b9e\\u4f8b\\u3002");
 			return;
 		}
 		dataRef.instance = resolved;
@@ -4946,7 +5108,8 @@ public static class DataEntityRuntimeLoader
 		{
 			return Path.GetFullPath(relativePath);
 		}
-		var sanitized = NormalizeSeparators(relativePath).TrimStart('.', '/');
+		var sanitized = NormalizeSeparators(relativePath).TrimStart('/');
+		while (sanitized.StartsWith("./", StringComparison.Ordinal)) sanitized = sanitized.Substring(2);
 		if (sanitized.StartsWith("dataEntity/", StringComparison.OrdinalIgnoreCase))
 		{
 			sanitized = sanitized.Substring("dataEntity/".Length);
@@ -5115,6 +5278,10 @@ public static class DataEntityRuntimeLoader
   }
   function buildGodotRuntimeFiles() {
     return [
+      ...["GameFrameworkValueEvents.cs", "TypedSnapshotRegion.cs", "SnapshotValueExtensions.cs", "FixedValueQueue.cs"].map((name) => ({
+        relativePath: `${GODOT_RUNTIME_FOLDER_NAME}/Shared/${name}`,
+        content: getGodotProjectAsset(`${GODOT_RUNTIME_FOLDER_NAME}/Shared/${name}`)
+      })),
       ...["UiSystemTypes.cs", "UiSystemModule.cs"].map((name) => ({
         relativePath: `ui/${name}`,
         content: getGodotProjectAsset(`ui/${name}`)
@@ -5949,11 +6116,7 @@ ${content.slice(closing.index)}`;
         appState.configDirHandle = null;
         setCurrentDirectoryLabel(handle.name || "");
         await loadEditorConfigState();
-        await ensureSubFolders();
-        if (isCSharpMode()) {
-          await ensureModelStruct();
-          await generateRuntimeLoaderArtifacts();
-        }
+        await ensureSubFolders({ dataOnly: true });
         await loadAllTemplates();
         refreshTemplates();
         updateIndexTemplateOptions();
@@ -6039,7 +6202,7 @@ ${content.slice(closing.index)}`;
         }
         const selectionState = captureCurrentTemplateSelectionState();
         await loadEditorConfigState();
-        await ensureSubFolders();
+        await ensureSubFolders({ dataOnly: true });
         await loadAllTemplates();
         restoreTemplateSelectionState(selectionState);
         appState.anchorTemplate = appState.currentTemplateIndex >= 0 ? appState.currentTemplateIndex : null;
@@ -7360,6 +7523,8 @@ ${content.slice(closing.index)}`;
         return;
       }
       saving = true;
+      let saveMarkerWritten = false;
+      let saveCompleted = false;
       try {
         const commitResult = commitActiveSheetEdits();
         if (commitResult && commitResult.ok === false) {
@@ -7397,6 +7562,8 @@ ${content.slice(closing.index)}`;
         await assertDiskUnchanged();
         const savedTemplateSnapshot = getCurrentTemplatePersistenceSnapshot();
         const savedStructureSnapshot = captureCurrentStructureSnapshot2();
+        await writeTextFileRaw(appState.dataEntityHandle, ".data-save-in-progress", String(Date.now()));
+        saveMarkerWritten = true;
         const {
           enumTemplateSaved,
           duplicateIdWarnings,
@@ -7418,6 +7585,7 @@ ${content.slice(closing.index)}`;
         appState.lastLoadedTemplateSnapshot = savedTemplateSnapshot;
         await refreshTrashButtonState();
         await refreshTrashOverlayContents();
+        saveCompleted = true;
         reportSaveWarnings({
           trashFailures,
           duplicateIdWarnings,
@@ -7429,6 +7597,13 @@ ${content.slice(closing.index)}`;
         console.error(err);
         showMessage(`保存失败：${err?.message || "请检查权限"}。若已开始写入，部分文件可能已保存`, "warn");
       } finally {
+        if (saveMarkerWritten && saveCompleted) {
+          try {
+            await appState.dataEntityHandle.removeEntry(".data-save-in-progress");
+          } catch (err) {
+            showMessage(`数据已写入，但未能解除热重载保存标记：${err?.message || err}，请重试保存`, "warn");
+          }
+        }
         saving = false;
       }
     }
@@ -13908,11 +14083,7 @@ DataEntityRuntimeTester 使用说明
         configDirHandle = null;
         currentDirLabel.textContent = directoryHandle.name;
         await loadEditorConfigState();
-        await ensureSubFolders();
-        if (isCSharpMode()) {
-          await ensureModelStruct();
-          await generateRuntimeLoaderArtifacts();
-        }
+        await ensureSubFolders({ dataOnly: true });
         await loadAllTemplates();
         refreshTemplates();
         updateIndexTemplateOptions();
@@ -13930,11 +14101,7 @@ DataEntityRuntimeTester 使用说明
         configDirHandle = null;
         currentDirLabel.textContent = directoryHandle.name;
         await loadEditorConfigState();
-        await ensureSubFolders();
-        if (isCSharpMode()) {
-          await ensureModelStruct();
-          await generateRuntimeLoaderArtifacts();
-        }
+        await ensureSubFolders({ dataOnly: true });
         await loadAllTemplates();
         refreshTemplates();
         updateIndexTemplateOptions();
@@ -13995,9 +14162,9 @@ DataEntityRuntimeTester 使用说明
         modelStructHandle = null;
       }
     }
-    async function ensureSubFolders() {
+    async function ensureSubFolders({ dataOnly = false } = {}) {
       if (workspaceStorageModule) {
-        return workspaceStorageModule.ensureSubFolders();
+        return workspaceStorageModule.ensureSubFolders({ dataOnly });
       }
       if (!directoryHandle) return;
       dataEntityHandle = await directoryHandle.getDirectoryHandle("dataEntity", { create: true });
@@ -14007,6 +14174,7 @@ DataEntityRuntimeTester 使用说明
         console.warn("无法创建或访问垃圾箱目录", err);
         trashHandle = null;
       }
+      if (dataOnly) return;
       if (isUnityMode()) {
         cppModelHandle = null;
         cppEnumHandle = null;

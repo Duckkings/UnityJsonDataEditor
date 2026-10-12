@@ -7,53 +7,6 @@ namespace GameFramework.Adapters.Godot
 	[GlobalClass]
 	public partial class GodotObjectSnapshotSystemNode : Node, IObjectSnapshotSystem
 	{
-		private sealed class SnapshotRegion : IObjectSnapshotRegion
-		{
-			private readonly Dictionary<string, object> _values = new Dictionary<string, object>();
-
-			public SnapshotRegion(object owner, string regionName)
-			{
-				Owner = owner ?? throw new ArgumentNullException(nameof(owner));
-				RegionName = regionName ?? throw new ArgumentNullException(nameof(regionName));
-			}
-
-			public string RegionName { get; }
-
-			public object Owner { get; }
-
-			public int Version { get; private set; }
-
-			public bool IsDirty { get; private set; }
-
-			public void Set(string key, object value)
-			{
-				if (string.IsNullOrWhiteSpace(key))
-				{
-					throw new ArgumentException("Snapshot key cannot be empty.", nameof(key));
-				}
-
-				_values[key] = value;
-				Version++;
-				IsDirty = true;
-			}
-
-			public bool TryGet(string key, out object value)
-			{
-				if (string.IsNullOrWhiteSpace(key))
-				{
-					value = null;
-					return false;
-				}
-
-				return _values.TryGetValue(key, out value);
-			}
-
-			public IReadOnlyDictionary<string, object> GetValues()
-			{
-				return _values;
-			}
-		}
-
 		private readonly Dictionary<string, IObjectSnapshotRegion> _regions =
 			new Dictionary<string, IObjectSnapshotRegion>(StringComparer.Ordinal);
 
@@ -74,7 +27,7 @@ namespace GameFramework.Adapters.Godot
 				throw new InvalidOperationException($"Snapshot region '{regionName}' is already registered.");
 			}
 
-			var region = new SnapshotRegion(owner, regionName);
+			var region = new TypedSnapshotRegion(owner, regionName);
 			_regions.Add(regionName, region);
 			return region;
 		}
@@ -97,15 +50,17 @@ namespace GameFramework.Adapters.Godot
 
 		public void ClearRegions()
 		{
+			foreach(var region in _regions.Values)if(region is TypedSnapshotRegion typed)typed.Clear();
 			_regions.Clear();
 		}
 
-		public void UnregisterOwner(object owner)
+		private readonly List<string> _ownerRegionNames=new();
+        public void UnregisterOwner(object owner)
 		{
-			var names = new List<string>();
+			var names = _ownerRegionNames;names.Clear();
 			foreach (var pair in _regions)
 				if (ReferenceEquals(pair.Value.Owner, owner)) names.Add(pair.Key);
-			foreach (var name in names) _regions.Remove(name);
+			foreach (var name in names){if(_regions[name] is TypedSnapshotRegion typed)typed.Clear();_regions.Remove(name);}names.Clear();
 		}
 	}
 }

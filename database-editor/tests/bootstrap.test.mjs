@@ -26,6 +26,12 @@ test('Godot save and quick-init emit the current loader, model and complete fram
   const names = buildGodotRuntimeFiles().map(f => f.relativePath);
   assert.ok(names.includes('ui/UiSystemTypes.cs')); assert.ok(names.includes('ui/UiSystemModule.cs'));
   assert.equal(new Set(names).size, names.length);
+  for (const name of ['GameFrameworkValueEvents.cs', 'TypedSnapshotRegion.cs', 'SnapshotValueExtensions.cs', 'FixedValueQueue.cs']) {
+    assert.ok(names.includes(`EventBusTickRunner/Shared/${name}`));
+  }
+  for (const file of buildGodotRuntimeFiles().filter(file => file.relativePath.endsWith('.cs'))) {
+    assert.doesNotMatch(file.content, /\b(?:PasText|NonMechEcsRuntime|CombatTrialTargetModule|ActorAttributeModule)\b/, file.relativePath);
+  }
 });
 
 test('new declarations expose current UI fields and register the UI service module', () => {
