@@ -52,7 +52,7 @@ export async function renderParameterCurvePreviews(list, template, instanceIndex
   if (!specs.length || !payload) return;
   if (!list.dataset.numericPreviewListener) {
     list.dataset.numericPreviewListener = 'true';
-    list.addEventListener('input', event => {
+    list.addEventListener('change', event => {
       if (!event.target.closest('[data-numeric-preview]')) list._refreshNumericPreviews?.();
     });
   }
