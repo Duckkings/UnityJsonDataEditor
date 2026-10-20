@@ -1,3 +1,5 @@
+import { renderParameterCurvePreviews } from './parameter-curve-preview.js';
+
 function ensureContext(context) {
   if (!context || typeof context !== 'object') {
     throw new Error('PanelsModule requires a context object');
@@ -118,7 +120,8 @@ function sanitizeFactorySource(source) {
     [/showMessage\('[^']*enum [^']*'\);/g, "showMessage('目标不能是 enum 模板');"],
     [/\$\('newParam'\)\.textContent = '[^']*';/g, "$('newParam').textContent = '新建参数';"],
   ];
-  return replacements.reduce((current, [pattern, replacement]) => current.replace(pattern, replacement), source);
+  return replacements.reduce((current, [pattern, replacement]) => current.replace(pattern, replacement), source)
+    .replace('updateParamNameInputValidity();\n  }', 'updateParamNameInputValidity();\n    renderNumericPreviews(paramListEl, templates[currentTemplateIndex], currentInstanceIndex, directoryHandle, templates);\n  }');
 }
 
 export function createPanelsModule(context) {
@@ -126,6 +129,7 @@ export function createPanelsModule(context) {
   const extraLocals = (() => {
     return {
       $: (id) => document.getElementById(id),
+      renderNumericPreviews: renderParameterCurvePreviews,
       RESERVED_INDEX_FIELDS: context.RESERVED_INDEX_FIELDS || new Set(['template', 'id', 'name', 'index']),
       INDEXABLE_PARAM_TYPES: context.INDEXABLE_PARAM_TYPES || new Set(['int', 'long', 'float', 'string']),
       isSheetModeActive: context.isSheetModeActive || (() => false),
