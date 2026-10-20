@@ -6871,6 +6871,10 @@ ${content.slice(closing.index)}`;
       updateSheetTemplateNav = () => {
       },
       commitActiveSheetEdits = () => ({ ok: true }),
+      commitActiveFormEdits = () => {
+      },
+      setSaveBusy = () => {
+      },
       ensureEngineGenerationConsent = async () => true,
       cleanConflictingEngineArtifacts = async () => {
       },
@@ -6943,6 +6947,21 @@ ${content.slice(closing.index)}`;
     let saving = false;
     let diskSnapshot = null;
     let loadErrors = [];
+    let savedTableSnapshots = /* @__PURE__ */ new Map();
+    const dirtyTableUids = /* @__PURE__ */ new Set();
+    function collectTableSnapshots() {
+      return new Map(appState.templates.map((tpl) => {
+        ensureTemplateUid2(tpl);
+        return [tpl.__uid, JSON.stringify(buildPersistedTemplateSnapshot(tpl))];
+      }));
+    }
+    function getDirtyTemplateNames() {
+      dirtyTableUids.clear();
+      for (const [uid, snapshot] of collectTableSnapshots()) {
+        if (snapshot !== savedTableSnapshots.get(uid)) dirtyTableUids.add(uid);
+      }
+      return appState.templates.filter((tpl) => dirtyTableUids.has(tpl.__uid)).map((tpl) => tpl.name);
+    }
     async function assertFileUnchanged(name) {
       if (!diskSnapshot) return;
       const current = await readTextFileIfExists(appState.dataEntityHandle, name);
@@ -6950,6 +6969,7 @@ ${content.slice(closing.index)}`;
     }
     async function writeTextFile(handle, name, content) {
       if (handle === appState.dataEntityHandle) await assertFileUnchanged(name);
+      if (handle === appState.dataEntityHandle && diskSnapshot?.get(name) === content) return;
       await writeTextFileRaw(handle, name, content);
       if (handle === appState.dataEntityHandle && diskSnapshot) diskSnapshot.set(name, content);
     }
@@ -7031,9 +7051,9 @@ ${content.slice(closing.index)}`;
         instances
       };
     }
-    async function writeManifestForTemplates() {
+    async function writeManifestForTemplates(templates = appState.templates) {
       if (!appState.dataEntityHandle) return;
-      const manifest = appState.templates.filter((tpl) => !isEnumTemplate2(tpl)).map((tpl) => ({ template: tpl.name, path: `${tpl.name}.json` }));
+      const manifest = templates.filter((tpl) => !isEnumTemplate2(tpl)).map((tpl) => ({ template: tpl.name, path: `${tpl.name}.json` }));
       await writeTextFile(appState.dataEntityHandle, "manifest.json", JSON.stringify(manifest, null, 2));
     }
     function askCSharpReplacementBulk(templateNames) {
@@ -7057,6 +7077,8 @@ ${content.slice(closing.index)}`;
     }
     function resetTemplateLoadState() {
       diskSnapshot = /* @__PURE__ */ new Map();
+      savedTableSnapshots = /* @__PURE__ */ new Map();
+      dirtyTableUids.clear();
       loadErrors = [];
       appState.templates.length = 0;
       appState.currentTemplateIndex = -1;
@@ -7154,6 +7176,10 @@ ${content.slice(closing.index)}`;
       }
       appState.lastSavedStructureSnapshot = captureCurrentStructureSnapshot2();
       appState.lastLoadedTemplateSnapshot = getCurrentTemplatePersistenceSnapshot();
+      savedTableSnapshots = collectTableSnapshots();
+      for (const tpl of appState.templates) {
+        if (!tpl.__fromDisk) savedTableSnapshots.delete(tpl.__uid);
+      }
       await refreshTrashButtonState();
     }
     async function restoreTemplateFromTrash(templateName) {
@@ -7287,6 +7313,7 @@ ${content.slice(closing.index)}`;
         showMessage(`已恢复模板：${template.name}`);
       }
       appState.lastLoadedTemplateSnapshot = getCurrentTemplatePersistenceSnapshot();
+      savedTableSnapshots.set(template.__uid, JSON.stringify(buildPersistedTemplateSnapshot(template)));
       await refreshTrashButtonState();
       await refreshTrashOverlayContents();
     }
@@ -7353,14 +7380,17 @@ ${content.slice(closing.index)}`;
         }
       };
     }
-    async function writeTemplateJsonFiles(templateDecisions, csCache) {
-      let enumTemplateSaved = false;
+    async function writeTemplateJsonFiles(templateDecisions, csCache, templates) {
+      let enumTemplateSaved = templates.some(isEnumTemplate2);
       const duplicateIdWarnings = [];
       const listValidationWarnings = [];
-      for (const tpl of appState.templates) {
+      for (const tpl of templates) {
         ensureTemplateUid2(tpl);
+        const meta = templateDecisions.get(tpl.__uid);
+        if (!dirtyTableUids.has(tpl.__uid) && meta?.decision !== "replace") continue;
         normalizeTemplateParameterIndexes2(tpl);
         if (isEnumTemplate2(tpl)) {
+          if (!dirtyTableUids.has(tpl.__uid)) continue;
           await saveEnumTemplateCache(tpl);
           enumTemplateSaved = true;
           const enumJsonObj = buildEnumTemplateJson(tpl);
@@ -7404,9 +7434,11 @@ ${content.slice(closing.index)}`;
           null,
           2
         );
-        await writeTextFile(appState.dataEntityHandle, `${tpl.name}.json`, json);
+        if (dirtyTableUids.has(tpl.__uid)) {
+          showMessage(`正在保存：${tpl.name}`);
+          await writeTextFile(appState.dataEntityHandle, `${tpl.name}.json`, json);
+        }
         tpl.__fromDisk = true;
-        const meta = templateDecisions.get(tpl.__uid);
         if (meta && meta.decision === "replace") {
           const content = csCache.get(tpl.__uid) || generateCSContent(tpl);
           await writeTextFile(appState.csharpHandle, `${tpl.name}.cs`, content);
@@ -7414,12 +7446,15 @@ ${content.slice(closing.index)}`;
       }
       return { enumTemplateSaved, duplicateIdWarnings, listValidationWarnings };
     }
-    async function processPendingDeletions(refreshScripts) {
+    async function processPendingDeletions(refreshScripts, templates, pendingDeletions) {
       const trashFailures = [];
       const deletionsToProcess = [];
-      for (const [name] of Array.from(appState.pendingTemplateDeletions.entries())) {
-        if (appState.templates.some((tpl) => tpl && tpl.name === name)) {
-          appState.pendingTemplateDeletions.delete(name);
+      const clearPending = (name) => {
+        if (appState.pendingTemplateDeletions.get(name) === pendingDeletions.get(name)) appState.pendingTemplateDeletions.delete(name);
+      };
+      for (const [name] of pendingDeletions) {
+        if (templates.some((tpl) => tpl && tpl.name === name)) {
+          clearPending(name);
           continue;
         }
         deletionsToProcess.push(name);
@@ -7431,7 +7466,7 @@ ${content.slice(closing.index)}`;
           const result = await moveTemplateJsonToTrash(name);
           if (result && result.moved) {
             if (diskSnapshot) diskSnapshot.delete(`${name}.json`);
-            appState.pendingTemplateDeletions.delete(name);
+            clearPending(name);
             if (refreshScripts) await deleteCSharpFileIfExists(name);
           } else {
             trashFailures.push(name);
@@ -7523,9 +7558,10 @@ ${content.slice(closing.index)}`;
         return;
       }
       saving = true;
-      let saveMarkerWritten = false;
-      let saveCompleted = false;
       try {
+        setSaveBusy(true);
+        showMessage("正在保存，请稍候");
+        commitActiveFormEdits();
         const commitResult = commitActiveSheetEdits();
         if (commitResult && commitResult.ok === false) {
           if (isSheetModeActive()) {
@@ -7560,32 +7596,45 @@ ${content.slice(closing.index)}`;
         if (refreshScripts && isCSharpMode()) await ensureModelStruct();
         await ensureTrashDirectory();
         await assertDiskUnchanged();
+        validateBeforeSave();
         const savedTemplateSnapshot = getCurrentTemplatePersistenceSnapshot();
         const savedStructureSnapshot = captureCurrentStructureSnapshot2();
+        getDirtyTemplateNames();
+        const savedTables = collectTableSnapshots();
+        const saveTemplates = appState.templates.map((tpl) => ({
+          ...JSON.parse(savedTables.get(tpl.__uid)),
+          __uid: tpl.__uid
+        }));
+        const pendingDeletions = new Map(appState.pendingTemplateDeletions);
         await writeTextFileRaw(appState.dataEntityHandle, ".data-save-in-progress", String(Date.now()));
-        saveMarkerWritten = true;
         const {
           enumTemplateSaved,
           duplicateIdWarnings,
           listValidationWarnings
-        } = await writeTemplateJsonFiles(templateDecisions, csCache);
-        const { trashFailures } = await processPendingDeletions(refreshScripts);
+        } = await writeTemplateJsonFiles(templateDecisions, csCache, saveTemplates);
+        const { trashFailures } = await processPendingDeletions(refreshScripts, saveTemplates, pendingDeletions);
         if (trashFailures.length) throw new Error(`部分模板移入垃圾箱失败：${trashFailures.join("、")}；其他文件可能已保存，请检查后重试`);
         const { ueInvalidNameMessage } = refreshScripts ? await runPostSaveGenerators() : { ueInvalidNameMessage: "" };
         if (!enumTemplateSaved) {
           await clearEnumTemplateCache();
-          await deleteDataEntityFileIfExists("enum.json");
+          if (diskSnapshot.has("enum.json")) await deleteDataEntityFileIfExists("enum.json");
         }
-        await writeManifestForTemplates();
+        await writeManifestForTemplates(saveTemplates);
         if (refreshScripts && isCSharpMode()) {
           await generateRuntimeLoaderArtifacts();
         }
         await persistEditorConfig();
-        if (refreshScripts) appState.lastSavedStructureSnapshot = savedStructureSnapshot;
-        appState.lastLoadedTemplateSnapshot = savedTemplateSnapshot;
         await refreshTrashButtonState();
         await refreshTrashOverlayContents();
-        saveCompleted = true;
+        await appState.dataEntityHandle.removeEntry(".data-save-in-progress");
+        if (refreshScripts) appState.lastSavedStructureSnapshot = savedStructureSnapshot;
+        appState.lastLoadedTemplateSnapshot = savedTemplateSnapshot;
+        savedTableSnapshots = savedTables;
+        for (const tpl of appState.templates) {
+          const saved = savedTables.get(tpl.__uid);
+          if (saved && JSON.parse(saved).name === tpl.name) tpl.__fromDisk = true;
+        }
+        getDirtyTemplateNames();
         reportSaveWarnings({
           trashFailures,
           duplicateIdWarnings,
@@ -7593,24 +7642,20 @@ ${content.slice(closing.index)}`;
           ueInvalidNameMessage,
           refreshScripts
         });
+        if (hasUnsavedTemplateChanges()) showMessage("本次数据已保存；保存期间有新修改，请再次保存", "warn");
       } catch (err) {
         console.error(err);
         showMessage(`保存失败：${err?.message || "请检查权限"}。若已开始写入，部分文件可能已保存`, "warn");
       } finally {
-        if (saveMarkerWritten && saveCompleted) {
-          try {
-            await appState.dataEntityHandle.removeEntry(".data-save-in-progress");
-          } catch (err) {
-            showMessage(`数据已写入，但未能解除热重载保存标记：${err?.message || err}，请重试保存`, "warn");
-          }
-        }
         saving = false;
+        setSaveBusy(false);
       }
     }
     return {
       loadAllTemplates,
       getCurrentTemplatePersistenceSnapshot,
       hasUnsavedTemplateChanges,
+      getDirtyTemplateNames,
       buildEnumTemplateJson,
       writeManifestForTemplates,
       askCSharpReplacementBulk,
@@ -12153,6 +12198,21 @@ DataEntityRuntimeTester 使用说明
       isSheetModeActive: (...args) => appModeModule.isSheetModeActive(...args),
       updateSheetTemplateNav,
       commitActiveSheetEdits,
+      commitActiveFormEdits: () => {
+        if (appModeModule.isSheetModeActive()) {
+          window.luckysheet?.exitEditMode?.();
+        } else {
+          const active = document.activeElement;
+          if (active && active.matches("input, textarea, select")) active.blur();
+        }
+      },
+      setSaveBusy: (busy) => {
+        if (saveBtn) {
+          saveBtn.disabled = busy;
+          saveBtn.textContent = busy ? "正在保存…" : "保存";
+          saveBtn.setAttribute("aria-busy", String(busy));
+        }
+      },
       ensureEngineGenerationConsent: (...args) => workspaceStorageModule.ensureEngineGenerationConsent(...args),
       cleanConflictingEngineArtifacts: (...args) => workspaceStorageModule.cleanConflictingEngineArtifacts(...args),
       ensureSubFolders: (...args) => workspaceStorageModule.ensureSubFolders(...args),

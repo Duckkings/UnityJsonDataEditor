@@ -2047,6 +2047,25 @@ import { createUEGeneratorModule } from './generators/ue-generator.js';
     isSheetModeActive: (...args) => appModeModule.isSheetModeActive(...args),
     updateSheetTemplateNav,
     commitActiveSheetEdits,
+    commitActiveFormEdits: () => {
+      // Ctrl+S does not naturally blur the field, so its change handler has not
+      // necessarily copied the visible value into the template yet.
+      if (appModeModule.isSheetModeActive()) {
+        // The workbook still has the old value while a cell editor is open.
+        // The bundled Luckysheet API commits that editor synchronously.
+        window.luckysheet?.exitEditMode?.();
+      } else {
+        const active = document.activeElement;
+        if (active && active.matches('input, textarea, select')) active.blur();
+      }
+    },
+    setSaveBusy: (busy) => {
+      if (saveBtn) {
+        saveBtn.disabled = busy;
+        saveBtn.textContent = busy ? '正在保存…' : '保存';
+        saveBtn.setAttribute('aria-busy', String(busy));
+      }
+    },
     ensureEngineGenerationConsent: (...args) =>
       workspaceStorageModule.ensureEngineGenerationConsent(...args),
     cleanConflictingEngineArtifacts: (...args) =>

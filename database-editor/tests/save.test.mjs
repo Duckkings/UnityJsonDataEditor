@@ -138,6 +138,7 @@ test('simultaneous saves do not overlap', async () => {
   const h = harness(); let release; const gate = new Promise(r => release = r);
   h.context.ensureSubFolders = async () => gate;
   const mod = h.create(); await mod.loadAllTemplates();
+  h.appState.templates[0].instances[0].payload.health = 11;
   const first = mod.saveAll(); const second = mod.saveAll(); await second;
   assert.match(h.messages.at(-1), /正在保存/); release(); await first;
   assert.equal(h.events.filter(e => e[0] === 'write' && e[2] === 'actor.json').length, 1);
@@ -182,9 +183,98 @@ test('edits during asynchronous write remain marked unsaved', async () => {
     await original(...args);
     if (args[1] === 'actor.json') h.appState.templates[0].instances[0].payload.health = 99;
   };
-  const mod = h.create(); await mod.loadAllTemplates(); await mod.saveAll();
-  assert.equal(JSON.parse(h.files.get('actor.json')).instances[0].payload.health, 10);
+  const mod = h.create(); await mod.loadAllTemplates();
+  h.appState.templates[0].instances[0].payload.health = 11;
+  await mod.saveAll();
+  assert.equal(JSON.parse(h.files.get('actor.json')).instances[0].payload.health, 11);
   assert.equal(mod.hasUnsavedTemplateChanges(), true);
+});
+
+test('dirty tables: writes only the edited table, keeps untouched bytes, and clears flags', async () => {
+  const h = harness('godot', [sample(), { ...sample(), name: 'weapon' }]);
+  const mod = h.create(); await mod.loadAllTemplates(); await mod.saveAll();
+  const untouched = h.files.get('weapon.json'); h.events.length = 0;
+  assert.deepEqual(mod.getDirtyTemplateNames(), []);
+  h.appState.templates[0].instances[0].payload.health = 42;
+  assert.deepEqual(mod.getDirtyTemplateNames(), ['actor']);
+  await mod.saveAll();
+  assert.deepEqual(h.events.filter(e => e[0] === 'write' && e[2].endsWith('.json')).map(e => e[2]), ['actor.json']);
+  assert.equal(h.files.get('weapon.json'), untouched);
+  assert.deepEqual(mod.getDirtyTemplateNames(), []);
+  h.events.length = 0; await mod.saveAll();
+  assert.equal(h.events.filter(e => e[0] === 'write' && e[2].endsWith('.json')).length, 0);
+});
+
+test('dirty tables: reverting an edit clears dirty; new, renamed and enum tables persist', async () => {
+  const h = harness('godot', [sample(), { name: 'enum', parameters: [], instances: [] }]);
+  const mod = h.create(); await mod.loadAllTemplates();
+  const actor = h.appState.templates[0];
+  actor.instances[0].payload.health = 12; assert.deepEqual(mod.getDirtyTemplateNames(), ['actor']);
+  actor.instances[0].payload.health = 10; assert.deepEqual(mod.getDirtyTemplateNames(), []);
+  actor.name = 'renamed'; h.appState.pendingTemplateDeletions.set('actor', {});
+  h.appState.templates.push({ ...sample(), name: 'newTable' });
+  h.appState.templates.find(t => t.name === 'enum').parameters.push({ name: 'types', type: 'string' });
+  assert.deepEqual(new Set(mod.getDirtyTemplateNames()), new Set(['renamed', 'newTable', 'enum']));
+  await mod.saveAll();
+  assert.equal(h.files.has('actor.json'), false);
+  for (const name of ['renamed', 'newTable', 'enum']) assert.ok(h.files.has(`${name}.json`));
+  assert.deepEqual(mod.getDirtyTemplateNames(), []);
+});
+
+test('success is reported only after unlock; unlock failure retains dirty and retry works', async () => {
+  const h = harness(); const remove = h.appState.dataEntityHandle.removeEntry; let fail = true;
+  h.appState.dataEntityHandle.removeEntry = async name => {
+    assert.ok(!h.messages.some(m => m.startsWith('已保存数据')));
+    if (fail) throw new Error('save lock busy');
+    return remove(name);
+  };
+  const busy = []; h.context.setSaveBusy = value => busy.push(value);
+  const mod = h.create(); await mod.loadAllTemplates();
+  h.appState.templates[0].instances[0].payload.health = 55;
+  await mod.saveAll();
+  assert.match(h.messages.at(-1), /保存失败.*save lock busy/);
+  assert.ok(h.files.has('.data-save-in-progress'));
+  assert.deepEqual(mod.getDirtyTemplateNames(), ['actor']);
+  assert.ok(mod.hasUnsavedTemplateChanges());
+  fail = false; await mod.saveAll();
+  assert.ok(!h.files.has('.data-save-in-progress'));
+  assert.deepEqual(mod.getDirtyTemplateNames(), []);
+  assert.match(h.messages.at(-1), /^已保存数据/);
+  assert.deepEqual(busy, [true, false, true, false]);
+});
+
+test('focused form value commits before dirty detection and validation', async () => {
+  const h = harness();
+  h.context.commitActiveFormEdits = () => { h.appState.templates[0].instances[0].payload.health = 88; };
+  const mod = h.create(); await mod.loadAllTemplates(); await mod.saveAll();
+  assert.equal(JSON.parse(h.files.get('actor.json')).instances[0].payload.health, 88);
+  assert.deepEqual(mod.getDirtyTemplateNames(), []);
+});
+
+test('new saved tables become disk-backed; enum deletion clears its cached fallback', async () => {
+  const h = harness('godot', [sample(), { name: 'enum', parameters: [], instances: [] }]);
+  let cacheCleared = false; h.context.clearEnumTemplateCache = async () => { cacheCleared = true; };
+  const mod = h.create(); await mod.loadAllTemplates();
+  const added = { ...sample(), name: 'newTable' }; h.appState.templates.push(added);
+  await mod.saveAll(); assert.equal(added.__fromDisk, true);
+  h.appState.templates = h.appState.templates.filter(tpl => tpl.name !== 'enum');
+  h.appState.pendingTemplateDeletions.set('enum', {});
+  await mod.saveAll(); assert.equal(cacheCleared, true); assert.equal(h.files.has('enum.json'), false);
+});
+
+test('later table edits during save use the frozen batch and remain dirty', async () => {
+  const h = harness('godot', [sample(), { ...sample(), name: 'weapon' }]);
+  const original = h.context.writeTextFile;
+  h.context.writeTextFile = async (...args) => {
+    await original(...args);
+    if (args[1] === 'actor.json') h.appState.templates[1].instances[0].payload.health = 99;
+  };
+  const mod = h.create(); await mod.loadAllTemplates();
+  for (const tpl of h.appState.templates) tpl.instances[0].payload.health = 20;
+  await mod.saveAll();
+  assert.equal(JSON.parse(h.files.get('weapon.json')).instances[0].payload.health, 20);
+  assert.deepEqual(mod.getDirtyTemplateNames(), ['weapon']);
+  assert.match(h.messages.at(-1), /有新修改/);
 });
 
 if (process.env.PAS_DATA_DIR) {

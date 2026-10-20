@@ -17,6 +17,8 @@ export function createTemplatePersistenceModule(context) {
     isSheetModeActive = () => false,
     updateSheetTemplateNav = () => {},
     commitActiveSheetEdits = () => ({ ok: true }),
+    commitActiveFormEdits = () => {},
+    setSaveBusy = () => {},
     ensureEngineGenerationConsent = async () => true,
     cleanConflictingEngineArtifacts = async () => {},
     ensureSubFolders = async () => {},
@@ -65,6 +67,25 @@ export function createTemplatePersistenceModule(context) {
   let saving = false;
   let diskSnapshot = null;
   let loadErrors = [];
+  // Semantic baselines catch every editing route (forms, sheets, CSV, undo,
+  // reference edits) without relying on each legacy handler remembering a flag.
+  let savedTableSnapshots = new Map();
+  const dirtyTableUids = new Set();
+
+  function collectTableSnapshots() {
+    return new Map(appState.templates.map((tpl) => {
+      ensureTemplateUid(tpl);
+      return [tpl.__uid, JSON.stringify(buildPersistedTemplateSnapshot(tpl))];
+    }));
+  }
+
+  function getDirtyTemplateNames() {
+    dirtyTableUids.clear();
+    for (const [uid, snapshot] of collectTableSnapshots()) {
+      if (snapshot !== savedTableSnapshots.get(uid)) dirtyTableUids.add(uid);
+    }
+    return appState.templates.filter(tpl => dirtyTableUids.has(tpl.__uid)).map(tpl => tpl.name);
+  }
 
   async function assertFileUnchanged(name) {
     if (!diskSnapshot) return;
@@ -74,6 +95,9 @@ export function createTemplatePersistenceModule(context) {
 
   async function writeTextFile(handle, name, content) {
     if (handle === appState.dataEntityHandle) await assertFileUnchanged(name);
+    // Retain conflict checks, but avoid expensive browser write/close operations
+    // (and filesystem notifications) for tables whose contents did not change.
+    if (handle === appState.dataEntityHandle && diskSnapshot?.get(name) === content) return;
     await writeTextFileRaw(handle, name, content);
     if (handle === appState.dataEntityHandle && diskSnapshot) diskSnapshot.set(name, content);
   }
@@ -166,9 +190,9 @@ export function createTemplatePersistenceModule(context) {
     };
   }
 
-  async function writeManifestForTemplates() {
+  async function writeManifestForTemplates(templates = appState.templates) {
     if (!appState.dataEntityHandle) return;
-    const manifest = appState.templates
+    const manifest = templates
       .filter((tpl) => !isEnumTemplate(tpl))
       .map((tpl) => ({ template: tpl.name, path: `${tpl.name}.json` }));
     await writeTextFile(appState.dataEntityHandle, 'manifest.json', JSON.stringify(manifest, null, 2));
@@ -196,6 +220,8 @@ export function createTemplatePersistenceModule(context) {
 
   function resetTemplateLoadState() {
     diskSnapshot = new Map();
+    savedTableSnapshots = new Map();
+    dirtyTableUids.clear();
     loadErrors = [];
     appState.templates.length = 0;
     appState.currentTemplateIndex = -1;
@@ -308,6 +334,10 @@ export function createTemplatePersistenceModule(context) {
     }
     appState.lastSavedStructureSnapshot = captureCurrentStructureSnapshot();
     appState.lastLoadedTemplateSnapshot = getCurrentTemplatePersistenceSnapshot();
+    savedTableSnapshots = collectTableSnapshots();
+    for (const tpl of appState.templates) {
+      if (!tpl.__fromDisk) savedTableSnapshots.delete(tpl.__uid);
+    }
     await refreshTrashButtonState();
   }
 
@@ -453,6 +483,7 @@ export function createTemplatePersistenceModule(context) {
       showMessage(`已恢复模板：${template.name}`);
     }
     appState.lastLoadedTemplateSnapshot = getCurrentTemplatePersistenceSnapshot();
+    savedTableSnapshots.set(template.__uid, JSON.stringify(buildPersistedTemplateSnapshot(template)));
     await refreshTrashButtonState();
     await refreshTrashOverlayContents();
   }
@@ -525,15 +556,18 @@ export function createTemplatePersistenceModule(context) {
     };
   }
 
-  async function writeTemplateJsonFiles(templateDecisions, csCache) {
-    let enumTemplateSaved = false;
+  async function writeTemplateJsonFiles(templateDecisions, csCache, templates) {
+    let enumTemplateSaved = templates.some(isEnumTemplate);
     const duplicateIdWarnings = [];
     const listValidationWarnings = [];
 
-    for (const tpl of appState.templates) {
+    for (const tpl of templates) {
       ensureTemplateUid(tpl);
+      const meta = templateDecisions.get(tpl.__uid);
+      if (!dirtyTableUids.has(tpl.__uid) && meta?.decision !== 'replace') continue;
       normalizeTemplateParameterIndexes(tpl);
       if (isEnumTemplate(tpl)) {
+        if (!dirtyTableUids.has(tpl.__uid)) continue;
         await saveEnumTemplateCache(tpl);
         enumTemplateSaved = true;
         const enumJsonObj = buildEnumTemplateJson(tpl);
@@ -580,10 +614,12 @@ export function createTemplatePersistenceModule(context) {
         null,
         2,
       );
-      await writeTextFile(appState.dataEntityHandle, `${tpl.name}.json`, json);
+      if (dirtyTableUids.has(tpl.__uid)) {
+        showMessage(`正在保存：${tpl.name}`);
+        await writeTextFile(appState.dataEntityHandle, `${tpl.name}.json`, json);
+      }
       tpl.__fromDisk = true;
 
-      const meta = templateDecisions.get(tpl.__uid);
       if (meta && meta.decision === 'replace') {
         const content = csCache.get(tpl.__uid) || generateCSContent(tpl);
         await writeTextFile(appState.csharpHandle, `${tpl.name}.cs`, content);
@@ -593,12 +629,15 @@ export function createTemplatePersistenceModule(context) {
     return { enumTemplateSaved, duplicateIdWarnings, listValidationWarnings };
   }
 
-  async function processPendingDeletions(refreshScripts) {
+  async function processPendingDeletions(refreshScripts, templates, pendingDeletions) {
     const trashFailures = [];
     const deletionsToProcess = [];
-    for (const [name] of Array.from(appState.pendingTemplateDeletions.entries())) {
-      if (appState.templates.some((tpl) => tpl && tpl.name === name)) {
-        appState.pendingTemplateDeletions.delete(name);
+    const clearPending = name => {
+      if (appState.pendingTemplateDeletions.get(name) === pendingDeletions.get(name)) appState.pendingTemplateDeletions.delete(name);
+    };
+    for (const [name] of pendingDeletions) {
+      if (templates.some((tpl) => tpl && tpl.name === name)) {
+        clearPending(name);
         continue;
       }
       deletionsToProcess.push(name);
@@ -611,7 +650,7 @@ export function createTemplatePersistenceModule(context) {
         const result = await moveTemplateJsonToTrash(name);
         if (result && result.moved) {
           if (diskSnapshot) diskSnapshot.delete(`${name}.json`);
-          appState.pendingTemplateDeletions.delete(name);
+          clearPending(name);
           if (refreshScripts) await deleteCSharpFileIfExists(name);
         } else {
           trashFailures.push(name);
@@ -718,9 +757,10 @@ export function createTemplatePersistenceModule(context) {
       return;
     }
     saving = true;
-    let saveMarkerWritten = false;
-    let saveCompleted = false;
     try {
+      setSaveBusy(true);
+      showMessage('正在保存，请稍候');
+      commitActiveFormEdits();
       const commitResult = commitActiveSheetEdits();
       if (commitResult && commitResult.ok === false) {
         if (isSheetModeActive()) {
@@ -759,37 +799,52 @@ export function createTemplatePersistenceModule(context) {
       if (refreshScripts && isCSharpMode()) await ensureModelStruct();
       await ensureTrashDirectory();
       await assertDiskUnchanged();
+      validateBeforeSave();
       // Edits made while asynchronous I/O runs must remain marked as unsaved.
       const savedTemplateSnapshot = getCurrentTemplatePersistenceSnapshot();
       const savedStructureSnapshot = captureCurrentStructureSnapshot();
+      getDirtyTemplateNames();
+      const savedTables = collectTableSnapshots();
+      // Write a fixed batch; edits made during I/O belong to the next save.
+      const saveTemplates = appState.templates.map(tpl => ({
+        ...JSON.parse(savedTables.get(tpl.__uid)), __uid: tpl.__uid,
+      }));
+      const pendingDeletions = new Map(appState.pendingTemplateDeletions);
 
       await writeTextFileRaw(appState.dataEntityHandle, '.data-save-in-progress', String(Date.now()));
-      saveMarkerWritten = true;
       const {
         enumTemplateSaved,
         duplicateIdWarnings,
         listValidationWarnings,
-      } = await writeTemplateJsonFiles(templateDecisions, csCache);
-      const { trashFailures } = await processPendingDeletions(refreshScripts);
+      } = await writeTemplateJsonFiles(templateDecisions, csCache, saveTemplates);
+      const { trashFailures } = await processPendingDeletions(refreshScripts, saveTemplates, pendingDeletions);
       if (trashFailures.length) throw new Error(`部分模板移入垃圾箱失败：${trashFailures.join('、')}；其他文件可能已保存，请检查后重试`);
       const { ueInvalidNameMessage } = refreshScripts ? await runPostSaveGenerators() : { ueInvalidNameMessage: '' };
 
       if (!enumTemplateSaved) {
         await clearEnumTemplateCache();
-        await deleteDataEntityFileIfExists('enum.json');
+        if (diskSnapshot.has('enum.json')) await deleteDataEntityFileIfExists('enum.json');
       }
 
-      await writeManifestForTemplates();
+      await writeManifestForTemplates(saveTemplates);
       if (refreshScripts && isCSharpMode()) {
         await generateRuntimeLoaderArtifacts();
       }
       await persistEditorConfig();
-      if (refreshScripts) appState.lastSavedStructureSnapshot = savedStructureSnapshot;
-      appState.lastLoadedTemplateSnapshot = savedTemplateSnapshot;
       await refreshTrashButtonState();
       await refreshTrashOverlayContents();
 
-      saveCompleted = true;
+      // Success means the runtime can reload now, not merely that JSON writes
+      // have completed. A failed unlock must remain retryable and dirty.
+      await appState.dataEntityHandle.removeEntry('.data-save-in-progress');
+      if (refreshScripts) appState.lastSavedStructureSnapshot = savedStructureSnapshot;
+      appState.lastLoadedTemplateSnapshot = savedTemplateSnapshot;
+      savedTableSnapshots = savedTables;
+      for (const tpl of appState.templates) {
+        const saved = savedTables.get(tpl.__uid);
+        if (saved && JSON.parse(saved).name === tpl.name) tpl.__fromDisk = true;
+      }
+      getDirtyTemplateNames();
       reportSaveWarnings({
         trashFailures,
         duplicateIdWarnings,
@@ -797,16 +852,14 @@ export function createTemplatePersistenceModule(context) {
         ueInvalidNameMessage,
         refreshScripts,
       });
+      if (hasUnsavedTemplateChanges()) showMessage('本次数据已保存；保存期间有新修改，请再次保存', 'warn');
     } catch (err) {
       console.error(err);
       showMessage(`保存失败：${err?.message || '请检查权限'}。若已开始写入，部分文件可能已保存`, 'warn');
     } finally {
-      // Keep failed-save markers: runtime must not accept a partly written batch.
-      if (saveMarkerWritten && saveCompleted) {
-        try { await appState.dataEntityHandle.removeEntry('.data-save-in-progress'); }
-        catch (err) { showMessage(`数据已写入，但未能解除热重载保存标记：${err?.message || err}，请重试保存`, 'warn'); }
-      }
+      // Failed-save markers deliberately remain: runtime must reject a partial batch.
       saving = false;
+      setSaveBusy(false);
     }
   }
 
@@ -814,6 +867,7 @@ export function createTemplatePersistenceModule(context) {
     loadAllTemplates,
     getCurrentTemplatePersistenceSnapshot,
     hasUnsavedTemplateChanges,
+    getDirtyTemplateNames,
     buildEnumTemplateJson,
     writeManifestForTemplates,
     askCSharpReplacementBulk,
